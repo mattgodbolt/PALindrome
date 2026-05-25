@@ -42,5 +42,6 @@ endif ()
 add_subdirectory(lib)
 
 if (PALINDROME_CLI)
+    palindrome_dependency(Lyra "gh:bfgroup/Lyra@1.7.0#5a4ef1abaf7139ef00204992a2627127ad394499")
     add_subdirectory(cli)
 endif ()
