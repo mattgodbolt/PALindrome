@@ -1,0 +1,19 @@
+# Compiled object files / libraries / executables
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+
+# Build directory (one per preset, e.g. build/debug)
+/build
+
+# Local, machine-specific presets (compiler paths etc.)
+/CMakeUserPresets.json
+
+perf.data*
+.gdb_history
