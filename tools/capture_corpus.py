@@ -235,12 +235,17 @@ def main():
         "global": {
             "core:datatype": "ri16_le",
             "core:sample_rate": fs,
-            "core:version": "1.0.0",
+            "core:version": "1.2.0",
             "core:description":
                 f"PAL composite-video IF master. {args.source}".strip(),
             "core:author": "Matt Godbolt <matt@godbolt.org>",
             "core:recorder": "rx888_stream + tools/capture_corpus.py",
             "core:hw": "RX888 mk2 (LTC2208 ADC, R828D tuner), direct RF feed",
+            # Declare the custom rx888 namespace below as an (optional) SigMF
+            # extension so strict readers know rx888:* keys are ignorable.
+            "core:extensions": [
+                {"name": "rx888", "version": "0.0.1", "optional": True},
+            ],
             # Custom rx888 namespace: capture recipe + measured IF carriers.
             "rx888:command": " ".join(cmd),
             "rx888:firmware": os.path.basename(firmware) if firmware else "(extracted from raw)",

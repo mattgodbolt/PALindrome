@@ -2,11 +2,18 @@
   "global": {
     "core:datatype": "ri16_le",
     "core:sample_rate": 32000000,
-    "core:version": "1.0.0",
+    "core:version": "1.2.0",
     "core:description": "PAL composite-video IF master. Sega Master System II, Alex Kidd in Miracle World (Title Screen), UK PAL",
     "core:author": "Matt Godbolt <matt@godbolt.org>",
     "core:recorder": "rx888_stream + tools/capture_corpus.py",
     "core:hw": "RX888 mk2 (LTC2208 ADC, R828D tuner), direct RF feed",
+    "core:extensions": [
+      {
+        "name": "rx888",
+        "version": "0.0.1",
+        "optional": true
+      }
+    ],
     "rx888:command": "(extracted from /tmp/scan.bin at 10.0s, 0.48s @ 32000000 Sps)",
     "rx888:firmware": "(extracted from raw)",
     "rx888:vhf_lna": 28,

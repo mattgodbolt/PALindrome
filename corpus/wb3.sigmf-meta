@@ -2,11 +2,18 @@
   "global": {
     "core:datatype": "ri16_le",
     "core:sample_rate": 32000000,
-    "core:version": "1.0.0",
+    "core:version": "1.2.0",
     "core:description": "PAL composite-video IF master. Sega Master System II, Wonder Boy III: The Dragon's Trap, UK PAL (gameplay)",
     "core:author": "Matt Godbolt <matt@godbolt.org>",
     "core:recorder": "rx888_stream + tools/capture_corpus.py",
     "core:hw": "RX888 mk2 (LTC2208 ADC, R828D tuner), direct RF feed",
+    "core:extensions": [
+      {
+        "name": "rx888",
+        "version": "0.0.1",
+        "optional": true
+      }
+    ],
     "rx888:command": "./target/release/rx888_stream vhf -f SDDC_FX3_v22.img -s 32000000 --frequency 590200000 --vhf-lna 28 --vhf-vga 4 --vhf-sideband 0 --vhf-harmonic 0 -o corpus/wb3.sigmf-data.raw",
     "rx888:firmware": "SDDC_FX3_v22.img",
     "rx888:vhf_lna": 28,
