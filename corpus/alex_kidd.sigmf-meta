@@ -1,0 +1,37 @@
+{
+  "global": {
+    "core:datatype": "ri16_le",
+    "core:sample_rate": 32000000,
+    "core:version": "1.0.0",
+    "core:description": "PAL composite-video IF master. Sega Master System II, Alex Kidd in Miracle World, UK PAL",
+    "core:author": "Matt Godbolt <matt@godbolt.org>",
+    "core:recorder": "rx888_stream + tools/capture_corpus.py",
+    "core:hw": "RX888 mk2 (LTC2208 ADC, R828D tuner), direct RF feed",
+    "rx888:command": "/home/matthew/bin/rx888_stream vhf -f /home/matthew/dev/rx888_stream/SDDC_FX3_v22.img -s 32000000 --frequency 590200000 --vhf-lna 28 --vhf-vga 4 --vhf-sideband 0 --vhf-harmonic 0 -o corpus/alex_kidd.sigmf-data.raw",
+    "rx888:firmware": "SDDC_FX3_v22.img",
+    "rx888:vhf_lna": 28,
+    "rx888:vhf_vga": 4,
+    "rx888:vhf_sideband": 0,
+    "rx888:vhf_harmonic": 0,
+    "rx888:adc_clip_pct": 0.0,
+    "rx888:vision_if_hz": 3568848,
+    "rx888:chroma_if_hz": 8010254,
+    "rx888:sound_if_hz": 9568848,
+    "rx888:carrier_detection": "detected"
+  },
+  "captures": [
+    {
+      "core:sample_start": 0,
+      "core:frequency": 590200000,
+      "core:datetime": "2026-05-26T00:26:31.842396Z"
+    }
+  ],
+  "annotations": [
+    {
+      "core:sample_start": 0,
+      "core:sample_count": 15360000,
+      "core:label": "PAL composite at IF (12 frames)",
+      "core:description": "vision/chroma/sound carriers in rx888:* (real-sampled IF, not complex baseband around core:frequency)"
+    }
+  ]
+}
