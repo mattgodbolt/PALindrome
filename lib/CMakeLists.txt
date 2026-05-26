@@ -2,16 +2,20 @@ if (PALINDROME_TESTS)
     add_subdirectory(test)
 endif ()
 
+# JSON parsing for the SigMF metadata loader. nlohmann_json marks its includes
+# as SYSTEM when consumed this way, so it doesn't trip our -Werror warning set.
+palindrome_dependency(nlohmann_json "gh:nlohmann/json@3.11.3")
+
 add_library(palindrome)
 add_library(palindrome::palindrome ALIAS palindrome)
 
-target_sources(palindrome PRIVATE palindrome.cpp)
+target_sources(palindrome PRIVATE sigmf.cpp)
 
 target_sources(palindrome
         PUBLIC
         FILE_SET interface
         TYPE HEADERS
         BASE_DIRS include
-        FILES include/palindrome/palindrome.hpp)
+        FILES include/palindrome/sigmf.hpp)
 
-target_link_libraries(palindrome PUBLIC opt::cxx_std PRIVATE opt::pedantic)
+target_link_libraries(palindrome PUBLIC opt::cxx_std nlohmann_json::nlohmann_json PRIVATE opt::pedantic)
