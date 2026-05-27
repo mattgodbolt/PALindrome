@@ -13,6 +13,7 @@
 
 namespace demod = palindrome::demod;
 using Catch::Matchers::WithinAbs;
+using Catch::Matchers::WithinULP;
 
 namespace {
 constexpr double two_pi = 2.0 * std::numbers::pi;
@@ -89,6 +90,11 @@ TEST_CASE("AmEnvelope streams identically regardless of block size") {
     dut.process(std::span{x}.subspan(off, std::min<std::size_t>(97, x.size() - off)), chunked);
 
   REQUIRE(whole.size() == chunked.size());
+  // The FIRs carry state bit-exactly, but the block oscillator (dsp::Mixer)
+  // advances its phase differently across a block boundary than within a full
+  // group, so the two runs agree only to float rounding. Unlike the mixer's I/Q
+  // (which cross zero), the envelope is a strictly positive magnitude bounded
+  // away from zero here, so ULPs are well defined: the worst case is 2 ULP.
   for (std::size_t k = 0; k < whole.size(); ++k)
-    CHECK(whole[k] == chunked[k]); // bit-identical: same state machine, same order
+    CHECK_THAT(chunked[k], WithinULP(whole[k], 4));
 }

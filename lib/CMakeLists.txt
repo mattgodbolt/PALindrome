@@ -9,7 +9,7 @@ palindrome_dependency(nlohmann_json "gh:nlohmann/json@3.11.3")
 add_library(palindrome)
 add_library(palindrome::palindrome ALIAS palindrome)
 
-target_sources(palindrome PRIVATE sigmf.cpp demod.cpp fir.cpp biquad.cpp dc_blocker.cpp wav.cpp)
+target_sources(palindrome PRIVATE sigmf.cpp demod.cpp fir.cpp mixer.cpp biquad.cpp dc_blocker.cpp wav.cpp)
 
 target_sources(palindrome
         PUBLIC
@@ -20,6 +20,7 @@ target_sources(palindrome
         include/palindrome/sigmf.hpp
         include/palindrome/demod.hpp
         include/palindrome/fir.hpp
+        include/palindrome/mixer.hpp
         include/palindrome/biquad.hpp
         include/palindrome/dc_blocker.hpp
         include/palindrome/wav.hpp)

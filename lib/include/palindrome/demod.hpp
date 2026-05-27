@@ -1,8 +1,8 @@
 #pragma once
 
 #include "palindrome/fir.hpp"
+#include "palindrome/mixer.hpp"
 
-#include <complex>
 #include <cstddef>
 #include <span>
 #include <vector>
@@ -38,11 +38,9 @@ public:
   [[nodiscard]] std::size_t decimation() const { return i_filter_.decimation(); }
 
 private:
-  std::complex<double> phasor_{1.0, 0.0}; // running down-conversion phase
-  std::complex<double> step_{1.0, 0.0}; // per-sample phase rotation
+  dsp::Mixer mixer_; // down-converts the carrier to baseband I/Q
   dsp::Fir i_filter_; // baseband low-pass, in-phase
   dsp::Fir q_filter_; // baseband low-pass, quadrature
-  unsigned since_renorm_{}; // samples since last phasor renormalise
 
   // Scratch reused across process() calls to avoid per-block reallocation.
   std::vector<float> mixed_i_;
