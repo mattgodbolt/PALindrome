@@ -44,23 +44,23 @@ like Audacity. It's a debugging/inspection tool while the decode is built up.
 
 ```mermaid
 flowchart TD
-    subgraph cap["Capture (tools/capture_corpus.py)"]
-      RF["RX888 off-air IF"] --> SIGMF["corpus/*.sigmf-data<br/>real int16 LE @ 32 MS/s"]
+    subgraph cap["Capture"]
+      RF["RX888 off-air IF"] --> SIGMF["corpus sigmf-data<br/>real int16 LE, 32 MS/s"]
     end
 
     subgraph demod["palindrome demod (implemented)"]
-      SIGMF --> TRAP["sound trap<br/>Biquad notch @ sound IF"]
+      SIGMF --> TRAP["sound trap<br/>Biquad notch at sound IF"]
       TRAP --> DC["DC blocker<br/>one-pole high-pass"]
-      DC --> MIX["mix to baseband<br/>x complex carrier @ f_vision"]
-      MIX --> LP["FIR low-pass, I and Q<br/>windowed-sinc ~5 MHz"]
-      LP --> MAG["envelope<br/>sqrt of I^2 + Q^2, x2"]
-      MAG --> WAV["WAV out<br/>stamped fs / slowdown"]
+      DC --> MIX["mix to baseband<br/>multiply by complex carrier"]
+      MIX --> LP["FIR low-pass, I and Q<br/>windowed-sinc approx 5 MHz"]
+      LP --> MAG["envelope<br/>magnitude of I and Q, scaled 2x"]
+      MAG --> WAV["WAV out<br/>stamped fs over slowdown"]
     end
 
     subgraph todo["PAL decode (not yet)"]
-      MAG -.-> LVL["levels / invert<br/>black-level clamp"]
-      LVL -.-> SYNC["sync detect<br/>H/V timing"]
-      SYNC -.-> SEP["luma / chroma split"]
+      MAG -.-> LVL["levels and invert<br/>black-level clamp"]
+      LVL -.-> SYNC["sync detect<br/>H and V timing"]
+      SYNC -.-> SEP["luma and chroma split"]
       SEP -.-> COL["colour decode<br/>burst-locked QAM, PAL delay line"]
       COL -.-> RGB["RGB frames"]
     end
