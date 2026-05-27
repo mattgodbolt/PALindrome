@@ -17,6 +17,12 @@ constexpr double pi = std::numbers::pi;
 // precision for throughput: error grows with tap count (~n*eps worst case), so
 // this suits moderate-length, amplitude-limited filters rather than long or
 // ill-conditioned ones that would want a double accumulator.
+//
+// TODO(std::simd): replace this [[gnu::optimize]] attribute (a GCC debug-only
+// feature) with explicit std::simd lanes, which makes the reduction order
+// explicit and needs no FP-relaxation flags. Validated working on GCC 16.1's
+// <simd>; blocked only on getting that toolchain into the build (no gcc-16
+// package for Ubuntu 25.10 yet, so a Compiler Explorer tarball or similar).
 [[gnu::optimize("-fassociative-math", "-fno-signed-zeros", "-fno-trapping-math")]]
 float convolve(const float *taps, const float *window, std::size_t n) {
   float acc = 0.0f;

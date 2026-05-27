@@ -9,6 +9,21 @@ namespace {
 constexpr double two_pi = 2.0 * std::numbers::pi;
 // Renormalise the running phasor this often to shed accumulated rounding drift.
 constexpr unsigned renorm_interval = 1024;
+
+// AM envelope: 2 * sqrt(i^2 + q^2), elementwise. restrict rules out aliasing;
+// dropping the errno and trapping guards on sqrt (scoped to this function) lets
+// it lower to a packed vsqrtps store. __builtin_sqrtf sidesteps the std::sqrt
+// wrapper, which the optimize attribute otherwise keeps from inlining.
+//
+// TODO(std::simd): drop this [[gnu::optimize]] attribute for explicit std::simd
+// (see the matching note in fir.cpp). The load/store/mul/add port cleanly to
+// GCC 16.1's <simd>, but its simd-math (sqrt) isn't implemented yet, so this one
+// also waits on a newer toolchain before it can go fully flag-free.
+[[gnu::optimize("-fno-math-errno", "-fno-trapping-math")]]
+void envelope_magnitude(const float *__restrict i, const float *__restrict q, float *__restrict out, std::size_t n) {
+  for (std::size_t k = 0; k < n; ++k)
+    out[k] = 2.0f * __builtin_sqrtf(i[k] * i[k] + q[k] * q[k]);
+}
 } // namespace
 
 AmEnvelope::AmEnvelope(
@@ -43,10 +58,12 @@ void AmEnvelope::process(std::span<const float> in, std::vector<float> &out) {
   q_filter_.process(mixed_q_, filtered_q_);
 
   // A real carrier of amplitude A lands as a baseband component of magnitude
-  // A/2, so scale by 2 to recover A.
-  out.reserve(out.size() + in.size());
-  for (std::size_t k = 0; k < filtered_i_.size(); ++k)
-    out.push_back(static_cast<float>(2.0 * std::hypot(filtered_i_[k], filtered_q_[k])));
+  // A/2, so scale by 2 to recover A. std::hypot's overflow guarding is needless
+  // here (the I/Q are bounded), and plain sqrt of the sum of squares vectorises
+  // into an elementwise store.
+  const std::size_t n = filtered_i_.size();
+  out.resize(out.size() + n);
+  envelope_magnitude(filtered_i_.data(), filtered_q_.data(), out.data() + (out.size() - n), n);
 }
 
 } // namespace palindrome::demod
