@@ -19,7 +19,7 @@ target_sources(palindrome
         FILES
         include/palindrome/buffer.hpp
         include/palindrome/pipeline.hpp
-        include/palindrome/restrict.hpp
+        include/palindrome/restrict_ptr.hpp
         include/palindrome/sigmf.hpp
         include/palindrome/demod.hpp
         include/palindrome/fir.hpp

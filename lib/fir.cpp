@@ -1,7 +1,5 @@
 #include "palindrome/fir.hpp"
 
-#include "palindrome/restrict.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <numbers>
@@ -104,9 +102,9 @@ std::span<const float> Fir::process(std::span<const float> in) {
   // skip is left over into the next block, so chunking can't shift the grid.
   const std::size_t outputs = (m > phase_) ? (m - phase_ + decimation_ - 1) / decimation_ : 0;
   out_.reserve(outputs);
-  float *PAL_RESTRICT y = out_.write_n(outputs).data();
-  const float *PAL_RESTRICT taps = taps_.data();
-  const float *PAL_RESTRICT w = window.data();
+  float *y = out_.write_n(outputs).data();
+  const float *taps = taps_.data();
+  const float *w = window.data();
   std::size_t j = phase_;
   for (std::size_t k = 0; k < outputs; ++k, j += decimation_)
     y[k] = convolve(taps, w + j, n);

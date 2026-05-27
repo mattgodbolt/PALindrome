@@ -1,12 +1,15 @@
 #include "palindrome/demod.hpp"
 
+#include "palindrome/restrict_ptr.hpp"
+
 #include <cmath>
 
 namespace palindrome::demod {
 
 namespace {
-// AM envelope: 2 * sqrt(i^2 + q^2), elementwise. restrict rules out aliasing;
-// dropping the errno and trapping guards on sqrt (scoped to this function) lets
+// AM envelope: 2 * sqrt(i^2 + q^2), elementwise. The restrict_ptr params rule out
+// aliasing (in the signature, not a comment); dropping the errno and trapping
+// guards on sqrt (scoped to this function) lets
 // it lower to a packed vsqrtps store. __builtin_sqrtf sidesteps the std::sqrt
 // wrapper, which the optimize attribute otherwise keeps from inlining.
 //
@@ -15,7 +18,8 @@ namespace {
 // GCC 16.1's <simd>, but its simd-math (sqrt) isn't implemented yet, so this one
 // also waits on a newer toolchain before it can go fully flag-free.
 [[gnu::optimize("-fno-math-errno", "-fno-trapping-math")]]
-void envelope_magnitude(const float *__restrict i, const float *__restrict q, float *__restrict out, std::size_t n) {
+void envelope_magnitude(
+    restrict_ptr<const float> i, restrict_ptr<const float> q, restrict_ptr<float> out, std::size_t n) {
   for (std::size_t k = 0; k < n; ++k)
     out[k] = 2.0f * __builtin_sqrtf(i[k] * i[k] + q[k] * q[k]);
 }

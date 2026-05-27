@@ -22,8 +22,7 @@
 //
 // The storage is aligned to kAlign (64 bytes -> AVX-512-safe, harmless on AVX2),
 // and data()/view() hand back std::assume_aligned pointers so loads and stores
-// can be aligned. Pair with PAL_RESTRICT (restrict.hpp) on the lifted locals to
-// also rule out aliasing.
+// can be aligned.
 namespace palindrome {
 
 template<class T>

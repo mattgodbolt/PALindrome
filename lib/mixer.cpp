@@ -25,8 +25,8 @@ Mixer::Mixer(double carrier_hz, double sample_rate_hz) {
   step_block_ = rot; // step^kLanes, having stepped kLanes times above
 }
 
-void Mixer::mix_group(const float *__restrict x, float *__restrict i, float *__restrict q,
-    const float *__restrict rot_re, const float *__restrict rot_im, float br, float bi) {
+void Mixer::mix_group(restrict_ptr<const float> x, restrict_ptr<float> i, restrict_ptr<float> q,
+    restrict_ptr<const float> rot_re, restrict_ptr<const float> rot_im, float br, float bi) {
   for (std::size_t l = 0; l < kLanes; ++l) {
     const float re = br * rot_re[l] - bi * rot_im[l];
     const float im = br * rot_im[l] + bi * rot_re[l];

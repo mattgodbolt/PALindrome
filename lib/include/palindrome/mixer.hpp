@@ -1,6 +1,7 @@
 #pragma once
 
 #include "palindrome/buffer.hpp"
+#include "palindrome/restrict_ptr.hpp"
 
 #include <array>
 #include <complex>
@@ -52,11 +53,12 @@ private:
   // is just the unroll factor and stays correct.
   static constexpr std::size_t kLanes = 8;
 
-  // Mix one group of kLanes samples from a fixed base phasor (br, bi). Taking
-  // raw restrict pointers (no `this`, no aliasing) is what lets it lower to a
-  // single wide vector step; nesting the same loop inside process() does not.
-  static void mix_group(
-      const float *x, float *i, float *q, const float *rot_re, const float *rot_im, float br, float bi);
+  // Mix one group of kLanes samples from a fixed base phasor (br, bi). The
+  // restrict_ptr params declare the planes don't alias (no `this`, no aliasing),
+  // which is what lets it lower to a single wide vector step; nesting the same
+  // loop inside process() does not.
+  static void mix_group(restrict_ptr<const float> x, restrict_ptr<float> i, restrict_ptr<float> q,
+      restrict_ptr<const float> rot_re, restrict_ptr<const float> rot_im, float br, float bi);
 
   std::array<float, kLanes> rot_re_{}; //  cos(omega*l) = Re(step^l), l in [0, kLanes)
   std::array<float, kLanes> rot_im_{}; // -sin(omega*l) = Im(step^l)
