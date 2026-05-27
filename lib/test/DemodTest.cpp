@@ -75,6 +75,29 @@ TEST_CASE("AmEnvelope recovers a modulating tone") {
   CHECK_THAT(hi, WithinAbs(amp * (1.0 + depth), 0.08));
 }
 
+TEST_CASE("AmEnvelope blocks a DC offset on the input") {
+  constexpr double fs = 1.0e6;
+  constexpr double carrier = 100.0e3;
+  constexpr double amp = 0.5;
+  // A DC offset, unblocked, would mix down to a tone at the carrier frequency
+  // and corrupt the envelope; the demodulator's DC blocker should reject it.
+  auto x = am_signal(fs, carrier, 0.0, 0.0, amp, 200000);
+  for (float &v: x)
+    v += 0.3f; // large constant offset
+
+  demod::AmEnvelope dut{fs, carrier, 10.0e3};
+  std::vector<float> out;
+  dut.process(x, out);
+
+  // After the DC blocker settles, the envelope should still be the carrier
+  // amplitude, flat (small spread), despite the offset.
+  const auto tail = std::span{out}.subspan(out.size() * 3 / 4);
+  const double mean = std::ranges::fold_left(tail, 0.0, std::plus{}) / static_cast<double>(tail.size());
+  const auto [lo, hi] = std::ranges::minmax(tail);
+  CHECK_THAT(mean, WithinAbs(amp, 0.03));
+  CHECK((hi - lo) < 0.05); // flat, not a carrier-frequency ripple
+}
+
 TEST_CASE("AmEnvelope streams identically regardless of block size") {
   constexpr double fs = 1.0e6;
   constexpr double carrier = 80.0e3;

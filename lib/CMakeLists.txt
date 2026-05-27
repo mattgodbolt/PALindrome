@@ -9,7 +9,7 @@ palindrome_dependency(nlohmann_json "gh:nlohmann/json@3.11.3")
 add_library(palindrome)
 add_library(palindrome::palindrome ALIAS palindrome)
 
-target_sources(palindrome PRIVATE sigmf.cpp demod.cpp wav.cpp)
+target_sources(palindrome PRIVATE sigmf.cpp demod.cpp fir.cpp biquad.cpp wav.cpp)
 
 target_sources(palindrome
         PUBLIC
@@ -19,6 +19,8 @@ target_sources(palindrome
         FILES
         include/palindrome/sigmf.hpp
         include/palindrome/demod.hpp
+        include/palindrome/fir.hpp
+        include/palindrome/biquad.hpp
         include/palindrome/wav.hpp)
 
 target_link_libraries(palindrome PUBLIC opt::cxx_std nlohmann_json::nlohmann_json PRIVATE opt::pedantic)

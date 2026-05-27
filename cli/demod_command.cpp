@@ -1,6 +1,7 @@
 #include "demod_command.hpp"
 
 #include "cli_util.hpp"
+#include "palindrome/biquad.hpp"
 #include "palindrome/demod.hpp"
 #include "palindrome/sigmf.hpp"
 #include "palindrome/wav.hpp"
@@ -8,10 +9,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <format>
 #include <fstream>
 #include <iostream>
 #include <print>
 #include <ranges>
+#include <span>
+#include <string>
 #include <vector>
 
 namespace palindrome::cli {
@@ -29,6 +33,8 @@ void DemodCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(carrier_, "hz")["--carrier"]("Carrier Hz (default: rx888:vision_if_hz)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz (default 5e6)"))
           .add_argument(lyra::opt(slowdown_, "factor")["--slowdown"]("Stamp WAV rate as real/factor (default 1000)"))
+          .add_argument(lyra::opt(no_sound_trap_)["--no-sound-trap"]("Disable the sound-carrier notch"))
+          .add_argument(lyra::opt(sound_q_, "q")["--sound-q"]("Sound-trap notch Q (default 10)"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to demodulate (e.g. corpus/alex_kidd)")));
 }
 
@@ -65,6 +71,18 @@ int DemodCommand::run() const {
     }
   }
 
+  // IF traps applied (in order) before detection, mirroring a TV's IF strip.
+  std::vector<dsp::Biquad> traps;
+  std::vector<std::string> trap_notes;
+
+  // The FM sound carrier.
+  if (!no_sound_trap_) {
+    if (const auto s = meta.field<double>("rx888:sound_if_hz")) {
+      traps.push_back(dsp::notch(fs, *s, sound_q_));
+      trap_notes.push_back(std::format("sound {:.3f} MHz (Q {:g})", *s / 1e6, sound_q_));
+    }
+  }
+
   const auto data_path = sigmf::data_path_for(meta_path);
   std::ifstream data{data_path, std::ios::binary};
   if (!data) {
@@ -76,6 +94,7 @@ int DemodCommand::run() const {
   std::vector<float> out;
   std::vector<std::int16_t> raw(std::size_t{1} << 16);
   std::vector<float> block;
+  std::vector<std::vector<float>> trap_bufs(traps.size()); // one reused buffer per trap
   while (data) {
     data.read(reinterpret_cast<char *>(raw.data()), static_cast<std::streamsize>(raw.size() * sizeof(std::int16_t)));
     const auto got = static_cast<std::size_t>(data.gcount()) / sizeof(std::int16_t);
@@ -84,7 +103,14 @@ int DemodCommand::run() const {
     block.resize(got);
     for (std::size_t k = 0; k < got; ++k)
       block[k] = static_cast<float>(raw[k]) / 32768.0f;
-    envelope.process(block, out);
+
+    std::span<const float> stage{block};
+    for (std::size_t t = 0; t < traps.size(); ++t) {
+      trap_bufs[t].clear();
+      traps[t].process(stage, trap_bufs[t]);
+      stage = trap_bufs[t];
+    }
+    envelope.process(stage, out);
   }
   if (out.empty()) {
     std::println(std::cerr, "demod: no samples read from {}", data_path.string());
@@ -110,8 +136,11 @@ int DemodCommand::run() const {
     return 1;
   }
 
-  std::println("wrote {} ({} samples @ {} Hz = real/{:g}); carrier {:.4f} MHz, cutoff {:g} MHz", output.string(),
-      out.size(), wav_rate, slowdown_, carrier / 1e6, cutoff_ / 1e6);
+  std::string traps_desc = trap_notes.empty() ? "no traps" : "traps: ";
+  for (std::size_t t = 0; t < trap_notes.size(); ++t)
+    traps_desc += (t ? ", " : "") + trap_notes[t];
+  std::println("wrote {} ({} samples @ {} Hz = real/{:g}); carrier {:.4f} MHz, cutoff {:g} MHz; {}", output.string(),
+      out.size(), wav_rate, slowdown_, carrier / 1e6, cutoff_ / 1e6, traps_desc);
   return 0;
 }
 
