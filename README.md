@@ -34,3 +34,44 @@ Useful flags: `--sample-rate`, `--frequency`, `--vhf-lna`, `--vhf-vga`,
 `--frames`, `--outdir`. Run with `--help` for the rest.
 
 `corpus/*.sigmf-data` are large binaries, tracked with git LFS.
+
+## Decoding: the `demod` command
+
+`palindrome demod corpus/wb3 -o wb3.wav` AM-demodulates a recording's vision
+carrier and writes the recovered composite envelope as a WAV, stamped at
+`sample_rate / slowdown` (default 1000x) so it opens at audio rates in a viewer
+like Audacity. It's a debugging/inspection tool while the decode is built up.
+
+```mermaid
+flowchart TD
+    subgraph cap["Capture (tools/capture_corpus.py)"]
+      RF["RX888 off-air IF"] --> SIGMF["corpus/*.sigmf-data<br/>real int16 LE @ 32 MS/s"]
+    end
+
+    subgraph demod["palindrome demod (implemented)"]
+      SIGMF --> TRAP["sound trap<br/>Biquad notch @ sound IF"]
+      TRAP --> DC["DC blocker<br/>one-pole high-pass"]
+      DC --> MIX["mix to baseband<br/>x complex carrier @ f_vision"]
+      MIX --> LP["FIR low-pass, I and Q<br/>windowed-sinc ~5 MHz"]
+      LP --> MAG["envelope<br/>sqrt of I^2 + Q^2, x2"]
+      MAG --> WAV["WAV out<br/>stamped fs / slowdown"]
+    end
+
+    subgraph todo["PAL decode (not yet)"]
+      MAG -.-> LVL["levels / invert<br/>black-level clamp"]
+      LVL -.-> SYNC["sync detect<br/>H/V timing"]
+      SYNC -.-> SEP["luma / chroma split"]
+      SEP -.-> COL["colour decode<br/>burst-locked QAM, PAL delay line"]
+      COL -.-> RGB["RGB frames"]
+    end
+```
+
+Each stage (`palindrome::dsp::Fir`, `palindrome::dsp::Biquad`,
+`palindrome::demod::AmEnvelope`) is a streaming, span-based block: state carries
+across calls, so the result is independent of how the input is chunked.
+
+Known limitations of this first pass: the low-pass is a linear-phase FIR (some
+pre-ringing); detection is a plain envelope (no synchronous/quasi-sync option
+yet); and it runs the full-rate convolution with no decimation, so it's not
+fast. The recovered envelope is still "negative" polarity (sync at the top) —
+inversion and black-level clamping come with the sync/levels stage.
