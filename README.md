@@ -75,3 +75,24 @@ pre-ringing); detection is a plain envelope (no synchronous/quasi-sync option
 yet); and it runs the full-rate convolution with no decimation, so it's not
 fast. The recovered envelope is still "negative" polarity (sync at the top) —
 inversion and black-level clamping come with the sync/levels stage.
+
+## Notes
+
+### SIMD (`std::simd`) — parked
+
+The DSP hot loops (`dsp::convolve`, `demod::envelope_magnitude`) currently
+vectorise via per-function `[[gnu::optimize(...)]]` to license FP reassociation
+/ drop the `sqrt` errno+trapping guards. It's ODR-safe (anonymous-namespace,
+single definition) and the precision loss is bounded and measured, but
+`[[gnu::optimize]]` is a GCC debug-only feature we'd rather not ship.
+
+Plan, when we pick this up: rewrite those loops in `std::simd` so the lane
+reduction is explicit and **no** FP-relaxation flags/attributes are needed.
+
+Blockers found (2026-05): `std::simd`'s `convolve` is validated working on GCC
+16.1 and 17-trunk, but `simd.math` (`sqrt`) is **not** in shipping libstdc++ even
+on trunk (gated behind GSI-HPC's `VIR_PATCH_MATH`); libc++ ships no `<simd>` at
+all, so Clang has no path. The magnitude's `sqrt` would stay scalar (or
+`std::experimental::simd`) until `simd.math` lands. Also needs GCC 16+ in the
+build, which Ubuntu 25.10 / the toolchain PPA don't package — a Compiler
+Explorer tarball is the likely route.
