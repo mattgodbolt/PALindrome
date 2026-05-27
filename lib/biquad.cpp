@@ -10,12 +10,11 @@ namespace {
 constexpr double two_pi = 2.0 * std::numbers::pi;
 } // namespace
 
-Biquad::Biquad(double b0, double b1, double b2, double a1, double a2)
-    : b0_{b0}, b1_{b1}, b2_{b2}, a1_{a1}, a2_{a2} {}
+Biquad::Biquad(double b0, double b1, double b2, double a1, double a2) : b0_{b0}, b1_{b1}, b2_{b2}, a1_{a1}, a2_{a2} {}
 
 void Biquad::process(std::span<const float> in, std::vector<float> &out) {
   out.reserve(out.size() + in.size());
-  for (const float sample : in) {
+  for (const float sample: in) {
     const double x = sample;
     const double y = b0_ * x + z1_;
     z1_ = b1_ * x - a1_ * y + z2_;

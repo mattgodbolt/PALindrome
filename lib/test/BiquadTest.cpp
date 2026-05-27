@@ -24,7 +24,7 @@ std::vector<float> tone(double fs, double freq, std::size_t n) {
 
 double rms(std::span<const float> s) {
   double energy = 0.0;
-  for (const float v : s)
+  for (const float v: s)
     energy += static_cast<double>(v) * v;
   return std::sqrt(energy / static_cast<double>(s.size()));
 }
@@ -56,7 +56,7 @@ TEST_CASE("notch annihilates a tone at its centre and passes others") {
   dsp::notch(fs, 100.0, 10.0).process(tone(fs, 300.0, n), above);
 
   // Skip the settling transient, measure the steady state.
-  CHECK(rms(std::span{at_centre}.subspan(2000)) < 0.02);                  // killed
+  CHECK(rms(std::span{at_centre}.subspan(2000)) < 0.02); // killed
   CHECK_THAT(rms(std::span{below}.subspan(2000)), WithinRel(1.0 / std::sqrt(2.0), 0.05)); // passed
   CHECK_THAT(rms(std::span{above}.subspan(2000)), WithinRel(1.0 / std::sqrt(2.0), 0.05)); // passed
 }
