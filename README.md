@@ -38,9 +38,15 @@ Useful flags: `--sample-rate`, `--frequency`, `--vhf-lna`, `--vhf-vga`,
 ## Decoding: the `demod` command
 
 `palindrome demod corpus/wb3 -o wb3.wav` AM-demodulates a recording's vision
-carrier and writes the recovered composite envelope as a WAV, stamped at
-`sample_rate / slowdown` (default 1000x) so it opens at audio rates in a viewer
+carrier and writes the recovered composite envelope as a WAV. The envelope is
+peak-normalised and polarity-inverted (sync to the bottom) for comfortable
+viewing, and the WAV is stamped at `(sample_rate / decimation) / slowdown`
+(default 1000x slowdown, no decimation) so it opens at audio rates in a viewer
 like Audacity. It's a debugging/inspection tool while the decode is built up.
+
+Useful flags: `--carrier`, `--cutoff` (default 5 MHz), `--decimate N` (keep one
+output sample per N inputs, default 1), `--slowdown`, and `--no-sound-trap` /
+`--sound-q` for the sound-carrier notch. Run with `--help` for the rest.
 
 ```mermaid
 flowchart TD
@@ -52,13 +58,14 @@ flowchart TD
       SIGMF --> TRAP["sound trap<br/>Biquad notch at sound IF"]
       TRAP --> DC["DC blocker<br/>one-pole high-pass"]
       DC --> MIX["mix to baseband<br/>multiply by complex carrier"]
-      MIX --> LP["FIR low-pass, I and Q<br/>windowed-sinc approx 5 MHz"]
+      MIX --> LP["FIR low-pass, I and Q<br/>windowed-sinc approx 5 MHz<br/>optional decimation"]
       LP --> MAG["envelope<br/>magnitude of I and Q, scaled 2x"]
-      MAG --> WAV["WAV out<br/>stamped fs over slowdown"]
+      MAG --> NORM["normalise + invert<br/>peak-scaled for viewing"]
+      NORM --> WAV["WAV out<br/>stamped fs/decimation over slowdown"]
     end
 
     subgraph todo["PAL decode (not yet)"]
-      MAG -.-> LVL["levels and invert<br/>black-level clamp"]
+      MAG -.-> LVL["levels<br/>sync-locked black-level clamp"]
       LVL -.-> SYNC["sync detect<br/>H and V timing"]
       SYNC -.-> SEP["luma and chroma split"]
       SEP -.-> COL["colour decode<br/>burst-locked QAM, PAL delay line"]
@@ -72,9 +79,10 @@ across calls, so the result is independent of how the input is chunked.
 
 Known limitations of this first pass: the low-pass is a linear-phase FIR (some
 pre-ringing); detection is a plain envelope (no synchronous/quasi-sync option
-yet); and it runs the full-rate convolution with no decimation, so it's not
-fast. The recovered envelope is still "negative" polarity (sync at the top) —
-inversion and black-level clamping come with the sync/levels stage.
+yet); and decimation is available (`--decimate N`) but off by default, so out of
+the box it runs the full-rate convolution and isn't fast. The output is only
+peak-normalised and polarity-inverted for viewing — proper sync-locked
+black-level clamping comes with the sync/levels stage.
 
 ## Notes
 
