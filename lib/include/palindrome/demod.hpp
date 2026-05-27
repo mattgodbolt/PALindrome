@@ -18,7 +18,8 @@ namespace palindrome::demod {
 // Envelope (AM) demodulator for a real-sampled IF, as used for PAL composite
 // vision. It mixes the chosen carrier down to baseband, low-pass filters the
 // I/Q components with a windowed-sinc FIR, and outputs their magnitude — i.e.
-// the AM envelope.
+// the AM envelope. It expects a DC-free input (see dsp::DcBlocker): an unblocked
+// offset mixes down onto the carrier and beats into the envelope.
 class AmEnvelope {
 public:
   // sample_rate_hz: input sample rate. carrier_hz: IF carrier to demodulate.
@@ -32,12 +33,6 @@ public:
   void process(std::span<const float> in, std::vector<float> &out);
 
 private:
-  // A DC offset on the real input becomes a tone at exactly the carrier once
-  // mixed down, beating into the envelope as a constant artifact. A one-pole DC
-  // blocker removes it; its corner is far below the signal so it's harmless.
-  double dc_prev_in_{};
-  double dc_prev_out_{};
-
   std::complex<double> phasor_{1.0, 0.0}; // running down-conversion phase
   std::complex<double> step_{1.0, 0.0}; // per-sample phase rotation
   dsp::Fir i_filter_; // baseband low-pass, in-phase

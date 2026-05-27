@@ -9,9 +9,6 @@ namespace {
 constexpr double two_pi = 2.0 * std::numbers::pi;
 // Renormalise the running phasor this often to shed accumulated rounding drift.
 constexpr unsigned renorm_interval = 1024;
-// One-pole DC-blocker feedback coefficient; corner ~ (1-R)*fs/2pi (~500 Hz at
-// 32 MS/s), far below the carrier, so it removes only the DC bias.
-constexpr double dc_blocker_pole = 0.9999;
 } // namespace
 
 AmEnvelope::AmEnvelope(
@@ -30,13 +27,7 @@ void AmEnvelope::process(std::span<const float> in, std::vector<float> &out) {
   mixed_i_.reserve(in.size());
   mixed_q_.reserve(in.size());
   for (const float sample: in) {
-    // Block DC: y[n] = x[n] - x[n-1] + R*y[n-1].
-    const double in_sample = static_cast<double>(sample);
-    const double blocked = in_sample - dc_prev_in_ + dc_blocker_pole * dc_prev_out_;
-    dc_prev_in_ = in_sample;
-    dc_prev_out_ = blocked;
-
-    const std::complex<double> mixed = blocked * phasor_;
+    const std::complex<double> mixed = static_cast<double>(sample) * phasor_;
     mixed_i_.push_back(static_cast<float>(mixed.real()));
     mixed_q_.push_back(static_cast<float>(mixed.imag()));
     phasor_ *= step_;
