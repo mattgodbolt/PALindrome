@@ -103,4 +103,43 @@ TEST_CASE("Fir streams identically regardless of block size") {
     CHECK(whole[k] == chunked[k]);
 }
 
-TEST_CASE("Fir rejects empty taps") { CHECK_THROWS_AS(dsp::Fir{std::vector<float>{}}, std::invalid_argument); }
+TEST_CASE("decimating FIR keeps exactly every Nth full-rate output") {
+  constexpr double fs = 1000.0;
+  const auto taps = dsp::lowpass_kernel(31, fs, 100.0);
+  const auto x = tone(fs, 40.0, 500);
+
+  std::vector<float> full;
+  dsp::Fir{taps, 1}.process(x, full);
+  std::vector<float> dec;
+  dsp::Fir dut{taps, 3};
+  dut.process(x, dec);
+
+  CHECK(dut.decimation() == 3);
+  REQUIRE(dec.size() == (full.size() + 2) / 3); // ceil(500 / 3)
+  for (std::size_t k = 0; k < dec.size(); ++k)
+    CHECK(dec[k] == full[3 * k]); // a decimating FIR == filter then keep every 3rd
+}
+
+TEST_CASE("decimating FIR streams identically regardless of block size") {
+  constexpr double fs = 1000.0;
+  const auto taps = dsp::lowpass_kernel(31, fs, 100.0);
+  const auto x = tone(fs, 50.0, 777); // not a multiple of the decimation or block size
+
+  std::vector<float> whole;
+  dsp::Fir{taps, 4}.process(x, whole);
+
+  std::vector<float> chunked;
+  dsp::Fir dut{taps, 4};
+  for (std::size_t off = 0; off < x.size(); off += 50) // ragged blocks straddle the phase
+    dut.process(std::span{x}.subspan(off, std::min<std::size_t>(50, x.size() - off)), chunked);
+
+  REQUIRE(whole.size() == chunked.size());
+  for (std::size_t k = 0; k < whole.size(); ++k)
+    CHECK(whole[k] == chunked[k]);
+}
+
+TEST_CASE("Fir rejects bad construction") {
+  CHECK_THROWS_AS(dsp::Fir{std::vector<float>{}}, std::invalid_argument);
+  CHECK_THROWS_AS((dsp::Fir{dsp::lowpass_kernel(5, 1000.0, 100.0), 0}), std::invalid_argument);
+  CHECK(dsp::Fir{dsp::lowpass_kernel(5, 1000.0, 100.0)}.decimation() == 1); // default
+}

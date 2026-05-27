@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 
@@ -18,7 +19,8 @@ private:
   std::filesystem::path output_;
   double carrier_{0.0}; // 0 => take the vision carrier from metadata
   double cutoff_{5.0e6}; // baseband low-pass corner
-  double slowdown_{1000.0}; // WAV is stamped at real sample_rate / this
+  std::size_t decimate_{1}; // keep one output sample per this many inputs
+  double slowdown_{1000.0}; // WAV is stamped at real output rate / this
   bool no_sound_trap_{false}; // disable the sound-carrier notch
   double sound_q_{10.0}; // sound-trap notch Q
 };

@@ -26,10 +26,10 @@ void envelope_magnitude(const float *__restrict i, const float *__restrict q, fl
 }
 } // namespace
 
-AmEnvelope::AmEnvelope(
-    double sample_rate_hz, double carrier_hz, double cutoff_hz, std::size_t num_taps, dsp::Window window) :
-    i_filter_{dsp::lowpass_kernel(num_taps, sample_rate_hz, cutoff_hz, window)},
-    q_filter_{dsp::lowpass_kernel(num_taps, sample_rate_hz, cutoff_hz, window)} {
+AmEnvelope::AmEnvelope(double sample_rate_hz, double carrier_hz, double cutoff_hz, std::size_t num_taps,
+    dsp::Window window, std::size_t decimation) :
+    i_filter_{dsp::lowpass_kernel(num_taps, sample_rate_hz, cutoff_hz, window), decimation},
+    q_filter_{dsp::lowpass_kernel(num_taps, sample_rate_hz, cutoff_hz, window), decimation} {
   // Mixing by e^{-i*omega} shifts +carrier down to DC, one step per sample.
   const double omega = two_pi * carrier_hz / sample_rate_hz;
   step_ = std::polar(1.0, -omega);

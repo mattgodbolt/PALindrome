@@ -48,7 +48,8 @@ void DemodCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(output_, "file")["-o"]["--output"]("Output WAV (default: <recording>.wav)"))
           .add_argument(lyra::opt(carrier_, "hz")["--carrier"]("Carrier Hz (default: rx888:vision_if_hz)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz (default 5e6)"))
-          .add_argument(lyra::opt(slowdown_, "factor")["--slowdown"]("Stamp WAV rate as real/factor (default 1000)"))
+          .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 output sample per N inputs (default 1)"))
+          .add_argument(lyra::opt(slowdown_, "factor")["--slowdown"]("Stamp WAV rate as output/factor (default 1000)"))
           .add_argument(lyra::opt(no_sound_trap_)["--no-sound-trap"]("Disable the sound-carrier notch"))
           .add_argument(lyra::opt(sound_q_, "q")["--sound-q"]("Sound-trap notch Q (default 10)"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to demodulate (e.g. corpus/alex_kidd)")));
@@ -87,6 +88,16 @@ int DemodCommand::run() const {
     }
   }
 
+  if (decimate_ < 1) {
+    std::println(std::cerr, "demod: --decimate must be >= 1");
+    return 1;
+  }
+  // Decimation folds anything above the decimated Nyquist back into band; the
+  // low-pass must clear it. Warn rather than fail — it's a quality call.
+  if (const double decimated_nyquist = fs / (2.0 * static_cast<double>(decimate_)); cutoff_ >= decimated_nyquist)
+    std::println(std::cerr, "demod: warning: cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing",
+        cutoff_ / 1e6, decimated_nyquist / 1e6);
+
   // IF traps applied (in order) before detection, mirroring a TV's IF strip.
   std::vector<Stage<dsp::Biquad>> traps;
   std::vector<std::string> trap_notes;
@@ -110,14 +121,15 @@ int DemodCommand::run() const {
     return 1;
   }
 
-  demod::AmEnvelope envelope{fs, carrier, cutoff_};
+  demod::AmEnvelope envelope{fs, carrier, cutoff_, 127, dsp::Window::Hamming, decimate_};
   std::vector<float> out;
-  // One output sample per input int16. Reserve the whole lot up front: `out`
-  // accumulates across every block, and the stages reserve to an exact size, so
-  // without this each block would reallocate and recopy all prior samples.
+  // One output sample per `decimate_` input int16s. Reserve the whole lot up
+  // front: `out` accumulates across every block, and the stages reserve to an
+  // exact size, so without this each block would reallocate and recopy all
+  // prior samples.
   std::error_code size_ec;
   if (const auto bytes = std::filesystem::file_size(data_path, size_ec); !size_ec)
-    out.reserve(bytes / sizeof(std::int16_t));
+    out.reserve(bytes / sizeof(std::int16_t) / decimate_ + 1);
   std::vector<std::int16_t> raw(std::size_t{1} << 16);
   std::vector<float> block;
   while (data) {
@@ -148,7 +160,10 @@ int DemodCommand::run() const {
   auto output = output_;
   if (output.empty())
     output = std::format("{}.wav", meta_path.stem().string());
-  const auto wav_rate = static_cast<std::uint32_t>(fs / slowdown_);
+  // Real output rate is the input rate after decimation; the slowdown then maps
+  // that to the stamped WAV rate, so the Audacity timeline is invariant to N.
+  const double output_rate = fs / static_cast<double>(decimate_);
+  const auto wav_rate = static_cast<std::uint32_t>(output_rate / slowdown_);
   try {
     wav::write_mono_float(output, out, wav_rate);
   }
@@ -160,8 +175,9 @@ int DemodCommand::run() const {
   std::string traps_desc = trap_notes.empty() ? "no traps" : "traps: ";
   for (std::size_t t = 0; t < trap_notes.size(); ++t)
     traps_desc += (t ? ", " : "") + trap_notes[t];
-  std::println("wrote {} ({} samples @ {} Hz = real/{:g}); carrier {:.4f} MHz, cutoff {:g} MHz; {}", output.string(),
-      out.size(), wav_rate, slowdown_, carrier / 1e6, cutoff_ / 1e6, traps_desc);
+  std::println(
+      "wrote {} ({} samples @ {} Hz = real/{:g} after /{} decimation); carrier {:.4f} MHz, cutoff {:g} MHz; {}",
+      output.string(), out.size(), wav_rate, slowdown_, decimate_, carrier / 1e6, cutoff_ / 1e6, traps_desc);
   return 0;
 }
 

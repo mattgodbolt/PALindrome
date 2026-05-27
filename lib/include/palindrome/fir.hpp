@@ -20,17 +20,29 @@ enum class Window { Hamming, Blackman };
 
 class Fir {
 public:
-  explicit Fir(std::vector<float> taps);
+  // A decimating FIR: with `decimation` D it keeps one of every D output
+  // samples (output rate = input rate / D), and — being a *decimating* filter —
+  // only evaluates the convolution at the kept positions, so it costs ~D times
+  // less than filtering at full rate. The caller is responsible for the
+  // anti-alias budget: the kernel must suppress everything above the decimated
+  // Nyquist (input_rate / (2*D)) or it folds back into band. Throws
+  // std::invalid_argument on empty taps or decimation < 1.
+  explicit Fir(std::vector<float> taps, std::size_t decimation = 1);
 
-  // Filter `in`, appending one output sample per input sample to `out`.
+  // Filter `in`, appending one output sample per `decimation()` input samples to
+  // `out`. The decimation phase carries across calls, so the result is
+  // independent of how the input is chunked.
   void process(std::span<const float> in, std::vector<float> &out);
 
   [[nodiscard]] std::size_t size() const { return taps_.size(); }
+  [[nodiscard]] std::size_t decimation() const { return decimation_; }
 
 private:
   std::vector<float> taps_; // reversed, so a window dot product runs forward
   std::vector<float> history_; // last size()-1 input samples, carried across calls
   std::vector<float> window_; // scratch: history followed by the current block
+  std::size_t decimation_; // keep one output per this many inputs
+  std::size_t phase_{}; // inputs still to skip before the next kept output
 };
 
 } // namespace palindrome::dsp

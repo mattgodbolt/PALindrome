@@ -66,9 +66,11 @@ std::vector<float> lowpass_kernel(std::size_t num_taps, double sample_rate_hz, d
   return taps;
 }
 
-Fir::Fir(std::vector<float> taps) : taps_{std::move(taps)} {
+Fir::Fir(std::vector<float> taps, std::size_t decimation) : taps_{std::move(taps)}, decimation_{decimation} {
   if (taps_.empty())
     throw std::invalid_argument("FIR needs at least one tap");
+  if (decimation_ == 0)
+    throw std::invalid_argument("FIR decimation must be >= 1");
   // Reverse once so the per-output convolution is a forward walk over a
   // contiguous window (oldest sample first), rather than a modulo ring buffer.
   std::ranges::reverse(taps_);
@@ -88,9 +90,15 @@ void Fir::process(std::span<const float> in, std::vector<float> &out) {
   std::ranges::copy(history_, window_.begin());
   std::ranges::copy(in, window_.begin() + static_cast<std::ptrdiff_t>(carry));
 
-  out.reserve(out.size() + m);
-  for (std::size_t j = 0; j < m; ++j)
+  // Evaluate the convolution only at kept positions: start `phase_` samples into
+  // the block, then stride by the decimation factor. `phase_` carries whatever
+  // skip is left over into the next block, so chunking can't shift the grid.
+  const std::size_t outputs = (m > phase_) ? (m - phase_ + decimation_ - 1) / decimation_ : 0;
+  out.reserve(out.size() + outputs);
+  std::size_t j = phase_;
+  for (; j < m; j += decimation_)
     out.push_back(convolve(taps_.data(), window_.data() + j, n));
+  phase_ = j - m;
 
   // Carry the last size()-1 samples into the next call.
   if (carry != 0)
