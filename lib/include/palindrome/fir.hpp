@@ -28,9 +28,9 @@ public:
   [[nodiscard]] std::size_t size() const { return taps_.size(); }
 
 private:
-  std::vector<float> taps_;
-  std::vector<float> history_; // ring buffer, length == taps_.size()
-  std::size_t head_{}; // index in history_ of the most recent sample
+  std::vector<float> taps_; // reversed, so a window dot product runs forward
+  std::vector<float> history_; // last size()-1 input samples, carried across calls
+  std::vector<float> window_; // scratch: history followed by the current block
 };
 
 } // namespace palindrome::dsp

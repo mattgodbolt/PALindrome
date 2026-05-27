@@ -13,6 +13,7 @@ include(CPM)
 include(dependency)
 include(catch2)
 include(pedantic)
+include(arch)
 
 # Use the faster lld linker when the compiler can find it.
 try_compile(CAN_USE_LLD SOURCE_FROM_CONTENT "test.cpp" "int main() { }" LINK_OPTIONS "-fuse-ld=lld")

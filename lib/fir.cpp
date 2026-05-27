@@ -1,5 +1,6 @@
 #include "palindrome/fir.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <numbers>
 #include <stdexcept>
@@ -9,6 +10,20 @@ namespace palindrome::dsp {
 
 namespace {
 constexpr double pi = std::numbers::pi;
+
+// One output sample: the dot product of the taps with `window`. Reassociation
+// is enabled for just this function so the sum vectorises into 8-wide FMA lanes;
+// no other floating-point relaxations apply. The accumulator is float, trading
+// precision for throughput: error grows with tap count (~n*eps worst case), so
+// this suits moderate-length, amplitude-limited filters rather than long or
+// ill-conditioned ones that would want a double accumulator.
+[[gnu::optimize("-fassociative-math", "-fno-signed-zeros", "-fno-trapping-math")]]
+float convolve(const float *taps, const float *window, std::size_t n) {
+  float acc = 0.0f;
+  for (std::size_t k = 0; k < n; ++k)
+    acc += taps[k] * window[k];
+  return acc;
+}
 
 double window_value(Window window, double n, double m) {
   if (m == 0.0)
@@ -48,24 +63,32 @@ std::vector<float> lowpass_kernel(std::size_t num_taps, double sample_rate_hz, d
 Fir::Fir(std::vector<float> taps) : taps_{std::move(taps)} {
   if (taps_.empty())
     throw std::invalid_argument("FIR needs at least one tap");
-  history_.assign(taps_.size(), 0.0f);
+  // Reverse once so the per-output convolution is a forward walk over a
+  // contiguous window (oldest sample first), rather than a modulo ring buffer.
+  std::ranges::reverse(taps_);
+  history_.assign(taps_.size() - 1, 0.0f);
 }
 
 void Fir::process(std::span<const float> in, std::vector<float> &out) {
-  out.reserve(out.size() + in.size());
   const std::size_t n = taps_.size();
-  for (const float sample: in) {
-    history_[head_] = sample;
-    // Convolve: taps_[0] weights the newest sample, walking back through history.
-    double acc = 0.0;
-    std::size_t idx = head_;
-    for (std::size_t k = 0; k < n; ++k) {
-      acc += static_cast<double>(taps_[k]) * static_cast<double>(history_[idx]);
-      idx = (idx == 0) ? n - 1 : idx - 1;
-    }
-    out.push_back(static_cast<float>(acc));
-    head_ = (head_ + 1 == n) ? 0 : head_ + 1;
-  }
+  const std::size_t m = in.size();
+  if (m == 0)
+    return;
+
+  // Lay the carried tail and this block out contiguously, so each output is a
+  // modulo-free sliding dot product over `window_`.
+  const std::size_t carry = history_.size();
+  window_.resize(carry + m);
+  std::ranges::copy(history_, window_.begin());
+  std::ranges::copy(in, window_.begin() + static_cast<std::ptrdiff_t>(carry));
+
+  out.reserve(out.size() + m);
+  for (std::size_t j = 0; j < m; ++j)
+    out.push_back(convolve(taps_.data(), window_.data() + j, n));
+
+  // Carry the last size()-1 samples into the next call.
+  if (carry != 0)
+    std::ranges::copy(window_.end() - static_cast<std::ptrdiff_t>(carry), window_.end(), history_.begin());
 }
 
 } // namespace palindrome::dsp

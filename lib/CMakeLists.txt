@@ -24,4 +24,4 @@ target_sources(palindrome
         include/palindrome/dc_blocker.hpp
         include/palindrome/wav.hpp)
 
-target_link_libraries(palindrome PUBLIC opt::cxx_std nlohmann_json::nlohmann_json PRIVATE opt::pedantic)
+target_link_libraries(palindrome PUBLIC opt::cxx_std nlohmann_json::nlohmann_json PRIVATE opt::pedantic opt::arch)

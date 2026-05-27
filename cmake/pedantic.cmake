@@ -1,4 +1,4 @@
-# Two interface libraries that targets can link against to opt in to:
+# Interface libraries that targets can link against to opt in to:
 #   opt::pedantic  - a strict warning set, warnings-as-errors
 #   opt::cxx_std   - the project's C++ standard (C++26)
 #
