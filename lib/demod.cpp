@@ -27,24 +27,27 @@ AmEnvelope::AmEnvelope(double sample_rate_hz, double carrier_hz, double cutoff_h
     i_filter_{dsp::lowpass_kernel(num_taps, sample_rate_hz, cutoff_hz, window), decimation},
     q_filter_{dsp::lowpass_kernel(num_taps, sample_rate_hz, cutoff_hz, window), decimation} {}
 
-void AmEnvelope::process(std::span<const float> in, std::vector<float> &out) {
-  // Down-convert to baseband I/Q for the block.
-  mixed_i_.clear();
-  mixed_q_.clear();
-  mixer_.process(in, mixed_i_, mixed_q_);
+void AmEnvelope::prepare(std::size_t max_in) {
+  mixer_.prepare(max_in);
+  i_filter_.prepare(max_in);
+  q_filter_.prepare(max_in);
+  out_.reserve(i_filter_.max_output_for(max_in));
+}
 
-  filtered_i_.clear();
-  filtered_q_.clear();
-  i_filter_.process(mixed_i_, filtered_i_);
-  q_filter_.process(mixed_q_, filtered_q_);
+std::span<const float> AmEnvelope::process(std::span<const float> in) {
+  // Down-convert to baseband I/Q, then low-pass each plane.
+  const dsp::Mixer::Iq mixed = mixer_.process(in);
+  const std::span<const float> filtered_i = i_filter_.process(mixed.i);
+  const std::span<const float> filtered_q = q_filter_.process(mixed.q);
 
   // A real carrier of amplitude A lands as a baseband component of magnitude
   // A/2, so scale by 2 to recover A. std::hypot's overflow guarding is needless
   // here (the I/Q are bounded), and plain sqrt of the sum of squares vectorises
   // into an elementwise store.
-  const std::size_t n = filtered_i_.size();
-  out.resize(out.size() + n);
-  envelope_magnitude(filtered_i_.data(), filtered_q_.data(), out.data() + (out.size() - n), n);
+  const std::size_t n = filtered_i.size();
+  out_.reserve(n);
+  envelope_magnitude(filtered_i.data(), filtered_q.data(), out_.write_n(n).data(), n);
+  return out_.view();
 }
 
 } // namespace palindrome::demod

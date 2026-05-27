@@ -17,6 +17,9 @@ target_sources(palindrome
         TYPE HEADERS
         BASE_DIRS include
         FILES
+        include/palindrome/buffer.hpp
+        include/palindrome/pipeline.hpp
+        include/palindrome/restrict.hpp
         include/palindrome/sigmf.hpp
         include/palindrome/demod.hpp
         include/palindrome/fir.hpp

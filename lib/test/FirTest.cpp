@@ -53,8 +53,7 @@ TEST_CASE("Fir convolves an impulse to its kernel") {
 
   std::vector<float> impulse(64, 0.0f);
   impulse[0] = 1.0f;
-  std::vector<float> out;
-  fir.process(impulse, out);
+  const std::span<const float> out = fir.process(impulse);
 
   REQUIRE(out.size() == impulse.size());
   for (std::size_t k = 0; k < taps.size(); ++k)
@@ -65,8 +64,7 @@ TEST_CASE("Fir passes DC at unity gain") {
   const auto taps = dsp::lowpass_kernel(31, 1000.0, 100.0);
   dsp::Fir fir{taps};
   const std::vector<float> dc(200, 1.0f);
-  std::vector<float> out;
-  fir.process(dc, out);
+  const std::span<const float> out = fir.process(dc);
   CHECK_THAT(out.back(), WithinAbs(1.0, 1e-5));
 }
 
@@ -74,15 +72,13 @@ TEST_CASE("Fir passes in-band tones and rejects out-of-band tones") {
   constexpr double fs = 1000.0;
   constexpr std::size_t n = 4000;
   dsp::Fir fir{dsp::lowpass_kernel(101, fs, 100.0)};
+  const std::span<const float> pass_out = fir.process(tone(fs, 20.0, n)); // well inside the passband
 
-  std::vector<float> pass_out;
-  fir.process(tone(fs, 20.0, n), pass_out); // well inside the passband
-  std::vector<float> stop_out;
-  dsp::Fir{dsp::lowpass_kernel(101, fs, 100.0)}.process(tone(fs, 300.0, n), stop_out); // deep in the stopband
+  dsp::Fir stop_fir{dsp::lowpass_kernel(101, fs, 100.0)};
+  const std::span<const float> stop_out = stop_fir.process(tone(fs, 300.0, n)); // deep in the stopband
 
-  const auto settled = std::span{pass_out}.subspan(200);
-  CHECK_THAT(rms(settled), WithinRel(1.0 / std::sqrt(2.0), 0.02)); // ~unchanged
-  CHECK(rms(std::span{stop_out}.subspan(200)) < 0.02); // strongly attenuated
+  CHECK_THAT(rms(pass_out.subspan(200)), WithinRel(1.0 / std::sqrt(2.0), 0.02)); // ~unchanged
+  CHECK(rms(stop_out.subspan(200)) < 0.02); // strongly attenuated
 }
 
 TEST_CASE("Fir streams identically regardless of block size") {
@@ -90,13 +86,16 @@ TEST_CASE("Fir streams identically regardless of block size") {
   const auto x = tone(fs, 40.0, 2000);
   const auto taps = dsp::lowpass_kernel(57, fs, 120.0);
 
-  std::vector<float> whole;
-  dsp::Fir{taps}.process(x, whole);
+  dsp::Fir whole_fir{taps};
+  const std::span<const float> whole = whole_fir.process(x);
 
   std::vector<float> chunked;
   dsp::Fir dut{taps};
-  for (std::size_t off = 0; off < x.size(); off += 91) // ragged blocks
-    dut.process(std::span{x}.subspan(off, std::min<std::size_t>(91, x.size() - off)), chunked);
+  for (std::size_t off = 0; off < x.size(); off += 91) { // ragged blocks
+    const std::span<const float> piece =
+        dut.process(std::span{x}.subspan(off, std::min<std::size_t>(91, x.size() - off)));
+    chunked.insert(chunked.end(), piece.begin(), piece.end());
+  }
 
   REQUIRE(whole.size() == chunked.size());
   for (std::size_t k = 0; k < whole.size(); ++k)
@@ -108,11 +107,10 @@ TEST_CASE("decimating FIR keeps exactly every Nth full-rate output") {
   const auto taps = dsp::lowpass_kernel(31, fs, 100.0);
   const auto x = tone(fs, 40.0, 500);
 
-  std::vector<float> full;
-  dsp::Fir{taps, 1}.process(x, full);
-  std::vector<float> dec;
+  dsp::Fir full_fir{taps, 1};
+  const std::span<const float> full = full_fir.process(x);
   dsp::Fir dut{taps, 3};
-  dut.process(x, dec);
+  const std::span<const float> dec = dut.process(x);
 
   CHECK(dut.decimation() == 3);
   REQUIRE(dec.size() == (full.size() + 2) / 3); // ceil(500 / 3)
@@ -125,17 +123,51 @@ TEST_CASE("decimating FIR streams identically regardless of block size") {
   const auto taps = dsp::lowpass_kernel(31, fs, 100.0);
   const auto x = tone(fs, 50.0, 777); // not a multiple of the decimation or block size
 
-  std::vector<float> whole;
-  dsp::Fir{taps, 4}.process(x, whole);
+  dsp::Fir whole_fir{taps, 4};
+  const std::span<const float> whole = whole_fir.process(x);
 
   std::vector<float> chunked;
   dsp::Fir dut{taps, 4};
-  for (std::size_t off = 0; off < x.size(); off += 50) // ragged blocks straddle the phase
-    dut.process(std::span{x}.subspan(off, std::min<std::size_t>(50, x.size() - off)), chunked);
+  for (std::size_t off = 0; off < x.size(); off += 50) { // ragged blocks straddle the phase
+    const std::span<const float> piece =
+        dut.process(std::span{x}.subspan(off, std::min<std::size_t>(50, x.size() - off)));
+    chunked.insert(chunked.end(), piece.begin(), piece.end());
+  }
 
   REQUIRE(whole.size() == chunked.size());
   for (std::size_t k = 0; k < whole.size(); ++k)
     CHECK(whole[k] == chunked[k]);
+}
+
+TEST_CASE("max_output_for is a phase-independent upper bound on every call") {
+  const auto taps = dsp::lowpass_kernel(31, 1000.0, 100.0);
+  dsp::Fir dut{taps, 3}; // decimating, so phase carries between calls
+  CHECK(dut.input_multiple() == 3);
+  CHECK(dut.max_output_for(30) == 10); // ceil(30 / 3)
+  CHECK(dut.max_output_for(31) == 11);
+
+  // No actual call, at any phase, may exceed the bound used to size storage.
+  const auto x = tone(1000.0, 50.0, 1000);
+  for (std::size_t off = 0; off < x.size(); off += 50) {
+    const auto block = std::span{x}.subspan(off, std::min<std::size_t>(50, x.size() - off));
+    CHECK(dut.process(block).size() <= dut.max_output_for(block.size()));
+  }
+}
+
+TEST_CASE("prepare lets a budgeted block stream without changing the result") {
+  const auto taps = dsp::lowpass_kernel(31, 1000.0, 100.0);
+  const auto x = tone(1000.0, 40.0, 600);
+
+  dsp::Fir plain{taps};
+  const std::span<const float> ref = plain.process(x);
+
+  dsp::Fir prepped{taps};
+  prepped.prepare(x.size());
+  const std::span<const float> got = prepped.process(x);
+
+  REQUIRE(got.size() == ref.size());
+  for (std::size_t k = 0; k < got.size(); ++k)
+    CHECK(got[k] == ref[k]);
 }
 
 TEST_CASE("Fir rejects bad construction") {

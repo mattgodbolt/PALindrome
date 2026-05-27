@@ -1,5 +1,7 @@
 #include "palindrome/biquad.hpp"
 
+#include "palindrome/restrict.hpp"
+
 #include <cmath>
 #include <numbers>
 #include <stdexcept>
@@ -12,15 +14,23 @@ constexpr double two_pi = 2.0 * std::numbers::pi;
 
 Biquad::Biquad(double b0, double b1, double b2, double a1, double a2) : b0_{b0}, b1_{b1}, b2_{b2}, a1_{a1}, a2_{a2} {}
 
-void Biquad::process(std::span<const float> in, std::vector<float> &out) {
-  out.reserve(out.size() + in.size());
-  for (const float sample: in) {
-    const double x = sample;
-    const double y = b0_ * x + z1_;
-    z1_ = b1_ * x - a1_ * y + z2_;
-    z2_ = b2_ * x - a2_ * y;
-    out.push_back(static_cast<float>(y));
+void Biquad::prepare(std::size_t max_in) { out_.reserve(max_in); }
+
+std::span<const float> Biquad::process(std::span<const float> in) {
+  const std::size_t n = in.size();
+  out_.reserve(n);
+  const float *PAL_RESTRICT x = in.data();
+  float *PAL_RESTRICT y = out_.write_n(n).data();
+  // Transposed direct-form II: the state recurrence is serial (no vectorising),
+  // so the win over push_back is the flat counted store into reserved storage.
+  for (std::size_t k = 0; k < n; ++k) {
+    const double xk = x[k];
+    const double yk = b0_ * xk + z1_;
+    z1_ = b1_ * xk - a1_ * yk + z2_;
+    z2_ = b2_ * xk - a2_ * yk;
+    y[k] = static_cast<float>(yk);
   }
+  return out_.view();
 }
 
 void Biquad::reset() { z1_ = z2_ = 0.0; }

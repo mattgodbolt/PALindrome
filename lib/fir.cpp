@@ -1,5 +1,7 @@
 #include "palindrome/fir.hpp"
 
+#include "palindrome/restrict.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <numbers>
@@ -77,32 +79,44 @@ Fir::Fir(std::vector<float> taps, std::size_t decimation) : taps_{std::move(taps
   history_.assign(taps_.size() - 1, 0.0f);
 }
 
-void Fir::process(std::span<const float> in, std::vector<float> &out) {
+void Fir::prepare(std::size_t max_in) {
+  window_.reserve(history_.size() + max_in);
+  out_.reserve(max_output_for(max_in));
+}
+
+std::span<const float> Fir::process(std::span<const float> in) {
   const std::size_t n = taps_.size();
   const std::size_t m = in.size();
   if (m == 0)
-    return;
+    return {};
 
   // Lay the carried tail and this block out contiguously, so each output is a
-  // modulo-free sliding dot product over `window_`.
+  // modulo-free sliding dot product over `window_`. (reserve is a no-op once
+  // prepare() has run; only an unbudgeted block grows it.)
   const std::size_t carry = history_.size();
-  window_.resize(carry + m);
-  std::ranges::copy(history_, window_.begin());
-  std::ranges::copy(in, window_.begin() + static_cast<std::ptrdiff_t>(carry));
+  window_.reserve(carry + m);
+  const std::span<float> window = window_.write_n(carry + m);
+  std::ranges::copy(history_, window.begin());
+  std::ranges::copy(in, window.begin() + static_cast<std::ptrdiff_t>(carry));
 
   // Evaluate the convolution only at kept positions: start `phase_` samples into
   // the block, then stride by the decimation factor. `phase_` carries whatever
   // skip is left over into the next block, so chunking can't shift the grid.
   const std::size_t outputs = (m > phase_) ? (m - phase_ + decimation_ - 1) / decimation_ : 0;
-  out.reserve(out.size() + outputs);
+  out_.reserve(outputs);
+  float *PAL_RESTRICT y = out_.write_n(outputs).data();
+  const float *PAL_RESTRICT taps = taps_.data();
+  const float *PAL_RESTRICT w = window.data();
   std::size_t j = phase_;
-  for (; j < m; j += decimation_)
-    out.push_back(convolve(taps_.data(), window_.data() + j, n));
+  for (std::size_t k = 0; k < outputs; ++k, j += decimation_)
+    y[k] = convolve(taps, w + j, n);
   phase_ = j - m;
 
   // Carry the last size()-1 samples into the next call.
   if (carry != 0)
-    std::ranges::copy(window_.end() - static_cast<std::ptrdiff_t>(carry), window_.end(), history_.begin());
+    std::ranges::copy(window.end() - static_cast<std::ptrdiff_t>(carry), window.end(), history_.begin());
+
+  return out_.view();
 }
 
 } // namespace palindrome::dsp

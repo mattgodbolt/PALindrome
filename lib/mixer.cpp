@@ -35,14 +35,18 @@ void Mixer::mix_group(const float *__restrict x, float *__restrict i, float *__r
   }
 }
 
-void Mixer::process(std::span<const float> in, std::vector<float> &i, std::vector<float> &q) {
+void Mixer::prepare(std::size_t max_in) {
+  i_out_.reserve(max_in);
+  q_out_.reserve(max_in);
+}
+
+Mixer::Iq Mixer::process(std::span<const float> in) {
   const std::size_t n = in.size();
-  const std::size_t off = i.size();
-  i.resize(off + n);
-  q.resize(off + n);
+  i_out_.reserve(n);
+  q_out_.reserve(n);
   const float *x = in.data();
-  float *ip = i.data() + off;
-  float *qp = q.data() + off;
+  float *ip = i_out_.write_n(n).data();
+  float *qp = q_out_.write_n(n).data();
   const float *rre = rot_re_.data();
   const float *rim = rot_im_.data();
 
@@ -68,6 +72,8 @@ void Mixer::process(std::span<const float> in, std::vector<float> &i, std::vecto
   }
   for (std::size_t l = 0; l < r; ++l)
     base_ *= step_;
+
+  return {i_out_.view(), q_out_.view()};
 }
 
 } // namespace palindrome::dsp

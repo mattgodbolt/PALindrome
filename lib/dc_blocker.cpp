@@ -1,5 +1,7 @@
 #include "palindrome/dc_blocker.hpp"
 
+#include "palindrome/restrict.hpp"
+
 #include <stdexcept>
 
 namespace palindrome::dsp {
@@ -9,15 +11,23 @@ DcBlocker::DcBlocker(double pole) : pole_{pole} {
     throw std::invalid_argument("DC blocker pole must be in (0, 1)");
 }
 
-void DcBlocker::process(std::span<const float> in, std::vector<float> &out) {
-  out.reserve(out.size() + in.size());
-  for (const float sample: in) {
-    const double x = sample;
-    const double y = x - prev_in_ + pole_ * prev_out_;
-    prev_in_ = x;
-    prev_out_ = y;
-    out.push_back(static_cast<float>(y));
+void DcBlocker::prepare(std::size_t max_in) { out_.reserve(max_in); }
+
+std::span<const float> DcBlocker::process(std::span<const float> in) {
+  const std::size_t n = in.size();
+  out_.reserve(n);
+  const float *PAL_RESTRICT x = in.data();
+  float *PAL_RESTRICT y = out_.write_n(n).data();
+  // A one-pole IIR has a serial dependency that doesn't vectorise; the win over
+  // push_back is the flat counted store into pre-reserved storage.
+  for (std::size_t k = 0; k < n; ++k) {
+    const double xk = x[k];
+    const double yk = xk - prev_in_ + pole_ * prev_out_;
+    prev_in_ = xk;
+    prev_out_ = yk;
+    y[k] = static_cast<float>(yk);
   }
+  return out_.view();
 }
 
 void DcBlocker::reset() { prev_in_ = prev_out_ = 0.0; }

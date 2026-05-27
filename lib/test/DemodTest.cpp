@@ -44,11 +44,10 @@ TEST_CASE("AmEnvelope recovers the amplitude of an unmodulated carrier") {
   const auto x = am_signal(fs, carrier, 0.0, 0.0, amp, 5000);
 
   demod::AmEnvelope dut{fs, carrier, 10.0e3};
-  std::vector<float> out;
-  dut.process(x, out);
+  const std::span<const float> out = dut.process(x);
 
   // After the filter settles, the envelope should sit at the carrier amplitude.
-  const auto tail = std::span{out}.subspan(out.size() / 2);
+  const auto tail = out.subspan(out.size() / 2);
   const double mean = std::ranges::fold_left(tail, 0.0, std::plus{}) / static_cast<double>(tail.size());
   CHECK_THAT(mean, WithinAbs(amp, 0.02));
 }
@@ -63,12 +62,11 @@ TEST_CASE("AmEnvelope recovers a modulating tone") {
 
   // Carrier well above cutoff so the one-pole rejects the 2*carrier image.
   demod::AmEnvelope dut{fs, carrier, 10.0e3};
-  std::vector<float> out;
-  dut.process(x, out);
+  const std::span<const float> out = dut.process(x);
 
   // Over the settled tail the envelope should swing about `amp` with roughly
   // `depth` modulation, i.e. between amp*(1-depth) and amp*(1+depth).
-  const auto tail = std::span{out}.subspan(out.size() / 2);
+  const auto tail = out.subspan(out.size() / 2);
   const auto [lo, hi] = std::ranges::minmax(tail);
   const double mean = std::ranges::fold_left(tail, 0.0, std::plus{}) / static_cast<double>(tail.size());
   CHECK_THAT(mean, WithinAbs(amp, 0.05));
@@ -81,13 +79,16 @@ TEST_CASE("AmEnvelope streams identically regardless of block size") {
   constexpr double carrier = 80.0e3;
   const auto x = am_signal(fs, carrier, 1.0e3, 0.4, 0.7, 4096);
 
-  std::vector<float> whole;
-  demod::AmEnvelope{fs, carrier, 15.0e3}.process(x, whole);
+  demod::AmEnvelope whole_dut{fs, carrier, 15.0e3};
+  const std::span<const float> whole = whole_dut.process(x);
 
   std::vector<float> chunked;
   demod::AmEnvelope dut{fs, carrier, 15.0e3};
-  for (std::size_t off = 0; off < x.size(); off += 97) // deliberately ragged blocks
-    dut.process(std::span{x}.subspan(off, std::min<std::size_t>(97, x.size() - off)), chunked);
+  for (std::size_t off = 0; off < x.size(); off += 97) { // deliberately ragged blocks
+    const std::span<const float> piece =
+        dut.process(std::span{x}.subspan(off, std::min<std::size_t>(97, x.size() - off)));
+    chunked.insert(chunked.end(), piece.begin(), piece.end());
+  }
 
   REQUIRE(whole.size() == chunked.size());
   // The FIRs carry state bit-exactly, but the block oscillator (dsp::Mixer)

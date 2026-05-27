@@ -40,8 +40,7 @@ TEST_CASE("DcBlocker removes a constant offset") {
   // A faster pole (corner ~160 Hz at 1 MS/s) settles within these samples.
   dsp::DcBlocker dut{0.999};
   const std::vector<float> dc(20000, 0.7f);
-  std::vector<float> out;
-  dut.process(dc, out);
+  const std::span<const float> out = dut.process(dc);
   // Once settled, the steady output of a constant input is essentially zero.
   CHECK(std::abs(out.back()) < 1e-3f);
 }
@@ -50,9 +49,9 @@ TEST_CASE("DcBlocker passes a tone well above the corner") {
   constexpr double fs = 1.0e6;
   constexpr std::size_t n = 20000;
   // A tone with a fat DC pedestal: the tone survives, the pedestal does not.
-  std::vector<float> out;
-  dsp::DcBlocker{0.999}.process(tone(fs, 50.0e3, n, 0.5f), out);
-  const auto tail = std::span{out}.subspan(n / 2);
+  dsp::DcBlocker dut{0.999};
+  const std::span<const float> out = dut.process(tone(fs, 50.0e3, n, 0.5f));
+  const auto tail = out.subspan(n / 2);
   CHECK_THAT(rms(tail), WithinRel(1.0 / std::sqrt(2.0), 0.01)); // unit-amplitude sine RMS
   const double mean = std::ranges::fold_left(tail, 0.0, std::plus{}) / static_cast<double>(tail.size());
   CHECK(std::abs(mean) < 1e-3); // pedestal gone
@@ -62,13 +61,16 @@ TEST_CASE("DcBlocker streams identically regardless of block size") {
   constexpr double fs = 1.0e6;
   const auto x = tone(fs, 30.0e3, 4096, 0.3f);
 
-  std::vector<float> whole;
-  dsp::DcBlocker{}.process(x, whole);
+  dsp::DcBlocker whole_dut;
+  const std::span<const float> whole = whole_dut.process(x);
 
   std::vector<float> chunked;
   dsp::DcBlocker dut;
-  for (std::size_t off = 0; off < x.size(); off += 97) // ragged blocks
-    dut.process(std::span{x}.subspan(off, std::min<std::size_t>(97, x.size() - off)), chunked);
+  for (std::size_t off = 0; off < x.size(); off += 97) { // ragged blocks
+    const std::span<const float> piece =
+        dut.process(std::span{x}.subspan(off, std::min<std::size_t>(97, x.size() - off)));
+    chunked.insert(chunked.end(), piece.begin(), piece.end());
+  }
 
   REQUIRE(whole.size() == chunked.size());
   for (std::size_t k = 0; k < whole.size(); ++k)

@@ -1,7 +1,9 @@
 #pragma once
 
+#include "palindrome/buffer.hpp"
+
+#include <cstddef>
 #include <span>
-#include <vector>
 
 // Second-order IIR (biquad) filtering: a streaming, stateful section plus
 // factory helpers for the standard responses. State carries across process()
@@ -14,14 +16,23 @@ public:
   //   y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
   Biquad(double b0, double b1, double b2, double a1, double a2);
 
-  // Filter `in`, appending one output sample per input sample to `out`.
-  void process(std::span<const float> in, std::vector<float> &out);
+  // Budget internal storage for blocks of up to `max_in` samples (one-time;
+  // process() also grows lazily, so this is an optimisation, not a requirement).
+  void prepare(std::size_t max_in);
+
+  // Filter `in`, returning a view of one output sample per input sample. The
+  // returned span is owned by the filter and valid only until the next call.
+  [[nodiscard]] std::span<const float> process(std::span<const float> in);
+
+  [[nodiscard]] std::size_t max_output_for(std::size_t n_in) const noexcept { return n_in; }
+  [[nodiscard]] std::size_t input_multiple() const noexcept { return 1; }
 
   void reset();
 
 private:
   double b0_, b1_, b2_, a1_, a2_;
   double z1_{}, z2_{}; // transposed direct-form II state
+  Buffer<float> out_; // owned output, reused across calls
 };
 
 // A second-order notch (band-reject) at center_hz with quality factor q; higher

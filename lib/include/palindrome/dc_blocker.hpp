@@ -1,7 +1,9 @@
 #pragma once
 
+#include "palindrome/buffer.hpp"
+
+#include <cstddef>
 #include <span>
-#include <vector>
 
 // A one-pole DC blocker (high-pass). Like the other DSP stages, process()
 // carries its state across calls, so the output is independent of how the input
@@ -18,8 +20,16 @@ public:
   // corner. Throws std::invalid_argument if R is outside (0, 1).
   explicit DcBlocker(double pole = 0.9999);
 
-  // Filter `in`, appending one output sample per input sample to `out`.
-  void process(std::span<const float> in, std::vector<float> &out);
+  // Budget internal storage for blocks of up to `max_in` samples (one-time;
+  // process() also grows lazily, so this is an optimisation, not a requirement).
+  void prepare(std::size_t max_in);
+
+  // Filter `in`, returning a view of one output sample per input sample. The
+  // returned span is owned by the filter and valid only until the next call.
+  [[nodiscard]] std::span<const float> process(std::span<const float> in);
+
+  [[nodiscard]] std::size_t max_output_for(std::size_t n_in) const noexcept { return n_in; }
+  [[nodiscard]] std::size_t input_multiple() const noexcept { return 1; }
 
   void reset();
 
@@ -27,6 +37,7 @@ private:
   double pole_;
   double prev_in_{};
   double prev_out_{};
+  Buffer<float> out_; // owned output, reused across calls
 };
 
 } // namespace palindrome::dsp

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "palindrome/buffer.hpp"
+
 #include <cstddef>
 #include <span>
 #include <vector>
@@ -29,18 +31,37 @@ public:
   // std::invalid_argument on empty taps or decimation < 1.
   explicit Fir(std::vector<float> taps, std::size_t decimation = 1);
 
-  // Filter `in`, appending one output sample per `decimation()` input samples to
-  // `out`. The decimation phase carries across calls, so the result is
-  // independent of how the input is chunked.
-  void process(std::span<const float> in, std::vector<float> &out);
+  // Budget internal storage for input blocks of up to `max_in` samples, so the
+  // streaming path never allocates. One-time setup; calling again only grows.
+  // process() also grows lazily, so this is an optimisation, not a requirement.
+  void prepare(std::size_t max_in);
 
-  [[nodiscard]] std::size_t size() const { return taps_.size(); }
-  [[nodiscard]] std::size_t decimation() const { return decimation_; }
+  // Filter `in`, returning a view of one output sample per `decimation()` input
+  // samples. The decimation phase carries across calls, so the result is
+  // independent of how the input is chunked. The returned span is owned by the
+  // filter and valid only until the next process() call.
+  [[nodiscard]] std::span<const float> process(std::span<const float> in);
+
+  // Upper bound on the outputs a single process() call can emit for `n_in`
+  // inputs, regardless of the carried decimation phase -- i.e. the count when
+  // the phase is zero, ceil(n_in / decimation). Use this to size storage; the
+  // exact per-call count (phase-dependent) is process()'s own business and is
+  // reported by the size of the span it returns.
+  [[nodiscard]] std::size_t max_output_for(std::size_t n_in) const noexcept {
+    return (n_in + decimation_ - 1) / decimation_;
+  }
+
+  // The input block size this filter prefers: a multiple of decimation() keeps
+  // every block aligned to the decimation grid (phase stays zero).
+  [[nodiscard]] std::size_t input_multiple() const noexcept { return decimation_; }
+  [[nodiscard]] std::size_t size() const noexcept { return taps_.size(); }
+  [[nodiscard]] std::size_t decimation() const noexcept { return decimation_; }
 
 private:
   std::vector<float> taps_; // reversed, so a window dot product runs forward
   std::vector<float> history_; // last size()-1 input samples, carried across calls
-  std::vector<float> window_; // scratch: history followed by the current block
+  Buffer<float> window_; // scratch: history followed by the current block
+  Buffer<float> out_; // owned output, reused across calls
   std::size_t decimation_; // keep one output per this many inputs
   std::size_t phase_{}; // inputs still to skip before the next kept output
 };

@@ -1,11 +1,11 @@
 #pragma once
 
+#include "palindrome/buffer.hpp"
 #include "palindrome/fir.hpp"
 #include "palindrome/mixer.hpp"
 
 #include <cstddef>
 #include <span>
-#include <vector>
 
 // RF demodulation building blocks. Each demodulator is a stateful, streaming
 // stage: construct it once, then feed successive blocks of samples through
@@ -31,22 +31,24 @@ public:
   AmEnvelope(double sample_rate_hz, double carrier_hz, double cutoff_hz, std::size_t num_taps = 127,
       dsp::Window window = dsp::Window::Hamming, std::size_t decimation = 1);
 
-  // Demodulate `in`, appending one output sample per `decimation()` inputs to
-  // `out`.
-  void process(std::span<const float> in, std::vector<float> &out);
+  // Budget internal storage for blocks of up to `max_in` samples (one-time;
+  // process() also grows lazily, so this is an optimisation, not a requirement).
+  void prepare(std::size_t max_in);
 
-  [[nodiscard]] std::size_t decimation() const { return i_filter_.decimation(); }
+  // Demodulate `in`, returning a view of one output sample per `decimation()`
+  // inputs. The returned span is owned by the demodulator and valid only until
+  // the next process() call.
+  [[nodiscard]] std::span<const float> process(std::span<const float> in);
+
+  [[nodiscard]] std::size_t max_output_for(std::size_t n_in) const noexcept { return i_filter_.max_output_for(n_in); }
+  [[nodiscard]] std::size_t input_multiple() const noexcept { return i_filter_.input_multiple(); }
+  [[nodiscard]] std::size_t decimation() const noexcept { return i_filter_.decimation(); }
 
 private:
   dsp::Mixer mixer_; // down-converts the carrier to baseband I/Q
   dsp::Fir i_filter_; // baseband low-pass, in-phase
   dsp::Fir q_filter_; // baseband low-pass, quadrature
-
-  // Scratch reused across process() calls to avoid per-block reallocation.
-  std::vector<float> mixed_i_;
-  std::vector<float> mixed_q_;
-  std::vector<float> filtered_i_;
-  std::vector<float> filtered_q_;
+  Buffer<float> out_; // owned envelope output, reused across calls
 };
 
 } // namespace palindrome::demod

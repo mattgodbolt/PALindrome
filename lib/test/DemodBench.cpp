@@ -37,27 +37,32 @@ std::vector<float> noise(std::size_t n) {
 // 65536 samples per call, so e.g. a 400 us mean = 65536 / 400us ~= 164 MS/s.
 TEST_CASE("demod throughput (64k-sample blocks)") {
   const auto input = noise(block);
-  std::vector<float> out;
-  out.reserve(block);
 
   BENCHMARK("AmEnvelope::process (mix + FIR x2 + magnitude)") {
-    static demod::AmEnvelope env{fs, carrier, cutoff};
-    out.clear();
-    env.process(input, out);
-    return out.size();
+    static demod::AmEnvelope env = [] {
+      demod::AmEnvelope e{fs, carrier, cutoff};
+      e.prepare(block);
+      return e;
+    }();
+    return env.process(input).size();
   };
 
   BENCHMARK("full pre-detection + envelope (sound trap, DC block, envelope)") {
-    static dsp::Biquad trap = dsp::notch(fs, sound_if, 10.0);
-    static dsp::DcBlocker dc;
-    static demod::AmEnvelope env{fs, carrier, cutoff};
-    static std::vector<float> a, b;
-    a.clear();
-    b.clear();
-    out.clear();
-    trap.process(input, a);
-    dc.process(a, b);
-    env.process(b, out);
-    return out.size();
+    static dsp::Biquad trap = [] {
+      dsp::Biquad b = dsp::notch(fs, sound_if, 10.0);
+      b.prepare(block);
+      return b;
+    }();
+    static dsp::DcBlocker dc = [] {
+      dsp::DcBlocker d;
+      d.prepare(block);
+      return d;
+    }();
+    static demod::AmEnvelope env = [] {
+      demod::AmEnvelope e{fs, carrier, cutoff};
+      e.prepare(block);
+      return e;
+    }();
+    return env.process(dc.process(trap.process(input))).size();
   };
 }

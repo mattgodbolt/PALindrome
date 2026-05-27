@@ -1,10 +1,11 @@
 #pragma once
 
+#include "palindrome/buffer.hpp"
+
 #include <array>
 #include <complex>
 #include <cstddef>
 #include <span>
-#include <vector>
 
 // Quadrature down-conversion. Like the other DSP stages, process() carries phase
 // across calls, so the result composes into the streaming pipeline.
@@ -26,11 +27,25 @@ namespace palindrome::dsp {
 // rounding (~1e-7), not bit-for-bit like the FIR or DC blocker.
 class Mixer {
 public:
+  // A matched pair of baseband planes. The spans are owned by the mixer and
+  // valid only until the next process() call.
+  struct Iq {
+    std::span<const float> i;
+    std::span<const float> q;
+  };
+
   // Mix carrier_hz down to DC for input sampled at sample_rate_hz.
   Mixer(double carrier_hz, double sample_rate_hz);
 
-  // Down-convert `in`, appending one (I, Q) pair per input sample to `i`/`q`.
-  void process(std::span<const float> in, std::vector<float> &i, std::vector<float> &q);
+  // Budget internal storage for blocks of up to `max_in` samples (one-time;
+  // process() also grows lazily, so this is an optimisation, not a requirement).
+  void prepare(std::size_t max_in);
+
+  // Down-convert `in`, returning one (I, Q) pair per input sample.
+  [[nodiscard]] Iq process(std::span<const float> in);
+
+  [[nodiscard]] std::size_t max_output_for(std::size_t n_in) const noexcept { return n_in; }
+  [[nodiscard]] std::size_t input_multiple() const noexcept { return 1; }
 
 private:
   // One phase group's width. 8 matches an AVX2 float vector; on other targets it
@@ -49,6 +64,8 @@ private:
   std::complex<double> step_block_; // step^kLanes; advances `base` a whole group
   std::complex<double> base_{1.0, 0.0}; // phase at the current group boundary
   unsigned groups_since_renorm_{}; // groups since `base` was last renormalised
+  Buffer<float> i_out_; // owned I plane, reused across calls
+  Buffer<float> q_out_; // owned Q plane, reused across calls
 };
 
 } // namespace palindrome::dsp

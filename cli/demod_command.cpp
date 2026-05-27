@@ -4,6 +4,7 @@
 #include "palindrome/biquad.hpp"
 #include "palindrome/dc_blocker.hpp"
 #include "palindrome/demod.hpp"
+#include "palindrome/pipeline.hpp"
 #include "palindrome/sigmf.hpp"
 #include "palindrome/wav.hpp"
 
@@ -27,19 +28,6 @@ namespace {
 namespace sigmf = palindrome::sigmf;
 namespace demod = palindrome::demod;
 namespace wav = palindrome::wav;
-
-// A streaming filter plus the scratch buffer it fills.
-template<typename Filter>
-struct Stage {
-  Filter filter;
-  std::vector<float> buf;
-
-  std::span<const float> process(std::span<const float> in) {
-    buf.clear();
-    filter.process(in, buf);
-    return buf;
-  }
-};
 } // namespace
 
 void DemodCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
@@ -98,21 +86,24 @@ int DemodCommand::run() const {
     std::println(std::cerr, "demod: warning: cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing",
         cutoff_ / 1e6, decimated_nyquist / 1e6);
 
-  // IF traps applied (in order) before detection, mirroring a TV's IF strip.
-  std::vector<Stage<dsp::Biquad>> traps;
+  // The decode pipeline, mirroring a TV's IF strip: optional IF traps, then a
+  // DC blocker, then the AM envelope detector. Each stage owns its buffers; the
+  // Chain sizes them once (prepare, below) and pipes each block straight through.
+  palindrome::Chain chain;
   std::vector<std::string> trap_notes;
 
-  // The FM sound carrier.
+  // The FM sound carrier trap.
   if (!no_sound_trap_) {
     if (const auto s = meta.field<double>("rx888:sound_if_hz")) {
-      traps.push_back({dsp::notch(fs, *s, sound_q_), {}});
+      chain.add(dsp::notch(fs, *s, sound_q_));
       trap_notes.push_back(std::format("sound {:.3f} MHz (Q {:g})", *s / 1e6, sound_q_));
     }
   }
 
   // Remove any constant ADC offset before mixing, so it can't beat into the
   // envelope at the carrier frequency.
-  Stage<dsp::DcBlocker> dc_blocker;
+  chain.add(dsp::DcBlocker{});
+  chain.add(demod::AmEnvelope{fs, carrier, cutoff_, 127, dsp::Window::Hamming, decimate_});
 
   const auto data_path = sigmf::data_path_for(meta_path);
   std::ifstream data{data_path, std::ios::binary};
@@ -121,16 +112,19 @@ int DemodCommand::run() const {
     return 1;
   }
 
-  demod::AmEnvelope envelope{fs, carrier, cutoff_, 127, dsp::Window::Hamming, decimate_};
+  // Read in fixed-size blocks; sizing the whole chain's storage once up front
+  // means the streaming loop never allocates inside a stage.
+  constexpr std::size_t read_samples = std::size_t{1} << 16;
+  chain.prepare(read_samples);
+
   std::vector<float> out;
   // One output sample per `decimate_` input int16s. Reserve the whole lot up
-  // front: `out` accumulates across every block, and the stages reserve to an
-  // exact size, so without this each block would reallocate and recopy all
-  // prior samples.
+  // front: `out` accumulates across every block, so without this each append
+  // would eventually reallocate and recopy all prior samples.
   std::error_code size_ec;
   if (const auto bytes = std::filesystem::file_size(data_path, size_ec); !size_ec)
     out.reserve(bytes / sizeof(std::int16_t) / decimate_ + 1);
-  std::vector<std::int16_t> raw(std::size_t{1} << 16);
+  std::vector<std::int16_t> raw(read_samples);
   std::vector<float> block;
   while (data) {
     data.read(reinterpret_cast<char *>(raw.data()), static_cast<std::streamsize>(raw.size() * sizeof(std::int16_t)));
@@ -141,11 +135,8 @@ int DemodCommand::run() const {
     for (std::size_t k = 0; k < got; ++k)
       block[k] = static_cast<float>(raw[k]) / 32768.0f;
 
-    std::span<const float> stage{block};
-    for (auto &trap: traps)
-      stage = trap.process(stage);
-    stage = dc_blocker.process(stage);
-    envelope.process(stage, out);
+    const std::span<const float> demodulated = chain.process(block);
+    out.insert(out.end(), demodulated.begin(), demodulated.end());
   }
   if (out.empty()) {
     std::println(std::cerr, "demod: no samples read from {}", data_path.string());
