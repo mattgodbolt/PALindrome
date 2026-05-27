@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -17,6 +18,7 @@
 #include <ranges>
 #include <span>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace palindrome::cli {
@@ -110,6 +112,12 @@ int DemodCommand::run() const {
 
   demod::AmEnvelope envelope{fs, carrier, cutoff_};
   std::vector<float> out;
+  // One output sample per input int16. Reserve the whole lot up front: `out`
+  // accumulates across every block, and the stages reserve to an exact size, so
+  // without this each block would reallocate and recopy all prior samples.
+  std::error_code size_ec;
+  if (const auto bytes = std::filesystem::file_size(data_path, size_ec); !size_ec)
+    out.reserve(bytes / sizeof(std::int16_t));
   std::vector<std::int16_t> raw(std::size_t{1} << 16);
   std::vector<float> block;
   while (data) {
