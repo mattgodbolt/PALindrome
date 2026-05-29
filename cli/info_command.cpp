@@ -15,8 +15,6 @@
 namespace palindrome::cli {
 
 namespace {
-namespace sigmf = palindrome::sigmf;
-
 void print_field(std::string_view label, const std::optional<std::string> &value) {
   if (value)
     std::println("  {:<12}: {}", label, *value);

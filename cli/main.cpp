@@ -1,7 +1,9 @@
 #include "convert_command.hpp"
 #include "demod_command.hpp"
 #include "info_command.hpp"
+#include "render_command.hpp"
 
+#include <exception>
 #include <functional>
 #include <iostream>
 #include <print>
@@ -19,6 +21,7 @@ int main(int argc, const char **argv) {
   ConvertCommand decode{ConvertCommand::Direction::Decode};
   palindrome::cli::InfoCommand info;
   palindrome::cli::DemodCommand demod;
+  palindrome::cli::RenderCommand render;
 
   auto cli = lyra::cli();
   cli.add_argument(lyra::help(show_help));
@@ -26,6 +29,7 @@ int main(int argc, const char **argv) {
   decode.add_to(cli, action);
   info.add_to(cli, action);
   demod.add_to(cli, action);
+  render.add_to(cli, action);
 
   const auto result = cli.parse({argc, argv});
   if (show_help) {
@@ -41,5 +45,19 @@ int main(int argc, const char **argv) {
     std::cout << cli << '\n';
     return 1;
   }
-  return action();
+  // Last-resort handler for anything the subcommands didn't catch (e.g. a bad
+  // --cutoff that trips AmEnvelope's std::invalid_argument). Commands still
+  // print their own prefixed diagnostics for the cases they know about; this
+  // just stops an escaped exception from terminating without a useful message.
+  try {
+    return action();
+  }
+  catch (const std::exception &e) {
+    std::println(std::cerr, "palindrome: {}", e.what());
+    return 1;
+  }
+  catch (...) {
+    std::println(std::cerr, "palindrome: unknown error");
+    return 1;
+  }
 }

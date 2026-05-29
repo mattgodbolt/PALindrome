@@ -1,8 +1,11 @@
 #include "palindrome/demod.hpp"
 
+#include "palindrome/biquad.hpp"
+#include "palindrome/dc_blocker.hpp"
 #include "palindrome/restrict_ptr.hpp"
 
 #include <cmath>
+#include <format>
 
 namespace palindrome::demod {
 
@@ -52,6 +55,27 @@ std::span<const float> AmEnvelope::process(std::span<const float> in) {
   out_.reserve(n);
   envelope_magnitude(filtered_i.data(), filtered_q.data(), out_.write_n(n).data(), n);
   return out_.view();
+}
+
+VisionChain build_vision_chain(const VisionChainConfig &cfg) {
+  VisionChain v;
+  if (cfg.sound_trap_hz) {
+    v.chain.add(dsp::notch(cfg.sample_rate_hz, *cfg.sound_trap_hz, cfg.sound_q));
+    v.trap_notes.push_back(std::format("sound {:.3f} MHz (Q {:g})", *cfg.sound_trap_hz / 1e6, cfg.sound_q));
+  }
+  // A constant ADC offset would mix down onto the carrier and beat into the envelope.
+  v.chain.add(dsp::DcBlocker{});
+  v.chain.add(
+      AmEnvelope{cfg.sample_rate_hz, cfg.vision_carrier_hz, cfg.cutoff_hz, cfg.num_taps, cfg.window, cfg.decimation});
+
+  // Decimation folds anything above the decimated Nyquist back into band; the
+  // low-pass must clear it. Warn rather than fail — it's a quality call.
+  if (const double decimated_nyquist = cfg.sample_rate_hz / (2.0 * static_cast<double>(cfg.decimation));
+      cfg.cutoff_hz >= decimated_nyquist)
+    v.warnings.push_back(std::format("cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing",
+        cfg.cutoff_hz / 1e6, decimated_nyquist / 1e6));
+
+  return v;
 }
 
 } // namespace palindrome::demod

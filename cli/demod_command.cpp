@@ -1,11 +1,7 @@
 #include "demod_command.hpp"
 
 #include "cli_util.hpp"
-#include "palindrome/biquad.hpp"
-#include "palindrome/dc_blocker.hpp"
 #include "palindrome/demod.hpp"
-#include "palindrome/pipeline.hpp"
-#include "palindrome/sigmf.hpp"
 #include "palindrome/wav.hpp"
 
 #include <algorithm>
@@ -13,22 +9,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <format>
-#include <fstream>
 #include <iostream>
+#include <optional>
 #include <print>
 #include <ranges>
-#include <span>
 #include <string>
-#include <system_error>
-#include <vector>
 
 namespace palindrome::cli {
-
-namespace {
-namespace sigmf = palindrome::sigmf;
-namespace demod = palindrome::demod;
-namespace wav = palindrome::wav;
-} // namespace
 
 void DemodCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
   cli.add_argument(lyra::command("demod", [this, &action](const lyra::group &) { action = [this] { return run(); }; })
@@ -44,102 +31,23 @@ void DemodCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
 }
 
 int DemodCommand::run() const {
-  const auto meta_path = resolve_meta(recording_);
-  sigmf::Metadata meta;
-  try {
-    meta = sigmf::load(meta_path);
-  }
-  catch (const sigmf::ParseError &e) {
-    std::println(std::cerr, "demod: {}", e.what());
-    return 1;
-  }
+  const auto loaded = load_real_int16_recording(recording_, carrier_);
 
-  if (!meta.global.sample_rate) {
-    std::println(std::cerr, "demod: recording has no core:sample_rate");
-    return 1;
-  }
-  const double fs = *meta.global.sample_rate;
+  demod::VisionChainConfig cfg{
+      .sample_rate_hz = loaded.sample_rate_hz,
+      .vision_carrier_hz = loaded.vision_carrier_hz,
+      .sound_trap_hz = no_sound_trap_ ? std::optional<double>{} : loaded.meta.field<double>("rx888:sound_if_hz"),
+      .sound_q = sound_q_,
+      .cutoff_hz = cutoff_,
+      .decimation = decimate_,
+  };
+  auto vision = demod::build_vision_chain(cfg);
+  for (const auto &w: vision.warnings)
+    std::println(std::cerr, "demod: warning: {}", w);
 
-  const auto &dt = meta.global.parsed_datatype;
-  if (dt.complex || dt.format != sigmf::DataType::Format::SignedInt || dt.bits != 16) {
-    std::println(std::cerr, "demod: only real int16 input is supported (got {})", dt);
-    return 1;
-  }
-
-  double carrier = carrier_;
-  if (carrier <= 0.0) {
-    if (const auto v = meta.field<double>("rx888:vision_if_hz"))
-      carrier = *v;
-    else {
-      std::println(std::cerr, "demod: no rx888:vision_if_hz in metadata; pass --carrier");
-      return 1;
-    }
-  }
-
-  if (decimate_ < 1) {
-    std::println(std::cerr, "demod: --decimate must be >= 1");
-    return 1;
-  }
-  // Decimation folds anything above the decimated Nyquist back into band; the
-  // low-pass must clear it. Warn rather than fail — it's a quality call.
-  if (const double decimated_nyquist = fs / (2.0 * static_cast<double>(decimate_)); cutoff_ >= decimated_nyquist)
-    std::println(std::cerr, "demod: warning: cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing",
-        cutoff_ / 1e6, decimated_nyquist / 1e6);
-
-  // The decode pipeline, mirroring a TV's IF strip: optional IF traps, then a
-  // DC blocker, then the AM envelope detector. Each stage owns its buffers; the
-  // Chain sizes them once (prepare, below) and pipes each block straight through.
-  palindrome::Chain chain;
-  std::vector<std::string> trap_notes;
-
-  // The FM sound carrier trap.
-  if (!no_sound_trap_) {
-    if (const auto s = meta.field<double>("rx888:sound_if_hz")) {
-      chain.add(dsp::notch(fs, *s, sound_q_));
-      trap_notes.push_back(std::format("sound {:.3f} MHz (Q {:g})", *s / 1e6, sound_q_));
-    }
-  }
-
-  // Remove any constant ADC offset before mixing, so it can't beat into the
-  // envelope at the carrier frequency.
-  chain.add(dsp::DcBlocker{});
-  chain.add(demod::AmEnvelope{fs, carrier, cutoff_, 127, dsp::Window::Hamming, decimate_});
-
-  const auto data_path = sigmf::data_path_for(meta_path);
-  std::ifstream data{data_path, std::ios::binary};
-  if (!data) {
-    std::println(std::cerr, "demod: cannot open data file: {}", data_path.string());
-    return 1;
-  }
-
-  // Read in fixed-size blocks; sizing the whole chain's storage once up front
-  // means the streaming loop never allocates inside a stage.
-  constexpr std::size_t read_samples = std::size_t{1} << 16;
-  chain.prepare(read_samples);
-
-  std::vector<float> out;
-  // One output sample per `decimate_` input int16s. Reserve the whole lot up
-  // front: `out` accumulates across every block, so without this each append
-  // would eventually reallocate and recopy all prior samples.
-  std::error_code size_ec;
-  if (const auto bytes = std::filesystem::file_size(data_path, size_ec); !size_ec)
-    out.reserve(bytes / sizeof(std::int16_t) / decimate_ + 1);
-  std::vector<std::int16_t> raw(read_samples);
-  std::vector<float> block;
-  while (data) {
-    data.read(reinterpret_cast<char *>(raw.data()), static_cast<std::streamsize>(raw.size() * sizeof(std::int16_t)));
-    const auto got = static_cast<std::size_t>(data.gcount()) / sizeof(std::int16_t);
-    if (got == 0)
-      break;
-    block.resize(got);
-    for (std::size_t k = 0; k < got; ++k)
-      block[k] = static_cast<float>(raw[k]) / 32768.0f;
-
-    const std::span<const float> demodulated = chain.process(block);
-    out.insert(out.end(), demodulated.begin(), demodulated.end());
-  }
+  auto out = stream_int16le_through_chain(loaded.data_path, vision.chain);
   if (out.empty()) {
-    std::println(std::cerr, "demod: no samples read from {}", data_path.string());
+    std::println(std::cerr, "demod: no samples read from {}", loaded.data_path.string());
     return 1;
   }
 
@@ -150,25 +58,20 @@ int DemodCommand::run() const {
 
   auto output = output_;
   if (output.empty())
-    output = std::format("{}.wav", meta_path.stem().string());
+    output = std::format("{}.wav", loaded.meta_path.stem().string());
   // Real output rate is the input rate after decimation; the slowdown then maps
   // that to the stamped WAV rate, so the Audacity timeline is invariant to N.
-  const double output_rate = fs / static_cast<double>(decimate_);
+  const double output_rate = loaded.sample_rate_hz / static_cast<double>(decimate_);
   const auto wav_rate = static_cast<std::uint32_t>(output_rate / slowdown_);
-  try {
-    wav::write_mono_float(output, out, wav_rate);
-  }
-  catch (const wav::WriteError &e) {
-    std::println(std::cerr, "demod: {}", e.what());
-    return 1;
-  }
+  wav::write_mono_float(output, out, wav_rate);
 
-  std::string traps_desc = trap_notes.empty() ? "no traps" : "traps: ";
-  for (std::size_t t = 0; t < trap_notes.size(); ++t)
-    traps_desc += (t ? ", " : "") + trap_notes[t];
+  std::string traps_desc = vision.trap_notes.empty() ? "no traps" : "traps: ";
+  for (std::size_t t = 0; t < vision.trap_notes.size(); ++t)
+    traps_desc += (t ? ", " : "") + vision.trap_notes[t];
   std::println(
       "wrote {} ({} samples @ {} Hz = real/{:g} after /{} decimation); carrier {:.4f} MHz, cutoff {:g} MHz; {}",
-      output.string(), out.size(), wav_rate, slowdown_, decimate_, carrier / 1e6, cutoff_ / 1e6, traps_desc);
+      output.string(), out.size(), wav_rate, slowdown_, decimate_, loaded.vision_carrier_hz / 1e6, cutoff_ / 1e6,
+      traps_desc);
   return 0;
 }
 

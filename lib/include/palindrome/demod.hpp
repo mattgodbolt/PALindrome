@@ -3,9 +3,13 @@
 #include "palindrome/buffer.hpp"
 #include "palindrome/fir.hpp"
 #include "palindrome/mixer.hpp"
+#include "palindrome/pipeline.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <span>
+#include <string>
+#include <vector>
 
 // RF demodulation building blocks. Each demodulator is a stateful, streaming
 // stage: construct it once, then feed successive blocks of samples through
@@ -50,5 +54,32 @@ private:
   dsp::Fir q_filter_; // baseband low-pass, quadrature
   Buffer<float> out_; // owned envelope output, reused across calls
 };
+
+// The TV-IF strip as a single recipe: optional sound-carrier notch, then a
+// DC blocker, then the AmEnvelope. Shared between the inspection commands
+// (`demod`, `render`) and anything else that wants the same composite envelope.
+struct VisionChainConfig {
+  double sample_rate_hz;
+  double vision_carrier_hz;
+  std::optional<double> sound_trap_hz; // nullopt => no sound trap
+  double sound_q = 10.0;
+  double cutoff_hz = 5.0e6;
+  std::size_t num_taps = 127;
+  dsp::Window window = dsp::Window::Hamming;
+  std::size_t decimation = 1;
+};
+
+// Built chain plus the human-readable bookkeeping a CLI can print: a note per
+// inserted trap, and any non-fatal warnings (e.g. cutoff above the decimated
+// Nyquist). Owns the Chain by value; move it out if you need to.
+struct VisionChain {
+  Chain chain;
+  std::vector<std::string> trap_notes;
+  std::vector<std::string> warnings;
+};
+
+// Build the vision IF strip from `cfg`. Throws std::invalid_argument (from the
+// underlying stages) on bad parameters.
+[[nodiscard]] VisionChain build_vision_chain(const VisionChainConfig &cfg);
 
 } // namespace palindrome::demod

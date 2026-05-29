@@ -6,10 +6,13 @@ endif ()
 # as SYSTEM when consumed this way, so it doesn't trip our -Werror warning set.
 palindrome_dependency(nlohmann_json "gh:nlohmann/json@3.11.3")
 
+# PNG output for rendered frames (single-file encoder, compiled SYSTEM-clean).
+ensure_lodepng()
+
 add_library(palindrome)
 add_library(palindrome::palindrome ALIAS palindrome)
 
-target_sources(palindrome PRIVATE sigmf.cpp demod.cpp fir.cpp mixer.cpp biquad.cpp dc_blocker.cpp wav.cpp)
+target_sources(palindrome PRIVATE sigmf.cpp demod.cpp fir.cpp mixer.cpp biquad.cpp dc_blocker.cpp wav.cpp image.cpp)
 
 target_sources(palindrome
         PUBLIC
@@ -26,6 +29,7 @@ target_sources(palindrome
         include/palindrome/mixer.hpp
         include/palindrome/biquad.hpp
         include/palindrome/dc_blocker.hpp
-        include/palindrome/wav.hpp)
+        include/palindrome/wav.hpp
+        include/palindrome/image.hpp)
 
-target_link_libraries(palindrome PUBLIC opt::cxx_std nlohmann_json::nlohmann_json PRIVATE opt::pedantic opt::arch)
+target_link_libraries(palindrome PUBLIC opt::cxx_std nlohmann_json::nlohmann_json PRIVATE opt::pedantic opt::arch lodepng::lodepng)

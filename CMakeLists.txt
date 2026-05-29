@@ -12,6 +12,7 @@ list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CPM)
 include(dependency)
 include(catch2)
+include(lodepng)
 include(pedantic)
 include(arch)
 
