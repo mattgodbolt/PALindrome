@@ -22,11 +22,11 @@ void DemodCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .help("AM-demodulate a recording's vision carrier to a WAV for inspection")
           .add_argument(lyra::opt(output_, "file")["-o"]["--output"]("Output WAV (default: <recording>.wav)"))
           .add_argument(lyra::opt(carrier_, "hz")["--carrier"]("Carrier Hz (default: rx888:vision_if_hz)"))
-          .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz (default 5e6)"))
-          .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 output sample per N inputs (default 1)"))
-          .add_argument(lyra::opt(slowdown_, "factor")["--slowdown"]("Stamp WAV rate as output/factor (default 1000)"))
+          .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz"))
+          .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 output sample per N inputs"))
+          .add_argument(lyra::opt(slowdown_, "factor")["--slowdown"]("Stamp WAV rate as output/factor"))
           .add_argument(lyra::opt(no_sound_trap_)["--no-sound-trap"]("Disable the sound-carrier notch"))
-          .add_argument(lyra::opt(sound_q_, "q")["--sound-q"]("Sound-trap notch Q (default 10)"))
+          .add_argument(lyra::opt(sound_q_, "q")["--sound-q"]("Sound-trap notch Q"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to demodulate (e.g. corpus/alex_kidd)")));
 }
 

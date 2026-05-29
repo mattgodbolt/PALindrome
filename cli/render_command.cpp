@@ -28,13 +28,13 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .help("Render a recording's vision signal to a PNG (naive fold, no sync lock yet)")
           .add_argument(lyra::opt(output_, "file")["-o"]["--output"]("Output PNG (default: <recording>.png)"))
           .add_argument(lyra::opt(carrier_, "hz")["--carrier"]("Carrier Hz (default: rx888:vision_if_hz)"))
-          .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz (default 5e6)"))
-          .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs (default 2 => 16 MS/s)"))
+          .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz"))
+          .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs"))
           .add_argument(lyra::opt(width_, "px")["--width"]("Image width (default: round(samples per line))"))
-          .add_argument(lyra::opt(lines_, "n")["--lines"]("Rows to render (default 625)"))
+          .add_argument(lyra::opt(lines_, "n")["--lines"]("Rows to render"))
           .add_argument(lyra::opt(start_line_, "n")["--start-line"]("Skip this many lines before the top row"))
           .add_argument(lyra::opt(no_sound_trap_)["--no-sound-trap"]("Disable the sound-carrier notch"))
-          .add_argument(lyra::opt(sound_q_, "q")["--sound-q"]("Sound-trap notch Q (default 10)"))
+          .add_argument(lyra::opt(sound_q_, "q")["--sound-q"]("Sound-trap notch Q"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to render (e.g. corpus/alex_kidd)")));
 }
 
