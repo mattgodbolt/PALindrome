@@ -4,13 +4,14 @@ project(palindrome VERSION 0.1 LANGUAGES CXX)
 
 option(PALINDROME_TESTS "Build and run tests" ON)
 option(PALINDROME_CLI "Build the palindrome command-line tool" ON)
-option(PALINDROME_PREFER_SYSTEM_DEPS "Prefer system-installed dependencies over fetching them" OFF)
 
 set(CMAKE_COLOR_DIAGNOSTICS ON)
 
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+# CPM is the only dependency mechanism we use. To prefer system-installed
+# packages (find_package first, fall back to fetch), configure with
+# -DCPM_USE_LOCAL_PACKAGES=ON (or set the env var) -- it's CPM's own switch.
 include(CPM)
-include(dependency)
 include(catch2)
 include(lodepng)
 include(pedantic)
@@ -44,6 +45,6 @@ endif ()
 add_subdirectory(lib)
 
 if (PALINDROME_CLI)
-    palindrome_dependency(Lyra "gh:bfgroup/Lyra@1.7.0#5a4ef1abaf7139ef00204992a2627127ad394499")
+    CPMAddPackage("gh:bfgroup/Lyra@1.7.0#5a4ef1abaf7139ef00204992a2627127ad394499")
     add_subdirectory(cli)
 endif ()

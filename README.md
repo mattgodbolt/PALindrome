@@ -86,6 +86,14 @@ black-level clamping comes with the sync/levels stage.
 
 ## Notes
 
+### Dependencies
+
+All third-party deps (Catch2, nlohmann_json, Lyra, lodepng) come in via CPM,
+pinned by tag or commit, no system packages required. To prefer
+system-installed copies (find_package first, fall back to CPM fetch) configure
+with `-DCPM_USE_LOCAL_PACKAGES=ON` — that's CPM's own switch, and we use it
+directly rather than wrapping it.
+
 ### SIMD (`std::simd`) — parked
 
 The DSP hot loops (`dsp::convolve`, `demod::envelope_magnitude`) currently

@@ -2,5 +2,5 @@
 # before defining a test executable that links Catch2::Catch2WithMain.
 macro(ensure_catch2)
     add_compile_definitions(CATCH_CONFIG_ENABLE_ALL_STRINGMAKERS)
-    palindrome_dependency(Catch2 "gh:catchorg/Catch2@3.8.0")
+    CPMAddPackage("gh:catchorg/Catch2@3.8.0")
 endmacro()

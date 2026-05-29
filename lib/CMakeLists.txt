@@ -2,9 +2,9 @@ if (PALINDROME_TESTS)
     add_subdirectory(test)
 endif ()
 
-# JSON parsing for the SigMF metadata loader. nlohmann_json marks its includes
-# as SYSTEM when consumed this way, so it doesn't trip our -Werror warning set.
-palindrome_dependency(nlohmann_json "gh:nlohmann/json@3.11.3")
+# JSON parsing for the SigMF metadata loader. CPM marks fetched includes as
+# SYSTEM, so nlohmann_json's headers don't trip our -Werror warning set.
+CPMAddPackage("gh:nlohmann/json@3.11.3")
 
 # PNG output for rendered frames (single-file encoder, compiled SYSTEM-clean).
 ensure_lodepng()
