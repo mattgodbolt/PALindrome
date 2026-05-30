@@ -17,3 +17,7 @@
 
 perf.data*
 .gdb_history
+
+# Python bytecode cache (tools/)
+__pycache__/
+*.pyc
