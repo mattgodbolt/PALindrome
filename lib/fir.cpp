@@ -35,9 +35,13 @@ double window_value(Window window, double n, double m) {
   if (m == 0.0)
     return 1.0; // single tap: the window is irrelevant
   const double phase = 2.0 * pi * n / m;
-  if (window == Window::Hamming)
-    return 0.54 - 0.46 * std::cos(phase);
-  return 0.42 - 0.5 * std::cos(phase) + 0.08 * std::cos(2.0 * phase); // Blackman
+  // No default: a new Window value then fails to compile (-Wswitch -Werror)
+  // until it's handled here, rather than silently taking a wrong branch.
+  switch (window) {
+    case Window::Hamming: return 0.54 - 0.46 * std::cos(phase);
+    case Window::Blackman: return 0.42 - 0.5 * std::cos(phase) + 0.08 * std::cos(2.0 * phase);
+  }
+  std::unreachable();
 }
 } // namespace
 
