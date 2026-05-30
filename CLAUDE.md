@@ -1,9 +1,5 @@
 # PALindrome — project guidance for Claude Code
 
-Project-specific conventions live here. **Do not edit the user's global/home
-`~/.claude/CLAUDE.md`** — it's a symlink to a dotfiles repo outside this project,
-so changes there leak everywhere. Project rules belong in this file.
-
 ## C++ conventions
 
 - **Almost Always Auto.** Prefer `auto` / `const auto` for locals wherever the
