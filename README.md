@@ -14,8 +14,11 @@ analog machine, not a DSP textbook. The current state:
 - **`demod`** — AM-demodulates the vision carrier to a WAV for inspection.
 - **`render`** — a **working sync-locked monochrome decode**: a streaming video
   graph that separates sync, locks horizontal and vertical timebases with
-  flywheel PLLs, and paints brightness onto a phosphor screen. Interlace falls
-  out of the half-line field offset on its own.
+  flywheel PLLs, and paints the beam onto a phosphor screen modelled as an
+  analog set — a rotated deflection yoke (straight scanlines), a Gaussian beam
+  spot, and an electron gun whose cutoff is set by the DC-restored black level.
+  Interlace falls out of the half-line field offset; `--frame-stride` dumps a
+  per-field PNG sequence.
 - **`tools/inspect_capture.py`** — fast capture QC: predicts whether a clip is
   decodable (carrier/sideband reach, line-comb SNR) and flags near-carrier ghost
   spurs, before you sink time into a full decode.
@@ -23,9 +26,10 @@ analog machine, not a DSP textbook. The current state:
   distribution, line-sync jitter, vertical field structure, and the locks the
   timebases settle on. This is the microscope the decode was built with.
 
-The picture is recognisable but rough: dim (the levels stage is still a
-placeholder), grainy with visible scanlines (the phosphor needs focus), and
-monochrome (no colour yet). See the roadmap below.
+The picture is now a clean, recognisable monochrome image — true blacks, straight
+geometry, filled scanlines. What's left is colour (still monochrome; the chroma
+shows as faint diagonal dot-crawl until there's Y/C separation) and a possible
+gun-gamma pass for the midtones. See the roadmap below.
 
 ## Capturing reference clips
 
@@ -102,9 +106,9 @@ flowchart TD
     VIS -->|picture rail| SCR
     SEP -->|sync bit| HS["HorizontalSweep<br/>pulse-width gate + AFC flywheel<br/>→ h_phase, line_start"]
     SEP -->|sync bit| VS["VerticalSync<br/>integrator + field flywheel<br/>→ v_phase, field_start"]
-    HS -->|timing rail| SCR["Screen (phosphor)<br/>deposit at (h_phase·w, v_phase·h)<br/>+ lazy decay → frame"]
+    HS -->|timing rail| SCR["Screen (CRT)<br/>gun drive (DC-restored black) →<br/>yoke shear + Gaussian splat →<br/>phosphor decay → frame"]
     VS -->|timing rail| SCR
-    SCR --> PNG["PNG"]
+    SCR --> PNG["PNG / per-field sequence"]
 ```
 
 Every stage is a streaming block (`prepare` / `process(span)→span`, state carried
@@ -112,7 +116,10 @@ across calls), so the output is independent of how the input is chunked — a
 tested invariant, because the target is live RF, not finite files. The whole
 graph is a `video::Decoder` composite node; `render` just pumps it 64K-sample
 blocks. Flags: `--width`, `--height`, `--decimate`, `--carrier`, `--cutoff`,
-`--sync-cutoff` (the narrow low-pass on the sync-detection branch).
+`--sync-cutoff` (the narrow low-pass on the sync-detection branch), and the CRT
+knobs `--persistence` (phosphor decay, in field periods), `--beam-sigma`
+(beam-spot vertical size, in rows), and `--frame-stride` (write a PNG every Nth
+field as `<stem>_NNNN.png` instead of a single image).
 
 ### `demod` — composite envelope to WAV (inspection)
 
@@ -132,13 +139,13 @@ tell you whether the sync chain is healthy.
 
 ## Roadmap
 
-- **A decent monochrome picture.** Sync-locked black-level clamp (a real levels
-  stage, replacing the placeholder AGC — fixes the dimness); phosphor focus / a
-  Gaussian beam splat instead of a single-pixel hit (fills the scanline gaps);
-  snapshot-at-vsync, plus a multi-frame PNG-sequence mode (one per field/frame).
+- **A decent monochrome picture.** ✅ Done: gun-drive levels (DC-restored black),
+  the rotated deflection yoke (straight scanlines), a Gaussian beam splat (filled
+  scanlines), and per-field snapshots. Still open: a gun-gamma pass for the
+  midtones, and a small interactive tuner for the CRT knobs.
 - **Colour — the PAL bit.** Burst-locked subcarrier regeneration, the 1H delay
   line, U/V demodulation with the PAL alternation, Y/C separation. The chroma is
-  in the captures, waiting.
+  in the captures, waiting (and shows as faint diagonal dot-crawl until separated).
 - **Optimisation, then SIMD.** Profile the hot paths; revisit `std::simd` for the
   DSP loops (see the note below).
 - **Multi-threading.** The streaming-block model is already structured for it.
