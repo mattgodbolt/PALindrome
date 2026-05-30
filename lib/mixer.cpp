@@ -50,7 +50,12 @@ Mixer::Iq Mixer::process(std::span<const float> in) {
   const auto *rre = rot_re_.data();
   const auto *rim = rot_im_.data();
 
-  // Full groups: one base phasor feeds a whole vector of elementwise mixes.
+  // Full groups: one scalar base phasor feeds a whole vector of elementwise
+  // mixes via the constant per-lane rotation table. Folding `base` into a
+  // per-lane phasor vector wouldn't cut multiplies — the complex rotate is the
+  // same work whether we form base*rot here or advance a stored vector each
+  // group — and would trade one scalar renormalise for a vector one, plus a
+  // per-group write of the whole phasor vector.
   std::size_t k = 0;
   for (; k + kLanes <= n; k += kLanes) {
     mix_group(x + k, ip + k, qp + k, rre, rim, static_cast<float>(base_.real()), static_cast<float>(base_.imag()));
