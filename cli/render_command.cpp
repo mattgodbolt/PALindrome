@@ -5,6 +5,7 @@
 #include "palindrome/image.hpp"
 #include "palindrome/video.hpp"
 
+#include <complex>
 #include <cstddef>
 #include <filesystem>
 #include <format>
@@ -35,19 +36,7 @@ int RenderCommand::run() const {
     return 1;
   }
 
-  const auto loaded = load_real_int16_recording(recording_, carrier_);
-
-  demod::VisionChainConfig cfg{
-      .sample_rate_hz = loaded.sample_rate_hz,
-      .vision_carrier_hz = loaded.vision_carrier_hz,
-      .sound_trap_hz = no_sound_trap_ ? std::optional<double>{} : loaded.meta.field<double>("rx888:sound_if_hz"),
-      .sound_q = sound_q_,
-      .cutoff_hz = cutoff_,
-      .decimation = decimate_,
-  };
-  auto vision = demod::build_vision_chain(cfg);
-  for (const auto &w: vision.warnings)
-    std::println(std::cerr, "render: warning: {}", w);
+  const auto loaded = load_recording(recording_, carrier_);
 
   const double envelope_rate = loaded.sample_rate_hz / static_cast<double>(decimate_);
 
@@ -58,10 +47,15 @@ int RenderCommand::run() const {
   video::Decoder decoder{video::DecoderConfig{.sample_rate_hz = envelope_rate, .width = width_, .height = height_}};
 
   constexpr std::size_t kBlock = std::size_t{1} << 16;
-  decoder.prepare(vision.chain.max_output_for(kBlock));
+  decoder.prepare(kBlock);
 
-  stream_blocks_through_chain(
-      loaded.data_path, vision.chain, [&](std::span<const float> env) { decoder.process(env); }, kBlock);
+  // stream_envelope hides the real-IF vs complex-baseband front end; the decoder
+  // just sees composite-envelope blocks.
+  const EnvelopeOptions opts{
+      .cutoff_hz = cutoff_, .decimation = decimate_, .no_sound_trap = no_sound_trap_, .sound_q = sound_q_};
+  const auto es = stream_envelope(loaded, opts, [&](std::span<const float> env) { decoder.process(env); }, kBlock);
+  for (const auto &w: es.warnings)
+    std::println(std::cerr, "render: warning: {}", w);
 
   if (decoder.accepted_edges() == 0 || decoder.detected_fields() == 0) {
     std::println(std::cerr, "render: never locked ({} line edges, {} fields) — nothing to draw",

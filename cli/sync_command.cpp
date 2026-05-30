@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <optional>
 #include <print>
@@ -93,27 +94,23 @@ void SyncCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
 }
 
 int SyncCommand::run() const {
-  const auto loaded = load_real_int16_recording(recording_, carrier_);
+  const auto loaded = load_recording(recording_, carrier_);
 
-  demod::VisionChainConfig cfg{
-      .sample_rate_hz = loaded.sample_rate_hz,
-      .vision_carrier_hz = loaded.vision_carrier_hz,
-      .sound_trap_hz = no_sound_trap_ ? std::optional<double>{} : loaded.meta.field<double>("rx888:sound_if_hz"),
-      .sound_q = sound_q_,
-      .cutoff_hz = cutoff_,
-      .decimation = decimate_,
-  };
-  auto vision = demod::build_vision_chain(cfg);
-  for (const auto &w: vision.warnings)
+  // Demodulate to the composite envelope (real IF or complex baseband, hidden
+  // behind stream_envelope) and gather it for the batch pulse analysis.
+  std::vector<float> env;
+  const EnvelopeOptions opts{
+      .cutoff_hz = cutoff_, .decimation = decimate_, .no_sound_trap = no_sound_trap_, .sound_q = sound_q_};
+  const auto es =
+      stream_envelope(loaded, opts, [&](std::span<const float> e) { env.insert(env.end(), e.begin(), e.end()); });
+  for (const auto &w: es.warnings)
     std::println(std::cerr, "sync: warning: {}", w);
-
-  const auto env = stream_int16le_through_chain(loaded.data_path, vision.chain);
   if (env.empty()) {
     std::println(std::cerr, "sync: no samples read from {}", loaded.data_path.string());
     return 1;
   }
 
-  const double rate = loaded.sample_rate_hz / static_cast<double>(decimate_);
+  const double rate = es.rate_hz;
   const double us_per_sample = 1e6 / rate;
   const double nominal_line_samples = rate / 15625.0;
 

@@ -31,7 +31,11 @@ void DemodCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
 }
 
 int DemodCommand::run() const {
-  const auto loaded = load_real_int16_recording(recording_, carrier_);
+  const auto loaded = load_recording(recording_, carrier_);
+  if (loaded.complex_baseband) {
+    std::println(std::cerr, "demod: complex-baseband (AirSpy) input isn't supported here yet — use render");
+    return 1;
+  }
 
   demod::VisionChainConfig cfg{
       .sample_rate_hz = loaded.sample_rate_hz,

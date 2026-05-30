@@ -57,6 +57,55 @@ std::span<const float> AmEnvelope::process(std::span<const float> in) {
   return out_.view();
 }
 
+namespace {
+constexpr double kTwoPi = 6.283185307179586476925286766559;
+} // namespace
+
+ComplexAmEnvelope::ComplexAmEnvelope(double sample_rate_hz, double carrier_offset_hz, double cutoff_hz,
+    std::size_t num_taps, dsp::Window window, std::size_t decimation) :
+    i_filter_{dsp::lowpass_kernel(num_taps, sample_rate_hz, cutoff_hz, window), decimation},
+    q_filter_{dsp::lowpass_kernel(num_taps, sample_rate_hz, cutoff_hz, window), decimation} {
+  // Mix the vision carrier offset down to DC: multiply by e^{-i*2*pi*offset/fs}
+  // per sample. A positive offset rotates one way, negative the other.
+  const double omega = kTwoPi * carrier_offset_hz / sample_rate_hz;
+  step_ = std::polar(1.0, -omega);
+}
+
+void ComplexAmEnvelope::prepare(std::size_t max_in) {
+  i_filter_.prepare(max_in);
+  q_filter_.prepare(max_in);
+  mix_i_.reserve(max_in);
+  mix_q_.reserve(max_in);
+  out_.reserve(i_filter_.max_output_for(max_in));
+}
+
+std::span<const float> ComplexAmEnvelope::process(std::span<const std::complex<float>> in) {
+  const std::size_t n = in.size();
+  const std::span<float> mi = mix_i_.write_n(n);
+  const std::span<float> mq = mix_q_.write_n(n);
+
+  // Shift the carrier to DC. The phasor recurrence carries across calls, so the
+  // mix is independent of how the input is chunked (to within float rounding).
+  for (std::size_t k = 0; k < n; ++k) {
+    const std::complex<float> p{static_cast<float>(phasor_.real()), static_cast<float>(phasor_.imag())};
+    const std::complex<float> m = in[k] * p;
+    mi[k] = m.real();
+    mq[k] = m.imag();
+    phasor_ *= step_;
+    if (++since_renorm_ >= 1024) {
+      phasor_ /= std::abs(phasor_); // keep |phasor_| == 1 against accumulated drift
+      since_renorm_ = 0;
+    }
+  }
+
+  const std::span<const float> filtered_i = i_filter_.process(mi);
+  const std::span<const float> filtered_q = q_filter_.process(mq);
+  const std::size_t m = filtered_i.size();
+  out_.reserve(m);
+  envelope_magnitude(filtered_i.data(), filtered_q.data(), out_.write_n(m).data(), m);
+  return out_.view();
+}
+
 VisionChain build_vision_chain(const VisionChainConfig &cfg) {
   VisionChain v;
   if (cfg.sound_trap_hz) {
