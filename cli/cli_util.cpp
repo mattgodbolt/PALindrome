@@ -43,20 +43,13 @@ LoadedRecording load_real_int16_recording(const std::filesystem::path &recording
   return loaded;
 }
 
-std::vector<float> stream_int16le_through_chain(
-    const std::filesystem::path &data_path, Chain &chain, std::size_t block_samples) {
+void stream_blocks_through_chain(const std::filesystem::path &data_path, Chain &chain,
+    const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples) {
   std::ifstream data{data_path, std::ios::binary};
   if (!data)
     throw std::runtime_error{std::format("cannot open data file: {}", data_path.string())};
 
   chain.prepare(block_samples);
-
-  // Reserve from the file's input-sample count run through the chain's bound,
-  // so the streaming loop never reallocates the output vector.
-  std::vector<float> out;
-  std::error_code size_ec;
-  if (const auto bytes = std::filesystem::file_size(data_path, size_ec); !size_ec)
-    out.reserve(chain.max_output_for(bytes / sizeof(std::int16_t)) + 1);
 
   std::vector<std::int16_t> raw(block_samples);
   std::vector<float> block(block_samples);
@@ -68,9 +61,22 @@ std::vector<float> stream_int16le_through_chain(
     const std::span<float> dst{block.data(), got};
     for (std::size_t k = 0; k < got; ++k)
       dst[k] = static_cast<float>(raw[k]) * (1.0f / 32768.0f);
-    const std::span<const float> demodulated = chain.process(dst);
-    out.insert(out.end(), demodulated.begin(), demodulated.end());
+    on_block(chain.process(dst));
   }
+}
+
+std::vector<float> stream_int16le_through_chain(
+    const std::filesystem::path &data_path, Chain &chain, std::size_t block_samples) {
+  // Reserve from the file's input-sample count run through the chain's bound,
+  // so the accumulating loop never reallocates the output vector.
+  std::vector<float> out;
+  std::error_code size_ec;
+  if (const auto bytes = std::filesystem::file_size(data_path, size_ec); !size_ec)
+    out.reserve(chain.max_output_for(bytes / sizeof(std::int16_t)) + 1);
+
+  stream_blocks_through_chain(
+      data_path, chain, [&out](std::span<const float> blk) { out.insert(out.end(), blk.begin(), blk.end()); },
+      block_samples);
   return out;
 }
 

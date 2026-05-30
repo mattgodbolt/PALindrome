@@ -3,34 +3,40 @@
 #include "palindrome/buffer.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
+#include <vector>
 
-// Video reconstruction stages, modelled on the analog TV signal chain rather
-// than as one monolith. A real set splits the job across parts: a sync
-// separator slices the composite into a clean sync signal, a horizontal
-// timebase (AFC + flywheel oscillator) locks the line sweep to it, and the
-// picture tube paints brightness at the swept beam position. We mirror that
-// split so each stage has one job and an inspectable output:
+// Video reconstruction as a branching, streaming filter graph, modelled on the
+// analog TV signal path. The demodulated composite fans out the way it does in
+// a real set — to the sync separator AND to the picture tube — so the picture
+// (brightness) rail and the timing rail are separate branches that rejoin at
+// the renderer:
 //
-//   float envelope --[SyncSeparator]--> SyncSample --[HorizontalSweep]--> BeamSample --> render
+//   envelope --+--> [SyncSeparator] --> [HorizontalSweep] ---+--> [FrameRenderer]
+//              |                          (timing rail)      |
+//              +------------ picture rail (envelope) --------+
 //
-// Each stage is a streaming block (prepare / process / max_output_for /
-// input_multiple) with state carried across process() calls, so the result is
-// independent of how the input is chunked — same contract as the dsp stages.
+// Each filter stage is a streaming block (prepare / process(span)->span) with
+// state carried across calls, so output is independent of how the input is
+// chunked — which is what lets a driver pump fixed-size blocks through the whole
+// graph with bounded memory (the target being live RF, not finite files). The
+// renderer is a join SINK: two aligned inputs in, a framebuffer accumulated, no
+// span out. Because the branches don't decimate (decimation happens upstream in
+// the vision chain, before the fan-out), the two rails stay sample-aligned and
+// the join is a plain zip.
 namespace palindrome::video {
 
 // === Sync separator ===
 
-// Output of the sync separator. `envelope` rides through unchanged (the
-// picture rail the renderer eventually paints); `sync` is the sliced one-bit
-// sync signal — true while the envelope sits in the sync region (above the
-// slice level, since vision is negatively modulated so sync tips are the
-// envelope peaks). It is true during EVERY sync pulse: line sync and the broad
-// / equalising pulses of the vertical interval alike. Telling those pulse
-// kinds apart belongs downstream, exactly as a real set slices first and
-// discriminates later.
+// Output of the sync separator: just the sliced one-bit sync signal — true
+// while the envelope sits in the sync region (above the slice level, since
+// vision is negatively modulated so sync tips are the envelope peaks). True
+// during EVERY sync pulse (line sync and the vertical-interval broad /
+// equalising pulses alike); telling them apart is downstream's job. It is a
+// struct, not a bare bool, so the sandcastle-style gating levels (burst gate,
+// clamp, blanking) can join it later without changing the stage signature.
 struct SyncSample {
-  float envelope = 0.0f;
   bool sync = false;
 };
 
@@ -42,10 +48,10 @@ struct SyncSeparatorConfig {
   double sync_level = 0.85;
 };
 
-// Slices composite into a clean one-bit sync signal. Tracks a running peak
-// (sync tip) and floor (active-video white) so the slice point follows the
-// recording's amplitude, with hysteresis so chroma ripple on a transition
-// doesn't chatter the output. No timing loop here — it just slices.
+// Slices the composite envelope into a clean one-bit sync signal. Tracks a
+// running peak (sync tip) and floor (active-video white) so the slice point
+// follows the recording's amplitude, with hysteresis so chroma ripple on a
+// transition doesn't chatter the output. No timing loop here — it just slices.
 class SyncSeparator {
 public:
   explicit SyncSeparator(const SyncSeparatorConfig &cfg);
@@ -67,13 +73,11 @@ private:
 
 // === Horizontal sweep (AFC + flywheel) ===
 
-// Output of the horizontal sweep: the envelope still riding through, plus the
-// beam's horizontal position as a phase in [0, 1) (0 at the locked line start),
-// and `line_start` true on the single sample where the sweep locks a new line.
-// Downstream reads line_start as the source of truth for "a line began" rather
-// than inferring it from the phase float trajectory.
+// Output of the horizontal sweep: the beam's horizontal position as a phase in
+// [0, 1) (0 at the locked line start), and line_start true on the single sample
+// where the sweep locks a new line. The envelope is NOT here — it rides the
+// picture branch; the renderer joins the two rails by index.
 struct BeamSample {
-  float envelope = 0.0f;
   float h_phase = 0.0f;
   bool line_start = false;
 };
@@ -135,6 +139,47 @@ private:
   std::size_t accepted_ = 0;
   std::size_t rejected_ = 0;
   Buffer<BeamSample> out_;
+};
+
+// === Frame renderer (the join sink) ===
+
+struct FrameRendererConfig {
+  std::size_t width;
+  std::size_t lines;
+  std::size_t start_line = 0; // skip this many locked lines before the top row
+};
+
+// The picture tube: a join sink that paints the brightness rail (envelope) at
+// the beam position the timing rail (BeamSample) supplies. Streaming — it is
+// fed aligned (envelope, beam) blocks and accumulates into a framebuffer,
+// counting locked lines off line_start as they arrive (no pre-scan). Pixels
+// over-sampled by more than one envelope sample are accumulate-meaned; contrast
+// is stretched over the painted window. finish() maps the accumulators to grey.
+class FrameRenderer {
+public:
+  explicit FrameRenderer(const FrameRendererConfig &cfg);
+
+  void prepare(std::size_t max_in);
+  void process(std::span<const float> envelope, std::span<const BeamSample> beam);
+
+  struct Frame {
+    std::vector<std::uint8_t> grey; // width*lines, row-major
+    std::size_t width;
+    std::size_t lines;
+    std::size_t painted_lines; // rows that actually received samples
+    std::size_t total_locked_lines; // lines the sweep locked across the whole stream
+  };
+  [[nodiscard]] Frame finish() const;
+
+private:
+  FrameRendererConfig cfg_;
+  std::vector<float> sum_; // per-pixel envelope sum
+  std::vector<std::uint32_t> count_; // per-pixel sample count
+  float hi_; // running max envelope over painted samples
+  float lo_; // running min envelope over painted samples
+  bool have_line_ = false; // seen the first line_start yet?
+  std::size_t line_index_ = 0; // current locked-line index (0 at first line_start)
+  std::size_t total_locked_ = 0; // line_starts seen so far
 };
 
 } // namespace palindrome::video

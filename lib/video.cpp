@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace palindrome::video {
@@ -68,7 +69,7 @@ std::span<const SyncSample> SyncSeparator::process(std::span<const float> envelo
     else if (sync_ && env < floor_ + range * leave_frac)
       sync_ = false;
 
-    dst[k] = SyncSample{.envelope = envelope[k], .sync = sync_};
+    dst[k] = SyncSample{.sync = sync_};
   }
 
   return out_.view();
@@ -149,7 +150,6 @@ std::span<const BeamSample> HorizontalSweep::process(std::span<const SyncSample>
     }
 
     dst[k] = BeamSample{
-        .envelope = in[k].envelope,
         .h_phase = static_cast<float>(phase_ - std::floor(phase_)),
         .line_start = line_start,
     };
@@ -163,6 +163,67 @@ std::span<const BeamSample> HorizontalSweep::process(std::span<const SyncSample>
   }
 
   return out_.view();
+}
+
+// === FrameRenderer ===
+
+FrameRenderer::FrameRenderer(const FrameRendererConfig &cfg) :
+    cfg_{cfg}, sum_(cfg.width * cfg.lines, 0.0f), count_(cfg.width * cfg.lines, 0),
+    hi_{-std::numeric_limits<float>::infinity()}, lo_{std::numeric_limits<float>::infinity()} {
+  if (cfg_.width == 0 || cfg_.lines == 0)
+    throw std::invalid_argument{"FrameRenderer: width and lines must be positive"};
+}
+
+void FrameRenderer::prepare(std::size_t) {}
+
+void FrameRenderer::process(std::span<const float> envelope, std::span<const BeamSample> beam) {
+  const std::size_t n = std::min(envelope.size(), beam.size());
+  const std::size_t window_end = cfg_.start_line + cfg_.lines;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (beam[i].line_start) {
+      if (!have_line_)
+        have_line_ = true;
+      else
+        ++line_index_;
+      ++total_locked_;
+    }
+    // Skip pre-lock samples (before the first locked line) and anything outside
+    // the requested [start_line, start_line + lines) window.
+    if (!have_line_ || line_index_ < cfg_.start_line || line_index_ >= window_end)
+      continue;
+
+    const std::size_t y = line_index_ - cfg_.start_line;
+    auto x = static_cast<std::size_t>(static_cast<double>(beam[i].h_phase) * static_cast<double>(cfg_.width));
+    if (x >= cfg_.width)
+      x = cfg_.width - 1;
+    const float env = envelope[i];
+    sum_[y * cfg_.width + x] += env;
+    ++count_[y * cfg_.width + x];
+    hi_ = std::max(hi_, env);
+    lo_ = std::min(lo_, env);
+  }
+}
+
+FrameRenderer::Frame FrameRenderer::finish() const {
+  const float span = hi_ > lo_ ? hi_ - lo_ : 1.0f;
+  std::vector<std::uint8_t> grey(cfg_.width * cfg_.lines);
+  for (std::size_t i = 0; i < grey.size(); ++i) {
+    if (count_[i] == 0) {
+      grey[i] = 0; // no sample landed here; reads as sync-tip black
+    }
+    else {
+      const float mean = sum_[i] / static_cast<float>(count_[i]);
+      const float white = (hi_ - mean) / span; // 1 at darkest envelope, 0 at sync
+      grey[i] = static_cast<std::uint8_t>(std::clamp(white, 0.0f, 1.0f) * 255.0f + 0.5f);
+    }
+  }
+  const std::size_t painted =
+      total_locked_ > cfg_.start_line ? std::min(cfg_.lines, total_locked_ - cfg_.start_line) : 0;
+  return Frame{.grey = std::move(grey),
+      .width = cfg_.width,
+      .lines = cfg_.lines,
+      .painted_lines = painted,
+      .total_locked_lines = total_locked_};
 }
 
 } // namespace palindrome::video
