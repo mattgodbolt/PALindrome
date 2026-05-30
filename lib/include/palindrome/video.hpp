@@ -1,6 +1,7 @@
 #pragma once
 
 #include "palindrome/buffer.hpp"
+#include "palindrome/fir.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -264,6 +265,12 @@ struct DecoderConfig {
   double sample_rate_hz;
   std::size_t width;
   std::size_t height;
+  // The sync separator slices a low-passed copy of the envelope, not the full
+  // one: sync only needs the slow pulse shapes, and the chroma/HF that the
+  // picture rail keeps would otherwise chatter the slicer (badly so on a noisy
+  // complex-baseband capture). The picture rail is untouched, so this trades
+  // nothing on the image. Cutoff is a fraction of a sync pulse's bandwidth.
+  double sync_lp_cutoff_hz = 1.2e6;
 };
 
 // The whole video graph as one streaming node: it owns the separator, the two
@@ -286,6 +293,7 @@ public:
   [[nodiscard]] double field_omega() const noexcept { return vsync_.omega(); }
 
 private:
+  dsp::Fir sync_lp_; // narrow low-pass on the sync branch only (picture rail untouched)
   SyncSeparator sep_;
   HorizontalSweep hsweep_;
   VerticalSync vsync_;

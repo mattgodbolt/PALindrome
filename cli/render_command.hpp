@@ -24,11 +24,13 @@ private:
   std::filesystem::path output_;
   double carrier_{0.0}; // 0 => take the vision carrier from metadata
   double cutoff_{5.0e6};
+  double sync_cutoff_{1.2e6}; // narrow low-pass on the sync-detection branch
   std::size_t decimate_{2}; // 32 MS/s / 2 = 16 MS/s => ~1024 samples/line
   std::size_t width_{720};
   std::size_t height_{576};
   bool no_sound_trap_{false};
   double sound_q_{10.0};
+  bool no_sync_{false}; // debug: naive-fold the envelope, bypassing the sync graph
 };
 
 } // namespace palindrome::cli

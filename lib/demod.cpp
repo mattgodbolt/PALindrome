@@ -59,6 +59,7 @@ std::span<const float> AmEnvelope::process(std::span<const float> in) {
 
 namespace {
 constexpr double kTwoPi = 6.283185307179586476925286766559;
+constexpr double kDcPole = 0.9999; // complex DC-blocker feedback, matching dsp::DcBlocker
 } // namespace
 
 ComplexAmEnvelope::ComplexAmEnvelope(double sample_rate_hz, double carrier_offset_hz, double cutoff_hz,
@@ -84,11 +85,16 @@ std::span<const float> ComplexAmEnvelope::process(std::span<const std::complex<f
   const std::span<float> mi = mix_i_.write_n(n);
   const std::span<float> mq = mix_q_.write_n(n);
 
-  // Shift the carrier to DC. The phasor recurrence carries across calls, so the
-  // mix is independent of how the input is chunked (to within float rounding).
+  // DC-block, then shift the carrier to DC. Both recurrences carry across calls,
+  // so the result is independent of how the input is chunked (to float rounding).
   for (std::size_t k = 0; k < n; ++k) {
+    const std::complex<double> x{in[k].real(), in[k].imag()};
+    const std::complex<double> hp = x - dc_prev_in_ + kDcPole * dc_prev_out_;
+    dc_prev_in_ = x;
+    dc_prev_out_ = hp;
+
     const std::complex<float> p{static_cast<float>(phasor_.real()), static_cast<float>(phasor_.imag())};
-    const std::complex<float> m = in[k] * p;
+    const std::complex<float> m = std::complex<float>{static_cast<float>(hp.real()), static_cast<float>(hp.imag())} * p;
     mi[k] = m.real();
     mq[k] = m.imag();
     phasor_ *= step_;

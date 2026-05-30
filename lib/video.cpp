@@ -327,13 +327,21 @@ Screen::Frame Screen::snapshot() const {
 
 // === Decoder ===
 
+namespace {
+// Sync-branch low-pass length. Modest, so the group delay (~half this) stays a
+// small fraction of a line — a constant horizontal offset, not a smear.
+constexpr std::size_t kSyncLpTaps = 63;
+} // namespace
+
 Decoder::Decoder(const DecoderConfig &cfg) :
+    sync_lp_{dsp::lowpass_kernel(kSyncLpTaps, cfg.sample_rate_hz, cfg.sync_lp_cutoff_hz)},
     sep_{SyncSeparatorConfig{.sample_rate_hz = cfg.sample_rate_hz}},
     hsweep_{HorizontalSweepConfig{.sample_rate_hz = cfg.sample_rate_hz}},
     vsync_{VerticalSyncConfig{.sample_rate_hz = cfg.sample_rate_hz}},
     screen_{ScreenConfig{.width = cfg.width, .height = cfg.height, .sample_rate_hz = cfg.sample_rate_hz}} {}
 
 void Decoder::prepare(std::size_t max_in) {
+  sync_lp_.prepare(max_in);
   sep_.prepare(max_in);
   hsweep_.prepare(max_in);
   vsync_.prepare(max_in);
@@ -341,10 +349,12 @@ void Decoder::prepare(std::size_t max_in) {
 }
 
 void Decoder::process(std::span<const float> envelope) {
-  // The branch: the separator's sync bit fans to both timebases, then the
-  // screen joins the picture rail with the two timing rails. The spans stay
-  // valid because each producer is read before it runs again next block.
-  const std::span<const SyncSample> sync = sep_.process(envelope);
+  // The branch: the envelope fans to a narrow sync low-pass (whose sliced sync
+  // bit feeds both timebases) and, untouched, to the picture rail. The screen
+  // joins the picture rail with the two timing rails. Spans stay valid because
+  // each producer is read before it runs again next block.
+  const std::span<const float> sync_env = sync_lp_.process(envelope);
+  const std::span<const SyncSample> sync = sep_.process(sync_env);
   const std::span<const BeamSample> hbeam = hsweep_.process(sync);
   const std::span<const VSample> vbeam = vsync_.process(sync);
   screen_.process(envelope, hbeam, vbeam);
