@@ -43,9 +43,9 @@ void AmEnvelope::prepare(std::size_t max_in) {
 
 std::span<const float> AmEnvelope::process(std::span<const float> in) {
   // Down-convert to baseband I/Q, then low-pass each plane.
-  const dsp::Mixer::Iq mixed = mixer_.process(in);
-  const std::span<const float> filtered_i = i_filter_.process(mixed.i);
-  const std::span<const float> filtered_q = q_filter_.process(mixed.q);
+  const auto mixed = mixer_.process(in);
+  const auto filtered_i = i_filter_.process(mixed.i);
+  const auto filtered_q = q_filter_.process(mixed.q);
 
   // A real carrier of amplitude A lands as a baseband component of magnitude
   // A/2, so scale by 2 to recover A. std::hypot's overflow guarding is needless
@@ -82,8 +82,8 @@ void ComplexAmEnvelope::prepare(std::size_t max_in) {
 
 std::span<const float> ComplexAmEnvelope::process(std::span<const std::complex<float>> in) {
   const std::size_t n = in.size();
-  const std::span<float> mi = mix_i_.write_n(n);
-  const std::span<float> mq = mix_q_.write_n(n);
+  const auto mi = mix_i_.write_n(n);
+  const auto mq = mix_q_.write_n(n);
 
   // DC-block, then shift the carrier to DC. Both recurrences carry across calls,
   // so the result is independent of how the input is chunked (to float rounding).
@@ -104,8 +104,8 @@ std::span<const float> ComplexAmEnvelope::process(std::span<const std::complex<f
     }
   }
 
-  const std::span<const float> filtered_i = i_filter_.process(mi);
-  const std::span<const float> filtered_q = q_filter_.process(mq);
+  const auto filtered_i = i_filter_.process(mi);
+  const auto filtered_q = q_filter_.process(mq);
   const std::size_t m = filtered_i.size();
   out_.reserve(m);
   envelope_magnitude(filtered_i.data(), filtered_q.data(), out_.write_n(m).data(), m);
@@ -125,7 +125,7 @@ VisionChain build_vision_chain(const VisionChainConfig &cfg) {
 
   // Decimation folds anything above the decimated Nyquist back into band; the
   // low-pass must clear it. Warn rather than fail — it's a quality call.
-  if (const double decimated_nyquist = cfg.sample_rate_hz / (2.0 * static_cast<double>(cfg.decimation));
+  if (const auto decimated_nyquist = cfg.sample_rate_hz / (2.0 * static_cast<double>(cfg.decimation));
       cfg.cutoff_hz >= decimated_nyquist)
     v.warnings.push_back(std::format("cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing",
         cfg.cutoff_hz / 1e6, decimated_nyquist / 1e6));

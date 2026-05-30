@@ -52,13 +52,13 @@ std::vector<float> lowpass_kernel(std::size_t num_taps, double sample_rate_hz, d
     throw std::invalid_argument("cutoff must be in (0, sample_rate / 2)");
 
   const double fc = cutoff_hz / sample_rate_hz; // cycles per sample
-  const double m = static_cast<double>(num_taps - 1);
+  const auto m = static_cast<double>(num_taps - 1);
   const double centre = m / 2.0;
 
   std::vector<float> taps(num_taps);
   double sum = 0.0;
   for (std::size_t i = 0; i < num_taps; ++i) {
-    const double k = static_cast<double>(i) - centre;
+    const auto k = static_cast<double>(i) - centre;
     // Ideal low-pass impulse response 2*fc*sinc(2*fc*k), windowed.
     const double sinc = (k == 0.0) ? 2.0 * fc : std::sin(2.0 * pi * fc * k) / (pi * k);
     const double tap = sinc * window_value(window, static_cast<double>(i), m);
@@ -87,17 +87,17 @@ void Fir::prepare(std::size_t max_in) {
 }
 
 std::span<const float> Fir::process(std::span<const float> in) {
-  const std::size_t n = taps_.size();
-  const std::size_t m = in.size();
+  const auto n = taps_.size();
+  const auto m = in.size();
   if (m == 0)
     return {};
 
   // Lay the carried tail and this block out contiguously, so each output is a
   // modulo-free sliding dot product over `window_`. (reserve is a no-op once
   // prepare() has run; only an unbudgeted block grows it.)
-  const std::size_t carry = history_.size();
+  const auto carry = history_.size();
   window_.reserve(carry + m);
-  const std::span<float> window = window_.write_n(carry + m);
+  const auto window = window_.write_n(carry + m);
   std::ranges::copy(history_, window.begin());
   std::ranges::copy(in, window.begin() + static_cast<std::ptrdiff_t>(carry));
 
@@ -106,9 +106,9 @@ std::span<const float> Fir::process(std::span<const float> in) {
   // skip is left over into the next block, so chunking can't shift the grid.
   const std::size_t outputs = (m > phase_) ? (m - phase_ + decimation_ - 1) / decimation_ : 0;
   out_.reserve(outputs);
-  float *y = out_.write_n(outputs).data();
-  const float *taps = taps_.data();
-  const float *w = window.data();
+  auto *y = out_.write_n(outputs).data();
+  const auto *taps = taps_.data();
+  const auto *w = window.data();
   std::size_t j = phase_;
   for (std::size_t k = 0; k < outputs; ++k, j += decimation_)
     y[k] = convolve(taps, w + j, n);

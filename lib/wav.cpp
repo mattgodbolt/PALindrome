@@ -40,7 +40,7 @@ void write_mono_float(const std::filesystem::path &path, std::span<const float> 
   const std::uint32_t byte_rate = sample_rate_hz * block_align;
 
   // RIFF is a 32-bit format: the size fields can't describe more than 4 GiB.
-  const std::size_t total = samples.size() * sizeof(float);
+  const auto total = samples.size() * sizeof(float);
   if (total > std::numeric_limits<std::uint32_t>::max() - 36u)
     throw WriteError(std::format("WAV too large for 32-bit RIFF header: {}", path.string()));
   const auto data_bytes = static_cast<std::uint32_t>(total);

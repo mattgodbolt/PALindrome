@@ -56,7 +56,7 @@ int DemodCommand::run() const {
   }
 
   // Normalise and invert to ~±0.9 full scale for comfortable viewing.
-  const float peak = std::ranges::max(out, {}, [](float v) { return std::abs(v); });
+  const auto peak = std::ranges::max(out, {}, [](float v) { return std::abs(v); });
   if (peak > 0.0f)
     std::ranges::transform(out, out.begin(), [scale = 0.9f / peak](float v) { return 1.f - v * scale; });
 
@@ -65,7 +65,7 @@ int DemodCommand::run() const {
     output = std::format("{}.wav", loaded.meta_path.stem().string());
   // Real output rate is the input rate after decimation; the slowdown then maps
   // that to the stamped WAV rate, so the Audacity timeline is invariant to N.
-  const double output_rate = loaded.sample_rate_hz / static_cast<double>(decimate_);
+  const auto output_rate = loaded.sample_rate_hz / static_cast<double>(decimate_);
   const auto wav_rate = static_cast<std::uint32_t>(output_rate / slowdown_);
   wav::write_mono_float(output, out, wav_rate);
 

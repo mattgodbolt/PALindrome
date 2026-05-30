@@ -64,7 +64,7 @@ int RenderCommand::run() const {
 
   const auto loaded = load_recording(recording_, carrier_);
 
-  const double envelope_rate = loaded.sample_rate_hz / static_cast<double>(decimate_);
+  const auto envelope_rate = loaded.sample_rate_hz / static_cast<double>(decimate_);
 
   const EnvelopeOptions opts{
       .cutoff_hz = cutoff_, .decimation = decimate_, .no_sound_trap = no_sound_trap_, .sound_q = sound_q_};
@@ -79,14 +79,14 @@ int RenderCommand::run() const {
       std::println(std::cerr, "render: no samples read from {}", loaded.data_path.string());
       return 1;
     }
-    const std::size_t n = std::min(env.size(), width_ * height_);
-    float hi = env[0];
-    float lo = env[0];
+    const auto n = std::min(env.size(), width_ * height_);
+    auto hi = env[0];
+    auto lo = env[0];
     for (std::size_t i = 0; i < n; ++i) {
       hi = std::max(hi, env[i]);
       lo = std::min(lo, env[i]);
     }
-    const float span = hi > lo ? hi - lo : 1.0f;
+    const auto span = hi > lo ? hi - lo : 1.0f;
     std::vector<std::uint8_t> grey(width_ * height_, 0);
     for (std::size_t i = 0; i < n; ++i)
       grey[i] = static_cast<std::uint8_t>(std::clamp((hi - env[i]) / span, 0.0f, 1.0f) * 255.0f + 0.5f);
@@ -161,9 +161,9 @@ int RenderCommand::run() const {
 
   const double line_hz = decoder.line_omega() * envelope_rate;
   const double field_hz = decoder.field_omega() * envelope_rate;
-  const std::string what = frame_stride_ > 0 ? std::format("wrote {} frames {}_NNNN.png (every {} fields)", written,
-                                                   output.stem().string(), frame_stride_)
-                                             : std::format("wrote {}", output.string());
+  const auto what = frame_stride_ > 0 ? std::format("wrote {} frames {}_NNNN.png (every {} fields)", written,
+                                            output.stem().string(), frame_stride_)
+                                      : std::format("wrote {}", output.string());
   std::println("{} ({}x{}); envelope @ {:g} MS/s after /{} decimation, carrier {:.4f} MHz; "
                "horizontal locked {} edges @ {:.1f} Hz ({:+.2f}%); vertical locked {} fields @ {:.2f} Hz ({:+.2f}%)",
       what, width_, height_, envelope_rate / 1e6, decimate_, loaded.vision_carrier_hz / 1e6, decoder.accepted_edges(),

@@ -44,11 +44,11 @@ Mixer::Iq Mixer::process(std::span<const float> in) {
   const std::size_t n = in.size();
   i_out_.reserve(n);
   q_out_.reserve(n);
-  const float *x = in.data();
-  float *ip = i_out_.write_n(n).data();
-  float *qp = q_out_.write_n(n).data();
-  const float *rre = rot_re_.data();
-  const float *rim = rot_im_.data();
+  const auto *x = in.data();
+  auto *ip = i_out_.write_n(n).data();
+  auto *qp = q_out_.write_n(n).data();
+  const auto *rre = rot_re_.data();
+  const auto *rim = rot_im_.data();
 
   // Full groups: one base phasor feeds a whole vector of elementwise mixes.
   std::size_t k = 0;
@@ -63,9 +63,9 @@ Mixer::Iq Mixer::process(std::span<const float> in) {
 
   // Tail: fewer than kLanes samples. Mix them from the same fixed base, then
   // advance `base` one step per sample so its phase stays exact for next call.
-  const std::size_t r = n - k;
-  const float br = static_cast<float>(base_.real());
-  const float bi = static_cast<float>(base_.imag());
+  const auto r = n - k;
+  const auto br = static_cast<float>(base_.real());
+  const auto bi = static_cast<float>(base_.imag());
   for (std::size_t l = 0; l < r; ++l) {
     ip[k + l] = x[k + l] * (br * rre[l] - bi * rim[l]);
     qp[k + l] = x[k + l] * (br * rim[l] + bi * rre[l]);
