@@ -26,23 +26,65 @@ import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
-# name, label, [min, max, step, default], render flag. This one list drives both
-# the sliders and the CLI invocation; add a knob in one line.
+# One slider per knob: this list drives the sliders, their hover tooltips, and
+# the render invocation, so adding a knob (or fixing its help) is one entry here.
 KNOBS = [
-    ("cutoff", "Luma cutoff (Hz)", 1.0e6, 5.0e6, 1.0e5, 3.0e6, "--cutoff"),
-    ("sync_cutoff", "Sync LP cutoff (Hz)", 0.3e6, 3.0e6, 1.0e5, 1.2e6, "--sync-cutoff"),
-    ("persistence", "Phosphor persistence (fields)", 0.3, 6.0, 0.1, 1.2, "--persistence"),
-    ("beam_sigma", "Beam sigma (rows)", 0.0, 2.5, 0.05, 0.8, "--beam-sigma"),
-    ("gamma", "Gun gamma", 1.0, 3.0, 0.05, 1.0, "--gamma"),
-    ("sync_level", "Sync slice level", 0.5, 0.95, 0.01, 0.85, "--sync-level"),
-    ("h_kp", "H-hold kp", 0.0, 1.0, 0.02, 1.0, "--h-kp"),
-    ("h_ki", "H-hold ki", 0.0, 5.0e-5, 1.0e-6, 1.0e-5, "--h-ki"),
-    ("h_clamp", "H omega clamp", 0.02, 0.30, 0.01, 0.20, "--h-clamp"),
-    ("v_level", "V sync level", 0.1, 0.9, 0.01, 0.4, "--v-level"),
-    ("v_kp", "V-hold kp", 0.0, 1.0, 0.02, 1.0, "--v-kp"),
-    ("v_ki", "V-hold ki", 0.0, 1.0e-7, 2.0e-9, 2.0e-8, "--v-ki"),
-    ("v_tc", "V integrator (lines)", 0.1, 3.0, 0.1, 0.5, "--v-tc"),
-    ("v_minfield", "V min field frac", 0.0, 0.95, 0.05, 0.7, "--v-min-field"),
+    dict(name="cutoff", flag="--cutoff", label="Luma cutoff (Hz)",
+         min=1.0e6, max=5.0e6, step=1.0e5, default=3.0e6,
+         help="Low-pass on the demodulated video before the screen. Lower = softer but rejects more "
+              "4.43 MHz chroma dot-crawl; higher = sharper but more colour hatching. ~3 MHz keeps luma, drops chroma."),
+    dict(name="sync_cutoff", flag="--sync-cutoff", label="Sync LP cutoff (Hz)",
+         min=0.3e6, max=3.0e6, step=1.0e5, default=1.2e6,
+         help="A separate narrow low-pass on the copy of the signal used only for sync detection — keeps chroma and "
+              "noise from chattering the sync slicer. Affects lock stability, not the picture itself."),
+    dict(name="persistence", flag="--persistence", label="Phosphor persistence (fields)",
+         min=0.3, max=6.0, step=0.1, default=1.2,
+         help="How long the phosphor glows, in field periods (~20 ms each). Higher blends more fields together "
+              "(smoother, averages noise, but smears motion); lower is sharper but flickers. ~1.2 ≈ the last two fields."),
+    dict(name="beam_sigma", flag="--beam-sigma", label="Beam sigma (rows)",
+         min=0.0, max=2.5, step=0.05, default=0.8,
+         help="Vertical size of the electron-beam spot, in output rows. Bigger fills the gaps between scanlines "
+              "(softer); smaller gives crisp, visible scanlines (sharper but gappy). 0 = a single-pixel hit."),
+    dict(name="gamma", flag="--gamma", label="Gun gamma",
+         min=1.0, max=3.0, step=0.05, default=1.0,
+         help="Electron-gun brightness curve: light ∝ drive^gamma. The source pre-distorts its video expecting a CRT "
+              "to undo it, so ~2.2 restores natural contrast and shadows; 1.0 is linear (flat, washed-out midtones)."),
+    dict(name="sync_level", flag="--sync-level", label="Sync slice level",
+         min=0.5, max=0.95, step=0.01, default=0.85,
+         help="Where the separator decides 'sync pulse' vs picture, as a fraction of the white→sync-tip range. ~0.85 "
+              "sits inside the sync region. Too low catches dark picture as false sync; too high misses weak sync."),
+    dict(name="h_kp", flag="--h-kp", label="H-hold kp",
+         min=0.0, max=1.0, step=0.02, default=1.0,
+         help="Horizontal hold (stops sideways tearing/slant), proportional gain: how hard the line oscillator snaps "
+              "its phase onto each sync edge. 1.0 = lock exactly to every edge; lower ignores jitter but can drift."),
+    dict(name="h_ki", flag="--h-ki", label="H-hold ki",
+         min=0.0, max=5.0e-5, step=1.0e-6, default=1.0e-5,
+         help="Horizontal hold, integral gain: how fast the line *frequency* is nudged toward the recording's true "
+              "line rate. Tiny values track slow drift; too high makes the lock hunt and oscillate."),
+    dict(name="h_clamp", flag="--h-clamp", label="H omega clamp",
+         min=0.02, max=0.30, step=0.01, default=0.20,
+         help="How far the line frequency may stray from nominal (± fraction) — stops the loop running away while "
+              "acquiring lock. 0.2 = ±20%."),
+    dict(name="v_level", flag="--v-level", label="V sync level",
+         min=0.1, max=0.9, step=0.01, default=0.4,
+         help="Threshold for spotting the vertical-sync interval. The detector averages the sync toward its duty "
+              "cycle (~7% on normal lines, ~84% during the broad vertical pulses); slice between the two. ~0.4."),
+    dict(name="v_kp", flag="--v-kp", label="V-hold kp",
+         min=0.0, max=1.0, step=0.02, default=1.0,
+         help="Vertical hold (stops the picture rolling up/down), proportional gain: how hard each field is snapped "
+              "into vertical position."),
+    dict(name="v_ki", flag="--v-ki", label="V-hold ki",
+         min=0.0, max=1.0e-7, step=2.0e-9, default=2.0e-8,
+         help="Vertical hold, integral gain: how fast the field *rate* is corrected toward ~50 Hz. Very small — the "
+              "field oscillator runs ~300× slower than the line one."),
+    dict(name="v_tc", flag="--v-tc", label="V integrator (lines)",
+         min=0.1, max=3.0, step=0.1, default=0.5,
+         help="Time constant (in line-periods) of the filter that turns the sync bit into a vertical-sync detection. "
+              "Long enough to rise during the broad-pulse train, short enough to ignore single line-sync pulses. ~0.5."),
+    dict(name="v_minfield", flag="--v-min-field", label="V min field frac",
+         min=0.0, max=0.95, step=0.05, default=0.7,
+         help="Debounce: ignore a second vertical-sync trigger arriving sooner than this fraction of a field after "
+              "the last, so the detector can't fire twice per field. 0.7 = ignore re-triggers within 70% of a field."),
 ]
 
 PAGE = """<!doctype html><html><head><meta charset=utf-8><title>PALindrome tune</title><style>
@@ -62,7 +104,7 @@ button{margin:.4em .4em 0 0}#status{font:.85em monospace;margin-top:.5em;color:#
 <script>
 const KNOBS=__KNOBS__, vals={}, kd=document.getElementById('knobs');
 for(const k of KNOBS){vals[k.name]=k.def;
- const r=document.createElement('div');r.className='knob';
+ const r=document.createElement('div');r.className='knob';r.title=k.help;
  const l=document.createElement('label');l.textContent=k.label;
  const i=document.createElement('input');i.type='range';i.min=k.min;i.max=k.max;i.step=k.step;i.value=k.def;
  const o=document.createElement('output');o.textContent=(+k.def).toPrecision(4);
@@ -92,8 +134,9 @@ render();
 
 def knobs_json():
     return json.dumps([
-        {"name": n, "label": lbl, "min": lo, "max": hi, "step": st, "def": df}
-        for (n, lbl, lo, hi, st, df, _flag) in KNOBS
+        {"name": k["name"], "label": k["label"], "min": k["min"], "max": k["max"],
+         "step": k["step"], "def": k["default"], "help": k["help"]}
+        for k in KNOBS
     ])
 
 
@@ -110,8 +153,8 @@ class Tuner:
                "--decimate", str(self.args.decimate),
                "--width", str(self.args.width), "--height", str(self.args.height),
                "--frame-stride", "1", "-o", os.path.join(self.tmp, "f.png")]
-        for (name, _l, _lo, _hi, _st, df, flag) in KNOBS:
-            cmd += [flag, str(query.get(name, [df])[0])]
+        for k in KNOBS:
+            cmd += [k["flag"], str(query.get(k["name"], [k["default"]])[0])]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or "render failed")
