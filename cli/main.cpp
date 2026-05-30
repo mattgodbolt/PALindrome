@@ -3,7 +3,6 @@
 #include "info_command.hpp"
 #include "render_command.hpp"
 #include "sync_command.hpp"
-#include "tune_command.hpp"
 
 #include <exception>
 #include <functional>
@@ -25,7 +24,6 @@ int main(int argc, const char **argv) {
   palindrome::cli::DemodCommand demod;
   palindrome::cli::RenderCommand render;
   palindrome::cli::SyncCommand sync;
-  palindrome::cli::TuneCommand tune;
 
   auto cli = lyra::cli();
   cli.add_argument(lyra::help(show_help));
@@ -35,7 +33,6 @@ int main(int argc, const char **argv) {
   demod.add_to(cli, action);
   render.add_to(cli, action);
   sync.add_to(cli, action);
-  tune.add_to(cli, action);
 
   const auto result = cli.parse({argc, argv});
   if (show_help) {

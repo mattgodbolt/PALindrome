@@ -39,6 +39,15 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(persistence_, "fields")["--persistence"]("Phosphor persistence in field periods"))
           .add_argument(lyra::opt(beam_sigma_, "rows")["--beam-sigma"]("Beam-spot vertical size in output rows"))
           .add_argument(lyra::opt(gamma_, "g")["--gamma"]("Electron-gun gamma (1.0 = linear)"))
+          .add_argument(lyra::opt(sync_level_, "x")["--sync-level"]("Sync-separator slice level"))
+          .add_argument(lyra::opt(h_kp_, "x")["--h-kp"]("Horizontal hold: AFC kp"))
+          .add_argument(lyra::opt(h_ki_, "x")["--h-ki"]("Horizontal hold: AFC ki"))
+          .add_argument(lyra::opt(h_clamp_, "x")["--h-clamp"]("Horizontal hold: omega clamp"))
+          .add_argument(lyra::opt(v_level_, "x")["--v-level"]("Vertical hold: vsync slice level"))
+          .add_argument(lyra::opt(v_kp_, "x")["--v-kp"]("Vertical hold: field-PLL kp"))
+          .add_argument(lyra::opt(v_ki_, "x")["--v-ki"]("Vertical hold: field-PLL ki"))
+          .add_argument(lyra::opt(v_tc_, "x")["--v-tc"]("Vertical hold: integrator time constant (lines)"))
+          .add_argument(lyra::opt(v_minfield_, "x")["--v-min-field"]("Vertical hold: min field fraction"))
           .add_argument(lyra::opt(frame_stride_, "n")["--frame-stride"](
               "Write a PNG every Nth field boundary (<stem>_NNNN.png); 0 = one image"))
           .add_argument(lyra::opt(no_sound_trap_)["--no-sound-trap"]("Disable the sound-carrier notch"))
@@ -93,13 +102,21 @@ int RenderCommand::run() const {
   // bit to the horizontal sweep and vertical sync, then joins both timebases
   // with the picture rail at the phosphor screen. We pump the recording through
   // in blocks, so nothing ever materialises the whole envelope.
-  video::Decoder decoder{video::DecoderConfig{.sample_rate_hz = envelope_rate,
-      .width = width_,
-      .height = height_,
-      .sync_lp_cutoff_hz = sync_cutoff_,
-      .persistence_fields = persistence_,
-      .beam_sigma_rows = beam_sigma_,
-      .gamma = gamma_}};
+  video::DecoderConfig dc{
+      .sample_rate_hz = envelope_rate, .width = width_, .height = height_, .sync_lp_cutoff_hz = sync_cutoff_};
+  dc.persistence_fields = persistence_;
+  dc.beam_sigma_rows = beam_sigma_;
+  dc.gamma = gamma_;
+  dc.sep.sync_level = sync_level_;
+  dc.hsweep.pll_kp = h_kp_;
+  dc.hsweep.pll_ki = h_ki_;
+  dc.hsweep.omega_clamp = h_clamp_;
+  dc.vsync.vsync_level = v_level_;
+  dc.vsync.pll_kp = v_kp_;
+  dc.vsync.pll_ki = v_ki_;
+  dc.vsync.integrator_tc_lines = v_tc_;
+  dc.vsync.min_field_fraction = v_minfield_;
+  video::Decoder decoder{dc};
 
   constexpr std::size_t kBlock = std::size_t{1} << 16;
   decoder.prepare(kBlock);

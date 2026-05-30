@@ -22,6 +22,9 @@ analog machine, not a DSP textbook. The current state:
 - **`tools/inspect_capture.py`** — fast capture QC: predicts whether a clip is
   decodable (carrier/sideband reach, line-comb SNR) and flags near-carrier ghost
   spurs, before you sink time into a full decode.
+- **`tools/tune.py`** — a throwaway web UI (slider per knob, frame scrubber) that
+  shells out to `render` so you can dial the decode/CRT knobs in live; the C++
+  side stays a plain CLI with no webserver in it.
 - **`sync`** — a diagnostic that slices the composite and reports the pulse-width
   distribution, line-sync jitter, vertical field structure, and the locks the
   timebases settle on. This is the microscope the decode was built with.
@@ -141,8 +144,8 @@ tell you whether the sync chain is healthy.
 
 - **A decent monochrome picture.** ✅ Done: gun-drive levels (DC-restored black),
   the rotated deflection yoke (straight scanlines), a Gaussian beam splat (filled
-  scanlines), and per-field snapshots. Still open: a gun-gamma pass for the
-  midtones, and a small interactive tuner for the CRT knobs.
+  scanlines), the electron-gun gamma, per-field snapshots, and a web-slider tuner
+  (`tools/tune.py`) for dialling the knobs in.
 - **Colour — the PAL bit.** Burst-locked subcarrier regeneration, the 1H delay
   line, U/V demodulation with the PAL alternation, Y/C separation. The chroma is
   in the captures, waiting (and shows as faint diagonal dot-crawl until separated).

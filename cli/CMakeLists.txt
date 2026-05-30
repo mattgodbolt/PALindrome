@@ -5,7 +5,6 @@ add_executable(palindrome_cli
         demod_command.cpp
         render_command.cpp
         sync_command.cpp
-        tune_command.cpp
         convert_command.cpp)
 
 # The CMake target must be unique, but we want the binary on disk to just be
