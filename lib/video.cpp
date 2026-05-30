@@ -258,53 +258,94 @@ Screen::Screen(const ScreenConfig &cfg) :
     throw std::invalid_argument{"Screen: sample_rate_hz and field_hz must be positive"};
   if (!(cfg_.persistence_fields > 0.0))
     throw std::invalid_argument{"Screen: persistence_fields must be positive"};
+  if (!(cfg_.beam_sigma_rows >= 0.0))
+    throw std::invalid_argument{"Screen: beam_sigma_rows must be non-negative"};
+  if (!(cfg_.nominal_line_hz > cfg_.field_hz))
+    throw std::invalid_argument{"Screen: nominal_line_hz must exceed field_hz"};
   // Decay per sample so that brightness falls by 1/e over persistence_fields
   // field periods: tau_samples = persistence * (sample_rate / field_hz).
   const double tau_samples = cfg_.persistence_fields * cfg_.sample_rate_hz / cfg_.field_hz;
   log_decay_ = -1.0 / tau_samples;
+  // Yoke shear: the beam steps (field_hz / line_hz) of a field per line, i.e.
+  // this many output rows — the amount to un-creep within each line.
+  yoke_tilt_rows_ = static_cast<double>(cfg_.height) * cfg_.field_hz / cfg_.nominal_line_hz;
+  // Splat the beam spot out to 2.5 sigma; weights themselves are recomputed per
+  // line, since the spot centre sits at a sub-pixel row that shifts line to line.
+  splat_radius_ = cfg_.beam_sigma_rows > 0.0 ? static_cast<std::size_t>(std::ceil(2.5 * cfg_.beam_sigma_rows)) : 0;
+  row_weights_.assign(2 * splat_radius_ + 1, 0.0);
 }
 
 void Screen::prepare(std::size_t) {}
 
-float Screen::intensity_of(float env_f) {
-  // Placeholder levels: track sync-tip (peak) and white (floor) like the
-  // separator's AGC, and map the envelope into [0, 1] brightness — white
-  // (low envelope) bright, sync (high envelope) dark. The real version is the
-  // sync-locked black-level clamp still to come.
+namespace {
+// The back porch — the blanking shelf just after the line-sync pulse (h_phase=0
+// is the sync leading edge) — sits at black every line, a clean reference for
+// DC restoration. As an h_phase window: sync is ~0..0.07, the back porch ~0.09.
+constexpr float kBackPorchLo = 0.09f;
+constexpr float kBackPorchHi = 0.14f;
+constexpr double kBlackTrack = 0.02; // black-reference tracking per back-porch sample
+} // namespace
+
+float Screen::intensity_of(float env_f, float h_phase) {
+  // The electron gun (see Screen::black_): DC-restore black from the back-porch
+  // window, then drive = black - env, cut off below black. No upper bound.
   const double env = static_cast<double>(env_f);
   if (!seeded_) {
-    peak_ = floor_ = env;
+    black_ = env;
     seeded_ = true;
   }
-  constexpr double release = 1.0 - 0.999999;
-  const double range_pre = peak_ - floor_;
-  peak_ = std::max(env, peak_ - range_pre * release);
-  floor_ = std::min(env, floor_ + range_pre * release);
-  const double range = peak_ - floor_;
-  if (range <= 0.0)
-    return 0.0;
-  return static_cast<float>(std::clamp((peak_ - env) / range, 0.0, 1.0));
+  if (h_phase >= kBackPorchLo && h_phase < kBackPorchHi)
+    black_ += kBlackTrack * (env - black_);
+  const double drive = black_ - env;
+  return static_cast<float>(drive > 0.0 ? drive : 0.0);
 }
 
-void Screen::process(
-    std::span<const float> envelope, std::span<const BeamSample> hbeam, std::span<const VSample> vbeam) {
+void Screen::process(std::span<const float> envelope, std::span<const BeamSample> hbeam, std::span<const VSample> vbeam,
+    const FieldCallback &on_field) {
   const std::size_t n = std::min({envelope.size(), hbeam.size(), vbeam.size()});
   for (std::size_t i = 0; i < n; ++i) {
-    const float intensity = intensity_of(envelope[i]);
+    // A field boundary closes off a completed field: snapshot the phosphor as
+    // it stands now (before this sample's deposit), then carry on. Block-size
+    // independent — field_start is per-sample, so the snapshots land identically
+    // however the input is chunked.
+    if (on_field && vbeam[i].field_start)
+      on_field(snapshot());
+
+    const float drive = intensity_of(envelope[i], hbeam[i].h_phase);
 
     auto x = static_cast<std::size_t>(static_cast<double>(hbeam[i].h_phase) * static_cast<double>(cfg_.width));
     if (x >= cfg_.width)
       x = cfg_.width - 1;
-    auto y = static_cast<std::size_t>(static_cast<double>(vbeam[i].v_phase) * static_cast<double>(cfg_.height));
-    if (y >= cfg_.height)
-      y = cfg_.height - 1;
-    const std::size_t idx = y * cfg_.width + x;
 
-    // Lazy phosphor decay: bring this pixel's charge forward to now, then add
-    // the fresh deposit. O(1) per sample — no full-buffer sweep.
-    const double dt = static_cast<double>(sample_index_ - last_[idx]);
-    bright_[idx] = bright_[idx] * static_cast<float>(std::exp(log_decay_ * dt)) + intensity;
-    last_[idx] = sample_index_;
+    // Yoke shear: un-creep the vertical so the scanline is flat (see header).
+    const double yc = static_cast<double>(vbeam[i].v_phase) * static_cast<double>(cfg_.height) -
+                      yoke_tilt_rows_ * static_cast<double>(hbeam[i].h_phase);
+
+    // Gaussian beam spot, centred on the sheared sub-pixel row and normalised so
+    // the splat conserves the deposited charge.
+    const auto base = static_cast<std::ptrdiff_t>(std::floor(yc)) - static_cast<std::ptrdiff_t>(splat_radius_);
+    double sum = 0.0;
+    for (std::size_t k = 0; k < row_weights_.size(); ++k) {
+      const double d = static_cast<double>(base + static_cast<std::ptrdiff_t>(k)) + 0.5 - yc;
+      const double w =
+          cfg_.beam_sigma_rows > 0.0 ? std::exp(-0.5 * d * d / (cfg_.beam_sigma_rows * cfg_.beam_sigma_rows)) : 1.0;
+      row_weights_[k] = w;
+      sum += w;
+    }
+    const double inv = sum > 0.0 ? 1.0 / sum : 0.0;
+
+    // Splat into those rows; each pixel keeps its own lazy phosphor decay (charge
+    // brought forward to now, then the fresh deposit).
+    for (std::size_t k = 0; k < row_weights_.size(); ++k) {
+      const std::ptrdiff_t row = base + static_cast<std::ptrdiff_t>(k);
+      if (row < 0 || row >= static_cast<std::ptrdiff_t>(cfg_.height))
+        continue;
+      const std::size_t idx = static_cast<std::size_t>(row) * cfg_.width + x;
+      const double dt = static_cast<double>(sample_index_ - last_[idx]);
+      bright_[idx] = bright_[idx] * static_cast<float>(std::exp(log_decay_ * dt)) +
+                     static_cast<float>(drive * row_weights_[k] * inv);
+      last_[idx] = sample_index_;
+    }
     ++sample_index_;
   }
 }
@@ -337,8 +378,11 @@ Decoder::Decoder(const DecoderConfig &cfg) :
     sync_lp_{dsp::lowpass_kernel(kSyncLpTaps, cfg.sample_rate_hz, cfg.sync_lp_cutoff_hz)},
     sep_{SyncSeparatorConfig{.sample_rate_hz = cfg.sample_rate_hz}},
     hsweep_{HorizontalSweepConfig{.sample_rate_hz = cfg.sample_rate_hz}},
-    vsync_{VerticalSyncConfig{.sample_rate_hz = cfg.sample_rate_hz}},
-    screen_{ScreenConfig{.width = cfg.width, .height = cfg.height, .sample_rate_hz = cfg.sample_rate_hz}} {}
+    vsync_{VerticalSyncConfig{.sample_rate_hz = cfg.sample_rate_hz}}, screen_{ScreenConfig{.width = cfg.width,
+                                                                          .height = cfg.height,
+                                                                          .sample_rate_hz = cfg.sample_rate_hz,
+                                                                          .persistence_fields = cfg.persistence_fields,
+                                                                          .beam_sigma_rows = cfg.beam_sigma_rows}} {}
 
 void Decoder::prepare(std::size_t max_in) {
   sync_lp_.prepare(max_in);
@@ -348,7 +392,7 @@ void Decoder::prepare(std::size_t max_in) {
   screen_.prepare(max_in);
 }
 
-void Decoder::process(std::span<const float> envelope) {
+void Decoder::process(std::span<const float> envelope, const Screen::FieldCallback &on_field) {
   // The branch: the envelope fans to a narrow sync low-pass (whose sliced sync
   // bit feeds both timebases) and, untouched, to the picture rail. The screen
   // joins the picture rail with the two timing rails. Spans stay valid because
@@ -357,7 +401,7 @@ void Decoder::process(std::span<const float> envelope) {
   const std::span<const SyncSample> sync = sep_.process(sync_env);
   const std::span<const BeamSample> hbeam = hsweep_.process(sync);
   const std::span<const VSample> vbeam = vsync_.process(sync);
-  screen_.process(envelope, hbeam, vbeam);
+  screen_.process(envelope, hbeam, vbeam, on_field);
 }
 
 } // namespace palindrome::video

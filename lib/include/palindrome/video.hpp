@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -214,48 +215,83 @@ struct ScreenConfig {
   std::size_t height;
   double sample_rate_hz;
   double field_hz = 50.0;
+  double nominal_line_hz = 15625.0; // sets the deflection-yoke shear (see below)
   // Phosphor persistence as a multiple of the field period. The beam deposits
   // brightness where it lands; each pixel then decays exponentially with this
   // time constant. ~1 field means roughly the last two fields survive — so an
   // interlaced frame builds up and older content (and the startup junk) fades.
   double persistence_fields = 1.2;
+  // Beam-spot size: each sample is splatted vertically with a Gaussian of this
+  // standard deviation, in output rows. It fills the gaps between scanlines (the
+  // focus) and is the hook a wider kernel turns into bloom later. 0 => a single
+  // pixel (no splat).
+  double beam_sigma_rows = 0.8;
 };
 
 // The picture tube. A join sink fed three aligned rails — the picture
 // (envelope) and the two timebases (horizontal phase, vertical phase) — it
-// paints each envelope sample as a brightness deposit at the beam position
-// (x = h_phase*width, y = v_phase*height) onto a phosphor that decays over
-// time. Interlace falls out for free: field 1's vertical sync is half a line
-// late, so its lines land one output row below field 0's. The env->brightness
-// map here is a placeholder running AGC, standing in for the sync-locked
-// black-level clamp (the levels stage) still to come.
+// drives each envelope sample through the electron gun (DC-restored black sets
+// the cutoff) and deposits the beam current at (x = h_phase*width, y from the
+// yoke shear) onto a phosphor that decays over time. Interlace falls out for
+// free: field 1's vertical sync is half a line late, so its lines land one
+// output row below field 0's.
 class Screen {
 public:
   explicit Screen(const ScreenConfig &cfg);
 
   void prepare(std::size_t max_in);
-  void process(std::span<const float> envelope, std::span<const BeamSample> hbeam, std::span<const VSample> vbeam);
 
   struct Frame {
     std::vector<std::uint8_t> grey; // width*height, row-major
     std::size_t width;
     std::size_t height;
   };
+
+  // on_field fires once per field boundary (the field_start sample), with the
+  // phosphor snapshot as completed at that instant — the hook for a per-field
+  // PNG sequence. (Field, not frame, until even/odd parity tracking lands with
+  // colour; then this can fire per full frame.) Empty by default = no snapshots.
+  using FieldCallback = std::function<void(const Frame &)>;
+  void process(std::span<const float> envelope, std::span<const BeamSample> hbeam, std::span<const VSample> vbeam,
+      const FieldCallback &on_field = {});
+
   // Decay the phosphor to the current instant and read it out as a grey frame,
   // peak-normalised. Const — snapshotting doesn't disturb the running sim, so
-  // a future per-frame PNG sequence can call it at every field boundary.
+  // the per-field callback can call it at every field boundary.
   [[nodiscard]] Frame snapshot() const;
 
 private:
-  [[nodiscard]] float intensity_of(float env); // env -> beam brightness via running AGC
+  // env -> beam brightness. h_phase locates the back porch (for the black-level
+  // clamp) and the active window (for the white level).
+  [[nodiscard]] float intensity_of(float env, float h_phase);
 
   ScreenConfig cfg_;
   double log_decay_; // ln(per-sample phosphor decay factor)
   std::vector<float> bright_; // per-pixel phosphor charge at last_[]
   std::vector<std::size_t> last_; // sample_index_ of each pixel's last deposit
   std::size_t sample_index_ = 0;
-  double peak_ = 0.0; // running sync-tip level (AGC)
-  double floor_ = 0.0; // running white level (AGC)
+
+  // Deflection-yoke model + vertical beam splat. A real TV's yoke is rotated a
+  // hair so each line traces straight across X even though the beam creeps
+  // downward during the horizontal sweep. We apply the same shear continuously,
+  // every sample:   row = v_phase*height - yoke_tilt_rows_ * h_phase   — the
+  // second term cancels the in-line vertical creep, so a scanline traces flat
+  // instead of smearing into a diagonal. yoke_tilt_rows_ is the rows the beam
+  // steps per line (from the nominal scan geometry, like a real fixed yoke).
+  // Each sample is then splatted vertically with a Gaussian spot centred on that
+  // sheared row, filling the gaps between scanlines.
+  double yoke_tilt_rows_ = 0.0; // vertical rows the beam advances per line
+  std::size_t splat_radius_ = 0; // Gaussian half-width in rows
+  std::vector<double> row_weights_; // scratch splat weights, size 2*radius+1
+
+  // Levels, simulated rather than clamped. black_ tracks the back-porch blanking
+  // shelf (DC restoration — a real TV's keyed-clamp circuit), which sets the
+  // gun's cutoff: drive = black_ - env, so whiter (lower envelope) drives more
+  // beam, while sync/blanking (at or above black) cut the beam off (the one
+  // floor that's physical — electrons can't go negative). No upper bound: an
+  // over-white deposits more charge and blooms. The only normalisation is the
+  // peak scale at readout, for the 8-bit PNG.
+  double black_ = 0.0;
   bool seeded_ = false;
 };
 
@@ -271,6 +307,11 @@ struct DecoderConfig {
   // complex-baseband capture). The picture rail is untouched, so this trades
   // nothing on the image. Cutoff is a fraction of a sync pulse's bandwidth.
   double sync_lp_cutoff_hz = 1.2e6;
+  // Phosphor persistence, in field periods (see ScreenConfig). Higher evens out
+  // the brightness between the two interlaced fields; lower sharpens motion.
+  double persistence_fields = 1.2;
+  // Beam-spot vertical size in output rows (see ScreenConfig::beam_sigma_rows).
+  double beam_sigma_rows = 0.8;
 };
 
 // The whole video graph as one streaming node: it owns the separator, the two
@@ -283,7 +324,9 @@ public:
   explicit Decoder(const DecoderConfig &cfg);
 
   void prepare(std::size_t max_in);
-  void process(std::span<const float> envelope);
+  // on_field, if set, fires the phosphor snapshot at every field boundary (the
+  // hook for a per-field PNG sequence); otherwise just integrates the screen.
+  void process(std::span<const float> envelope, const Screen::FieldCallback &on_field = {});
   [[nodiscard]] Screen::Frame snapshot() const { return screen_.snapshot(); }
 
   [[nodiscard]] std::size_t accepted_edges() const noexcept { return hsweep_.accepted_edges(); }

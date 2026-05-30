@@ -28,6 +28,9 @@ private:
   std::size_t decimate_{2}; // 32 MS/s / 2 = 16 MS/s => ~1024 samples/line
   std::size_t width_{720};
   std::size_t height_{576};
+  double persistence_{1.2}; // phosphor persistence in field periods
+  double beam_sigma_{0.8}; // beam-spot vertical size in output rows
+  std::size_t frame_stride_{0}; // 0 => one image; N => a PNG every Nth field boundary
   bool no_sound_trap_{false};
   double sound_q_{10.0};
   bool no_sync_{false}; // debug: naive-fold the envelope, bypassing the sync graph
