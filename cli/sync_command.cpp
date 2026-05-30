@@ -29,7 +29,7 @@ std::vector<Pulse> find_pulses(std::span<const video::SyncSample> sliced) {
   bool prev = false;
   std::size_t leading = 0;
   for (std::size_t i = 0; i < sliced.size(); ++i) {
-    const bool s = sliced[i].sync;
+    const auto s = sliced[i].sync;
     if (s && !prev)
       leading = i;
     else if (!s && prev)
@@ -50,7 +50,7 @@ Stats stats_of(std::span<const double> xs) {
   double sum = 0.0;
   for (const double x: xs)
     sum += x;
-  const double mean = sum / static_cast<double>(xs.size());
+  const auto mean = sum / static_cast<double>(xs.size());
   double sq = 0.0;
   for (const double x: xs)
     sq += (x - mean) * (x - mean);
@@ -70,10 +70,10 @@ void print_histogram(std::span<const double> values, double lo, double hi, int b
     b = std::clamp(b, 0, buckets - 1);
     ++counts[static_cast<std::size_t>(b)];
   }
-  const std::size_t peak = *std::ranges::max_element(counts);
+  const auto peak = *std::ranges::max_element(counts);
   for (int b = 0; b < buckets; ++b) {
     const double bin_lo = lo + width * b;
-    const std::size_t c = counts[static_cast<std::size_t>(b)];
+    const auto c = counts[static_cast<std::size_t>(b)];
     const int bar = peak ? static_cast<int>(50 * c / peak) : 0;
     std::println("  {:6.2f}-{:6.2f} {} | {:5} {}", bin_lo, bin_lo + width, unit, c,
         std::string(static_cast<std::size_t>(bar), '#'));
@@ -116,7 +116,7 @@ int SyncCommand::run() const {
 
   video::SyncSeparator separator{video::SyncSeparatorConfig{.sample_rate_hz = rate}};
   separator.prepare(env.size());
-  const std::span<const video::SyncSample> sliced = separator.process(env);
+  const auto sliced = separator.process(env);
 
   const auto pulses = find_pulses(sliced);
 
@@ -151,7 +151,7 @@ int SyncCommand::run() const {
   std::optional<std::size_t> prev_leading;
   std::size_t n_line = 0, n_eq = 0, n_broad = 0;
   for (const auto &p: pulses) {
-    const double w = static_cast<double>(p.width) * us_per_sample;
+    const auto w = static_cast<double>(p.width) * us_per_sample;
     if (w < line_lo_us) {
       ++n_eq;
       continue;

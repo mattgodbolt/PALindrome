@@ -1,6 +1,7 @@
 #include "palindrome/sigmf.hpp"
 
 #include <array>
+#include <format>
 #include <fstream>
 #include <iterator>
 #include <utility>
@@ -20,7 +21,7 @@ std::optional<T> optional_field(const nlohmann::json &j, const char *key) {
     return it->template get<T>();
   }
   catch (const nlohmann::json::exception &e) {
-    throw ParseError{std::string{"field '"} + key + "' has the wrong type: " + e.what()};
+    throw ParseError{std::format("field '{}' has the wrong type: {}", key, e.what())};
   }
 }
 
@@ -29,13 +30,13 @@ template<typename T>
 T required_field(const nlohmann::json &j, const char *key) {
   if (auto value = optional_field<T>(j, key))
     return std::move(*value);
-  throw ParseError{std::string{"missing required field '"} + key + "'"};
+  throw ParseError{std::format("missing required field '{}'", key)};
 }
 
 } // namespace
 
 DataType DataType::parse(std::string_view spec) {
-  const auto fail = [&] { throw ParseError{"invalid core:datatype: '" + std::string{spec} + "'"}; };
+  const auto fail = [&] { throw ParseError{std::format("invalid core:datatype: '{}'", spec)}; };
 
   DataType dt;
   std::string_view s = spec;
@@ -105,7 +106,7 @@ Metadata parse(std::string_view json) {
     doc = nlohmann::json::parse(json);
   }
   catch (const nlohmann::json::parse_error &e) {
-    throw ParseError{std::string{"invalid JSON: "} + e.what()};
+    throw ParseError{std::format("invalid JSON: {}", e.what())};
   }
   if (!doc.is_object() || !doc.contains("global"))
     throw ParseError{"not a SigMF document: missing 'global' object"};
@@ -170,13 +171,13 @@ Metadata parse(std::string_view json) {
 Metadata load(const std::filesystem::path &meta_path) {
   std::ifstream in{meta_path, std::ios::binary};
   if (!in)
-    throw ParseError{"could not open SigMF metadata file: " + meta_path.string()};
+    throw ParseError{std::format("could not open SigMF metadata file: {}", meta_path.string())};
   const std::string contents{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
   try {
     return parse(contents);
   }
   catch (const ParseError &e) {
-    throw ParseError{meta_path.string() + ": " + e.what()};
+    throw ParseError{std::format("{}: {}", meta_path.string(), e.what())};
   }
 }
 

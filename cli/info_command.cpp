@@ -68,7 +68,7 @@ int InfoCommand::run() const {
     if (cap.frequency)
       detail += std::format(" {:g} MHz", *cap.frequency / 1e6);
     if (cap.datetime)
-      detail += "  " + *cap.datetime;
+      detail += std::format("  {}", *cap.datetime);
     std::println("    @{}{}", cap.sample_start, detail);
   }
 

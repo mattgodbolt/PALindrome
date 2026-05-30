@@ -120,7 +120,7 @@ struct Metadata {
       return it->template get<T>();
     }
     catch (const nlohmann::json::exception &e) {
-      throw ParseError{"field '" + std::string{key} + "' has the wrong type: " + e.what()};
+      throw ParseError{std::format("field '{}' has the wrong type: {}", key, e.what())};
     }
   }
 };

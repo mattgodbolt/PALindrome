@@ -106,7 +106,7 @@ void stream_ci16le_blocks(const std::filesystem::path &data_path,
   while (data) {
     data.read(reinterpret_cast<char *>(raw.data()), static_cast<std::streamsize>(raw.size() * sizeof(std::int16_t)));
     const auto ints = static_cast<std::size_t>(data.gcount()) / sizeof(std::int16_t);
-    const std::size_t got = ints / 2; // whole complex samples (a trailing lone int16 is dropped)
+    const auto got = ints / 2; // whole complex samples (a trailing lone int16 is dropped)
     if (got == 0)
       break;
     const std::span<std::complex<float>> dst{block.data(), got};

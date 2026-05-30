@@ -37,7 +37,7 @@ void SyncSeparator::prepare(std::size_t max_in) { out_.reserve(max_in); }
 std::span<const SyncSample> SyncSeparator::process(std::span<const float> envelope) {
   const std::size_t n = envelope.size();
   out_.reserve(n);
-  const std::span<SyncSample> dst = out_.write_n(n);
+  const auto dst = out_.write_n(n);
 
   // Seed peak/floor from the first sample we ever see, so the slice level is
   // meaningful from sample 0 rather than starting at a degenerate range of 0.
@@ -51,7 +51,7 @@ std::span<const SyncSample> SyncSeparator::process(std::span<const float> envelo
   const double release = 1.0 - kLevelRelease;
 
   for (std::size_t k = 0; k < n; ++k) {
-    const double env = static_cast<double>(envelope[k]);
+    const auto env = static_cast<double>(envelope[k]);
 
     // Track peak (sync tip) and floor (white) with fast attack to a new
     // extreme and slow release back toward the other end. Both release terms
@@ -101,7 +101,7 @@ void HorizontalSweep::prepare(std::size_t max_in) { out_.reserve(max_in); }
 std::span<const BeamSample> HorizontalSweep::process(std::span<const SyncSample> in) {
   const std::size_t n = in.size();
   out_.reserve(n);
-  const std::span<BeamSample> dst = out_.write_n(n);
+  const auto dst = out_.write_n(n);
 
   const double nominal_omega = cfg_.nominal_line_hz / cfg_.sample_rate_hz;
   const double omega_lo = nominal_omega * (1.0 - cfg_.omega_clamp);
@@ -124,8 +124,8 @@ std::span<const BeamSample> HorizontalSweep::process(std::span<const SyncSample>
       // lockout has elapsed since the last accepted edge. Width gating rejects
       // the broad pulses (too wide) and equalising pulses (too narrow); the
       // lockout rejects chroma-ripple retriggers on the back porch.
-      const double width = static_cast<double>(sample_index_ - leading_edge_sample_);
-      const double since = static_cast<double>(sample_index_ - last_accepted_sample_);
+      const auto width = static_cast<double>(sample_index_ - leading_edge_sample_);
+      const auto since = static_cast<double>(sample_index_ - last_accepted_sample_);
       const double min_pulse = cfg_.min_pulse_fraction / omega_;
       const double max_pulse = cfg_.max_pulse_fraction / omega_;
       const double min_gap = cfg_.min_line_fraction / omega_;
@@ -199,7 +199,7 @@ void VerticalSync::prepare(std::size_t max_in) { out_.reserve(max_in); }
 std::span<const VSample> VerticalSync::process(std::span<const SyncSample> in) {
   const std::size_t n = in.size();
   out_.reserve(n);
-  const std::span<VSample> dst = out_.write_n(n);
+  const auto dst = out_.write_n(n);
 
   const double nominal_omega = cfg_.nominal_field_hz / cfg_.sample_rate_hz;
   const double omega_lo = nominal_omega * (1.0 - cfg_.omega_clamp);
@@ -218,7 +218,7 @@ std::span<const VSample> VerticalSync::process(std::span<const SyncSample> in) {
     // and re-cross between broad pulses); the flywheel coasts otherwise.
     if (!in_vsync_ && integ_ >= enter) {
       in_vsync_ = true;
-      const double since = static_cast<double>(sample_index_ - last_field_sample_);
+      const auto since = static_cast<double>(sample_index_ - last_field_sample_);
       const double min_gap = cfg_.min_field_fraction / omega_;
       if (!have_field_ || since >= min_gap) {
         // PI correction: v_phase should be 0 at the field-sync anchor.
@@ -289,7 +289,7 @@ constexpr double kBlackTrack = 0.02; // black-reference tracking per back-porch 
 float Screen::intensity_of(float env_f, float h_phase) {
   // The electron gun (see Screen::black_): DC-restore black from the back-porch
   // window, then drive = black - env, cut off below black. No upper bound.
-  const double env = static_cast<double>(env_f);
+  const auto env = static_cast<double>(env_f);
   if (!seeded_) {
     black_ = env;
     seeded_ = true;
@@ -322,15 +322,15 @@ void Screen::process(std::span<const float> envelope, std::span<const BeamSample
       x = cfg_.width - 1;
 
     // Yoke shear: un-creep the vertical so the scanline is flat (see header).
-    const double yc = static_cast<double>(vbeam[i].v_phase) * static_cast<double>(cfg_.height) -
-                      yoke_tilt_rows_ * static_cast<double>(hbeam[i].h_phase);
+    const auto yc = static_cast<double>(vbeam[i].v_phase) * static_cast<double>(cfg_.height) -
+                    yoke_tilt_rows_ * static_cast<double>(hbeam[i].h_phase);
 
     // Gaussian beam spot, centred on the sheared sub-pixel row and normalised so
     // the splat conserves the deposited charge.
     const auto base = static_cast<std::ptrdiff_t>(std::floor(yc)) - static_cast<std::ptrdiff_t>(splat_radius_);
     double sum = 0.0;
     for (std::size_t k = 0; k < row_weights_.size(); ++k) {
-      const double d = static_cast<double>(base + static_cast<std::ptrdiff_t>(k)) + 0.5 - yc;
+      const auto d = static_cast<double>(base + static_cast<std::ptrdiff_t>(k)) + 0.5 - yc;
       const double w =
           cfg_.beam_sigma_rows > 0.0 ? std::exp(-0.5 * d * d / (cfg_.beam_sigma_rows * cfg_.beam_sigma_rows)) : 1.0;
       row_weights_[k] = w;
@@ -344,8 +344,8 @@ void Screen::process(std::span<const float> envelope, std::span<const BeamSample
       const std::ptrdiff_t row = base + static_cast<std::ptrdiff_t>(k);
       if (row < 0 || row >= static_cast<std::ptrdiff_t>(cfg_.height))
         continue;
-      const std::size_t idx = static_cast<std::size_t>(row) * cfg_.width + x;
-      const double dt = static_cast<double>(sample_index_ - last_[idx]);
+      const auto idx = static_cast<std::size_t>(row) * cfg_.width + x;
+      const auto dt = static_cast<double>(sample_index_ - last_[idx]);
       bright_[idx] = bright_[idx] * static_cast<float>(std::exp(log_decay_ * dt)) +
                      static_cast<float>(drive * row_weights_[k] * inv);
       last_[idx] = sample_index_;
@@ -359,7 +359,7 @@ Screen::Frame Screen::snapshot() const {
   std::vector<float> now(bright_.size());
   float peak = 0.0f;
   for (std::size_t i = 0; i < bright_.size(); ++i) {
-    const double dt = static_cast<double>(sample_index_ - last_[i]);
+    const auto dt = static_cast<double>(sample_index_ - last_[i]);
     now[i] = bright_[i] * static_cast<float>(std::exp(log_decay_ * dt));
     peak = std::max(peak, now[i]);
   }
@@ -409,10 +409,10 @@ void Decoder::process(std::span<const float> envelope, const Screen::FieldCallba
   // bit feeds both timebases) and, untouched, to the picture rail. The screen
   // joins the picture rail with the two timing rails. Spans stay valid because
   // each producer is read before it runs again next block.
-  const std::span<const float> sync_env = sync_lp_.process(envelope);
-  const std::span<const SyncSample> sync = sep_.process(sync_env);
-  const std::span<const BeamSample> hbeam = hsweep_.process(sync);
-  const std::span<const VSample> vbeam = vsync_.process(sync);
+  const auto sync_env = sync_lp_.process(envelope);
+  const auto sync = sep_.process(sync_env);
+  const auto hbeam = hsweep_.process(sync);
+  const auto vbeam = vsync_.process(sync);
   screen_.process(envelope, hbeam, vbeam, on_field);
 }
 

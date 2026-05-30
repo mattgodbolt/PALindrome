@@ -1,6 +1,7 @@
 #include "palindrome/wav.hpp"
 
 #include <cstring>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <ostream>
@@ -33,15 +34,15 @@ constexpr std::uint16_t bits_per_sample = 32;
 void write_mono_float(const std::filesystem::path &path, std::span<const float> samples, std::uint32_t sample_rate_hz) {
   std::ofstream os{path, std::ios::binary};
   if (!os)
-    throw WriteError("could not open WAV for writing: " + path.string());
+    throw WriteError(std::format("could not open WAV for writing: {}", path.string()));
 
   constexpr std::uint32_t block_align = channels * (bits_per_sample / 8);
   const std::uint32_t byte_rate = sample_rate_hz * block_align;
 
   // RIFF is a 32-bit format: the size fields can't describe more than 4 GiB.
-  const std::size_t total = samples.size() * sizeof(float);
+  const auto total = samples.size() * sizeof(float);
   if (total > std::numeric_limits<std::uint32_t>::max() - 36u)
-    throw WriteError("WAV too large for 32-bit RIFF header: " + path.string());
+    throw WriteError(std::format("WAV too large for 32-bit RIFF header: {}", path.string()));
   const auto data_bytes = static_cast<std::uint32_t>(total);
 
   os.write("RIFF", 4);
@@ -62,7 +63,7 @@ void write_mono_float(const std::filesystem::path &path, std::span<const float> 
   os.write(reinterpret_cast<const char *>(samples.data()), static_cast<std::streamsize>(data_bytes));
 
   if (!os)
-    throw WriteError("failed while writing WAV: " + path.string());
+    throw WriteError(std::format("failed while writing WAV: {}", path.string()));
 }
 
 } // namespace palindrome::wav
