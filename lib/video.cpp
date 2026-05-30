@@ -20,6 +20,7 @@ namespace {
 // fixed circuit values — picked once, not user-tuned.
 constexpr double kSyncHysteresis = 0.05;
 constexpr double kLevelRelease = 0.999999; // ~60 ms settle at 16 MS/s
+constexpr double kVsyncHysteresis = 0.05; // integrator slice hysteresis for vertical sync
 } // namespace
 
 // === SyncSeparator ===
@@ -165,65 +166,188 @@ std::span<const BeamSample> HorizontalSweep::process(std::span<const SyncSample>
   return out_.view();
 }
 
-// === FrameRenderer ===
+// === VerticalSync ===
 
-FrameRenderer::FrameRenderer(const FrameRendererConfig &cfg) :
-    cfg_{cfg}, sum_(cfg.width * cfg.lines, 0.0f), count_(cfg.width * cfg.lines, 0),
-    hi_{-std::numeric_limits<float>::infinity()}, lo_{std::numeric_limits<float>::infinity()} {
-  if (cfg_.width == 0 || cfg_.lines == 0)
-    throw std::invalid_argument{"FrameRenderer: width and lines must be positive"};
+VerticalSync::VerticalSync(const VerticalSyncConfig &cfg) : cfg_{cfg} {
+  if (!(cfg_.sample_rate_hz > 0.0))
+    throw std::invalid_argument{"VerticalSync: sample_rate_hz must be positive"};
+  if (!(cfg_.nominal_field_hz > 0.0 && cfg_.nominal_field_hz < cfg_.sample_rate_hz / 2.0))
+    throw std::invalid_argument{"VerticalSync: nominal_field_hz out of range"};
+  if (!(cfg_.nominal_line_hz > cfg_.nominal_field_hz))
+    throw std::invalid_argument{"VerticalSync: nominal_line_hz must exceed nominal_field_hz"};
+  // Lower bound 1/line_samples keeps alpha <= 1, so the integrator stays a
+  // convex combination (integ_ can't overshoot [0, 1] and ring).
+  if (!(cfg_.integrator_tc_lines * cfg_.sample_rate_hz / cfg_.nominal_line_hz >= 1.0))
+    throw std::invalid_argument{"VerticalSync: integrator_tc_lines too small (alpha would exceed 1)"};
+  if (!(cfg_.vsync_level - kVsyncHysteresis * 0.5 > 0.0 && cfg_.vsync_level + kVsyncHysteresis * 0.5 < 1.0))
+    throw std::invalid_argument{"VerticalSync: vsync_level +/- hysteresis must stay within (0, 1)"};
+  if (!(cfg_.min_field_fraction >= 0.0 && cfg_.min_field_fraction < 1.0))
+    throw std::invalid_argument{"VerticalSync: min_field_fraction must be in [0, 1)"};
+  if (!(cfg_.pll_kp >= 0.0 && cfg_.pll_kp <= 1.0))
+    throw std::invalid_argument{"VerticalSync: pll_kp must be in [0, 1]"};
+  if (!(cfg_.omega_clamp > 0.0 && cfg_.omega_clamp < 1.0))
+    throw std::invalid_argument{"VerticalSync: omega_clamp must be in (0, 1)"};
+
+  // Integrator time constant expressed in lines: alpha = 1 / (tc * samples/line).
+  const double line_samples = cfg_.sample_rate_hz / cfg_.nominal_line_hz;
+  alpha_ = 1.0 / (cfg_.integrator_tc_lines * line_samples);
+  omega_ = cfg_.nominal_field_hz / cfg_.sample_rate_hz;
 }
 
-void FrameRenderer::prepare(std::size_t) {}
+void VerticalSync::prepare(std::size_t max_in) { out_.reserve(max_in); }
 
-void FrameRenderer::process(std::span<const float> envelope, std::span<const BeamSample> beam) {
-  const std::size_t n = std::min(envelope.size(), beam.size());
-  const std::size_t window_end = cfg_.start_line + cfg_.lines;
-  for (std::size_t i = 0; i < n; ++i) {
-    if (beam[i].line_start) {
-      if (!have_line_)
-        have_line_ = true;
-      else
-        ++line_index_;
-      ++total_locked_;
+std::span<const VSample> VerticalSync::process(std::span<const SyncSample> in) {
+  const std::size_t n = in.size();
+  out_.reserve(n);
+  const std::span<VSample> dst = out_.write_n(n);
+
+  const double nominal_omega = cfg_.nominal_field_hz / cfg_.sample_rate_hz;
+  const double omega_lo = nominal_omega * (1.0 - cfg_.omega_clamp);
+  const double omega_hi = nominal_omega * (1.0 + cfg_.omega_clamp);
+  const double enter = cfg_.vsync_level + kVsyncHysteresis * 0.5;
+  const double leave = cfg_.vsync_level - kVsyncHysteresis * 0.5;
+
+  for (std::size_t k = 0; k < n; ++k) {
+    // Low-pass the sync bit toward its duty cycle. Line sync settles it near
+    // ~0.07; the broad-pulse train drives it toward ~0.84.
+    integ_ += alpha_ * ((in[k].sync ? 1.0 : 0.0) - integ_);
+
+    bool field_start = false;
+    // Rising crossing of the slice marks the vertical interval. The hold gate
+    // rejects a second crossing within the same field (the integrator can dip
+    // and re-cross between broad pulses); the flywheel coasts otherwise.
+    if (!in_vsync_ && integ_ >= enter) {
+      in_vsync_ = true;
+      const double since = static_cast<double>(sample_index_ - last_field_sample_);
+      const double min_gap = cfg_.min_field_fraction / omega_;
+      if (!have_field_ || since >= min_gap) {
+        // PI correction: v_phase should be 0 at the field-sync anchor.
+        const double err = wrap_error(v_phase_);
+        v_phase_ -= cfg_.pll_kp * err;
+        omega_ = std::clamp(omega_ - cfg_.pll_ki * err, omega_lo, omega_hi);
+        last_field_sample_ = sample_index_;
+        have_field_ = true;
+        ++fields_;
+        field_start = true;
+      }
     }
-    // Skip pre-lock samples (before the first locked line) and anything outside
-    // the requested [start_line, start_line + lines) window.
-    if (!have_line_ || line_index_ < cfg_.start_line || line_index_ >= window_end)
-      continue;
+    else if (in_vsync_ && integ_ < leave) {
+      in_vsync_ = false;
+    }
 
-    const std::size_t y = line_index_ - cfg_.start_line;
-    auto x = static_cast<std::size_t>(static_cast<double>(beam[i].h_phase) * static_cast<double>(cfg_.width));
+    dst[k] = VSample{
+        .v_phase = static_cast<float>(v_phase_ - std::floor(v_phase_)),
+        .field_start = field_start,
+    };
+
+    v_phase_ += omega_;
+    v_phase_ -= std::floor(v_phase_);
+    ++sample_index_;
+  }
+
+  return out_.view();
+}
+
+// === Screen ===
+
+Screen::Screen(const ScreenConfig &cfg) :
+    cfg_{cfg}, bright_(cfg.width * cfg.height, 0.0f), last_(cfg.width * cfg.height, 0) {
+  if (cfg_.width == 0 || cfg_.height == 0)
+    throw std::invalid_argument{"Screen: width and height must be positive"};
+  if (!(cfg_.sample_rate_hz > 0.0 && cfg_.field_hz > 0.0))
+    throw std::invalid_argument{"Screen: sample_rate_hz and field_hz must be positive"};
+  if (!(cfg_.persistence_fields > 0.0))
+    throw std::invalid_argument{"Screen: persistence_fields must be positive"};
+  // Decay per sample so that brightness falls by 1/e over persistence_fields
+  // field periods: tau_samples = persistence * (sample_rate / field_hz).
+  const double tau_samples = cfg_.persistence_fields * cfg_.sample_rate_hz / cfg_.field_hz;
+  log_decay_ = -1.0 / tau_samples;
+}
+
+void Screen::prepare(std::size_t) {}
+
+float Screen::intensity_of(float env_f) {
+  // Placeholder levels: track sync-tip (peak) and white (floor) like the
+  // separator's AGC, and map the envelope into [0, 1] brightness — white
+  // (low envelope) bright, sync (high envelope) dark. The real version is the
+  // sync-locked black-level clamp still to come.
+  const double env = static_cast<double>(env_f);
+  if (!seeded_) {
+    peak_ = floor_ = env;
+    seeded_ = true;
+  }
+  constexpr double release = 1.0 - 0.999999;
+  const double range_pre = peak_ - floor_;
+  peak_ = std::max(env, peak_ - range_pre * release);
+  floor_ = std::min(env, floor_ + range_pre * release);
+  const double range = peak_ - floor_;
+  if (range <= 0.0)
+    return 0.0;
+  return static_cast<float>(std::clamp((peak_ - env) / range, 0.0, 1.0));
+}
+
+void Screen::process(
+    std::span<const float> envelope, std::span<const BeamSample> hbeam, std::span<const VSample> vbeam) {
+  const std::size_t n = std::min({envelope.size(), hbeam.size(), vbeam.size()});
+  for (std::size_t i = 0; i < n; ++i) {
+    const float intensity = intensity_of(envelope[i]);
+
+    auto x = static_cast<std::size_t>(static_cast<double>(hbeam[i].h_phase) * static_cast<double>(cfg_.width));
     if (x >= cfg_.width)
       x = cfg_.width - 1;
-    const float env = envelope[i];
-    sum_[y * cfg_.width + x] += env;
-    ++count_[y * cfg_.width + x];
-    hi_ = std::max(hi_, env);
-    lo_ = std::min(lo_, env);
+    auto y = static_cast<std::size_t>(static_cast<double>(vbeam[i].v_phase) * static_cast<double>(cfg_.height));
+    if (y >= cfg_.height)
+      y = cfg_.height - 1;
+    const std::size_t idx = y * cfg_.width + x;
+
+    // Lazy phosphor decay: bring this pixel's charge forward to now, then add
+    // the fresh deposit. O(1) per sample — no full-buffer sweep.
+    const double dt = static_cast<double>(sample_index_ - last_[idx]);
+    bright_[idx] = bright_[idx] * static_cast<float>(std::exp(log_decay_ * dt)) + intensity;
+    last_[idx] = sample_index_;
+    ++sample_index_;
   }
 }
 
-FrameRenderer::Frame FrameRenderer::finish() const {
-  const float span = hi_ > lo_ ? hi_ - lo_ : 1.0f;
-  std::vector<std::uint8_t> grey(cfg_.width * cfg_.lines);
-  for (std::size_t i = 0; i < grey.size(); ++i) {
-    if (count_[i] == 0) {
-      grey[i] = 0; // no sample landed here; reads as sync-tip black
-    }
-    else {
-      const float mean = sum_[i] / static_cast<float>(count_[i]);
-      const float white = (hi_ - mean) / span; // 1 at darkest envelope, 0 at sync
-      grey[i] = static_cast<std::uint8_t>(std::clamp(white, 0.0f, 1.0f) * 255.0f + 0.5f);
-    }
+Screen::Frame Screen::snapshot() const {
+  // Decay every pixel to the current instant, find the peak, normalise to grey.
+  std::vector<float> now(bright_.size());
+  float peak = 0.0f;
+  for (std::size_t i = 0; i < bright_.size(); ++i) {
+    const double dt = static_cast<double>(sample_index_ - last_[i]);
+    now[i] = bright_[i] * static_cast<float>(std::exp(log_decay_ * dt));
+    peak = std::max(peak, now[i]);
   }
-  const std::size_t painted =
-      total_locked_ > cfg_.start_line ? std::min(cfg_.lines, total_locked_ - cfg_.start_line) : 0;
-  return Frame{.grey = std::move(grey),
-      .width = cfg_.width,
-      .lines = cfg_.lines,
-      .painted_lines = painted,
-      .total_locked_lines = total_locked_};
+  const float scale = peak > 0.0f ? 255.0f / peak : 0.0f;
+  std::vector<std::uint8_t> grey(bright_.size());
+  for (std::size_t i = 0; i < grey.size(); ++i)
+    grey[i] = static_cast<std::uint8_t>(std::clamp(now[i] * scale, 0.0f, 255.0f) + 0.5f);
+  return Frame{.grey = std::move(grey), .width = cfg_.width, .height = cfg_.height};
+}
+
+// === Decoder ===
+
+Decoder::Decoder(const DecoderConfig &cfg) :
+    sep_{SyncSeparatorConfig{.sample_rate_hz = cfg.sample_rate_hz}},
+    hsweep_{HorizontalSweepConfig{.sample_rate_hz = cfg.sample_rate_hz}},
+    vsync_{VerticalSyncConfig{.sample_rate_hz = cfg.sample_rate_hz}},
+    screen_{ScreenConfig{.width = cfg.width, .height = cfg.height, .sample_rate_hz = cfg.sample_rate_hz}} {}
+
+void Decoder::prepare(std::size_t max_in) {
+  sep_.prepare(max_in);
+  hsweep_.prepare(max_in);
+  vsync_.prepare(max_in);
+  screen_.prepare(max_in);
+}
+
+void Decoder::process(std::span<const float> envelope) {
+  // The branch: the separator's sync bit fans to both timebases, then the
+  // screen joins the picture rail with the two timing rails. The spans stay
+  // valid because each producer is read before it runs again next block.
+  const std::span<const SyncSample> sync = sep_.process(envelope);
+  const std::span<const BeamSample> hbeam = hsweep_.process(sync);
+  const std::span<const VSample> vbeam = vsync_.process(sync);
+  screen_.process(envelope, hbeam, vbeam);
 }
 
 } // namespace palindrome::video

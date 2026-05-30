@@ -188,6 +188,48 @@ int SyncCommand::run() const {
         s.stddev * nominal_line_samples, s.stddev * nominal_line_samples * us_per_sample);
   }
 
+  // Vertical structure: the broad pulses cluster into one run per field's
+  // vertical sync (5 broad pulses ~half a line apart). Group broad pulses that
+  // sit within a few lines of each other; the spacing between runs is the field
+  // period. Interlace should show as ~312.5 lines between runs.
+  std::vector<std::size_t> broad_leadings;
+  for (const auto &p: pulses)
+    if (static_cast<double>(p.width) * us_per_sample > line_hi_us)
+      broad_leadings.push_back(p.leading);
+
+  std::vector<std::size_t> run_starts;
+  const double run_break_samples = 5.0 * nominal_line_samples; // new run if > 5 lines since the last broad pulse
+  std::optional<std::size_t> prev_broad;
+  for (const std::size_t s: broad_leadings) {
+    if (!prev_broad || static_cast<double>(s - *prev_broad) > run_break_samples)
+      run_starts.push_back(s);
+    prev_broad = s;
+  }
+
+  std::println("\nvertical sync: {} broad-pulse runs (expect one per field, ~{} for {} frames)", run_starts.size(),
+      2 * (env.size() / static_cast<std::size_t>(nominal_line_samples * 625.0)),
+      env.size() / static_cast<std::size_t>(nominal_line_samples * 625.0));
+  if (run_starts.size() >= 2) {
+    std::vector<double> field_lines;
+    for (std::size_t i = 1; i < run_starts.size(); ++i)
+      field_lines.push_back(static_cast<double>(run_starts[i] - run_starts[i - 1]) / nominal_line_samples);
+    const auto fs = stats_of(field_lines);
+    std::println("  field period: mean {:.2f} lines (stddev {:.2f}); 312.5 => interlaced, 312/313 alternating", fs.mean,
+        fs.stddev);
+    std::println("  first few run spacings (lines): ");
+    for (std::size_t i = 0; i < std::min<std::size_t>(field_lines.size(), 8); ++i)
+      std::println("    {:.2f}", field_lines[i]);
+  }
+
+  // Run the vertical sync and report the field lock it settled on.
+  video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = rate}};
+  vsync.prepare(sliced.size());
+  (void)vsync.process(sliced);
+  const double field_hz = vsync.omega() * rate;
+  std::println("  vertical flywheel: locked {} fields, {:.2f} Hz ({:.1f} lines/field, {:+.2f}% from 50 Hz)",
+      vsync.detected_fields(), field_hz, (1.0 / vsync.omega()) / nominal_line_samples,
+      100.0 * (field_hz - 50.0) / 50.0);
+
   // Now run the sweep and report the lock it settled on.
   video::HorizontalSweep sweep{sweep_cfg};
   sweep.prepare(sliced.size());

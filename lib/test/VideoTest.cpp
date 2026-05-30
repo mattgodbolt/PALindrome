@@ -64,34 +64,41 @@ TEST_CASE("separator + sweep are block-invariant (the streaming guarantee)") {
   }
 }
 
-TEST_CASE("FrameRenderer is block-invariant") {
+TEST_CASE("Screen is block-invariant") {
   const auto env = synth_composite(40, 1028);
 
+  // Pre-compute the two timing rails once so the test isolates the Screen.
   video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate}};
-  video::HorizontalSweep sweep{video::HorizontalSweepConfig{.sample_rate_hz = kRate}};
   const std::span<const video::SyncSample> sync = sep.process(env);
-  std::vector<video::BeamSample> beam{sync.size()};
+  std::vector<video::SyncSample> sync_copy{sync.begin(), sync.end()};
+
+  video::HorizontalSweep hsweep{video::HorizontalSweepConfig{.sample_rate_hz = kRate}};
+  std::vector<video::BeamSample> hbeam;
   {
-    const std::span<const video::BeamSample> b = sweep.process(sync);
-    beam.assign(b.begin(), b.end());
+    const auto b = hsweep.process(sync_copy);
+    hbeam.assign(b.begin(), b.end());
+  }
+  video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = kRate}};
+  std::vector<video::VSample> vbeam;
+  {
+    const auto v = vsync.process(sync_copy);
+    vbeam.assign(v.begin(), v.end());
   }
 
-  const video::FrameRendererConfig cfg{.width = 320, .lines = 16, .start_line = 2};
+  const video::ScreenConfig cfg{.width = 320, .height = 64, .sample_rate_hz = kRate};
 
-  video::FrameRenderer whole{cfg};
-  whole.process(env, beam);
-  const auto frame_whole = whole.finish();
+  video::Screen whole{cfg};
+  whole.process(env, hbeam, vbeam);
+  const auto frame_whole = whole.snapshot();
 
-  video::FrameRenderer chunked{cfg};
+  video::Screen chunked{cfg};
   for (std::size_t off = 0; off < env.size(); off += 257) {
     const std::size_t n = std::min<std::size_t>(257, env.size() - off);
-    chunked.process(std::span{env}.subspan(off, n), std::span{beam}.subspan(off, n));
+    chunked.process(std::span{env}.subspan(off, n), std::span{hbeam}.subspan(off, n), std::span{vbeam}.subspan(off, n));
   }
-  const auto frame_chunked = chunked.finish();
+  const auto frame_chunked = chunked.snapshot();
 
   REQUIRE(frame_whole.grey.size() == frame_chunked.grey.size());
-  CHECK(frame_whole.painted_lines == frame_chunked.painted_lines);
-  CHECK(frame_whole.total_locked_lines == frame_chunked.total_locked_lines);
   for (std::size_t i = 0; i < frame_whole.grey.size(); ++i)
     CHECK(frame_whole.grey[i] == frame_chunked.grey[i]);
 }
