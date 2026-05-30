@@ -51,11 +51,11 @@ Mixer::Iq Mixer::process(std::span<const float> in) {
   const auto *rim = rot_im_.data();
 
   // Full groups: one scalar base phasor feeds a whole vector of elementwise
-  // mixes via the constant per-lane rotation table. Folding `base` into a
-  // per-lane phasor vector wouldn't cut multiplies — the complex rotate is the
-  // same work whether we form base*rot here or advance a stored vector each
-  // group — and would trade one scalar renormalise for a vector one, plus a
-  // per-group write of the whole phasor vector.
+  // mixes via the constant per-lane rotation table. Forming the phasor inline
+  // (base*rot) fuses into the multiply by x, so the compiler emits FMAs and
+  // never materialises the phasor. Holding the phasor per-lane instead — to drop
+  // the base*rot — splits this into a mix pass plus a separate complex-multiply
+  // advance pass that can't fuse: benchmarked ~30% slower, so it stays as is.
   std::size_t k = 0;
   for (; k + kLanes <= n; k += kLanes) {
     mix_group(x + k, ip + k, qp + k, rre, rim, static_cast<float>(base_.real()), static_cast<float>(base_.imag()));
