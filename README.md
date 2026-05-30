@@ -22,9 +22,9 @@ analog machine, not a DSP textbook. The current state:
 - **`tools/inspect_capture.py`** — fast capture QC: predicts whether a clip is
   decodable (carrier/sideband reach, line-comb SNR) and flags near-carrier ghost
   spurs, before you sink time into a full decode.
-- **`tools/tune.py`** — a throwaway web UI (slider per knob, frame scrubber) that
-  shells out to `render` so you can dial the decode/CRT knobs in live; the C++
-  side stays a plain CLI with no webserver in it.
+- **`tools/tune.py`** — a web UI (slider per knob, frame scrubber) that shells
+  out to `render` so you can dial the decode/CRT knobs in live. It lives outside
+  the C++ core — the decoder stays a plain CLI with no webserver in it.
 - **`sync`** — a diagnostic that slices the composite and reports the pulse-width
   distribution, line-sync jitter, vertical field structure, and the locks the
   timebases settle on. This is the microscope the decode was built with.
@@ -139,6 +139,17 @@ histogram (line-sync vs the vertical-interval broad/equalising pulses), the
 line-sync spacing jitter, the vertical field structure (broad-pulse runs, field
 period), and the horizontal/vertical locks. No picture — just the numbers that
 tell you whether the sync chain is healthy.
+
+### `tools/tune.py` — dialling the knobs
+
+`tools/tune.py corpus/wb3_airspy` serves a web page with a slider for every
+decode/CRT knob (luma cutoff, sync LP, persistence, beam sigma, gun gamma, sync
+slice, and the horizontal/vertical hold PI loops) plus a frame scrubber and play
+button. Moving a slider re-runs `render` and the page scrubs the per-field PNG
+sequence it produces. It binds `0.0.0.0` by default so you can drive it from
+another machine (`--host`, `--port`, `--binary` to override); it's
+unauthenticated, so keep it to a trusted network. Every knob it offers is just a
+`render` flag, so anything you settle on is reproducible from the CLI.
 
 ## Roadmap
 

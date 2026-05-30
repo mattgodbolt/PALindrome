@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Interactive knob tuner for the PALindrome decoder — a throwaway dev tool.
+"""Interactive knob tuner for the PALindrome decoder.
 
-Serves a tiny web page (a slider per decode/CRT knob, plus a frame scrubber and
-play button) and, on every knob change, shells out to `palindrome render
---frame-stride 1` to re-decode the whole recording into a per-field PNG
-sequence, which the page scrubs and plays back. No decode logic lives here — it
-just maps sliders to `render` flags — so the C++ side stays a plain CLI (and the
-same page is what a future WASM build would drive directly, server and all).
+A dev tool that lives outside the C++ core: it serves a tiny web page (a slider
+per decode/CRT knob, plus a frame scrubber and play button) and, on every knob
+change, shells out to `palindrome render --frame-stride 1` to re-decode the
+whole recording into a per-field PNG sequence, which the page scrubs and plays
+back. No decode logic lives here — it just maps sliders to `render` flags — so
+the C++ side stays a plain CLI. The same page is what a future WASM build would
+drive directly (decoder in the browser, no server), so only this server glue is
+specific to running the decode out-of-process.
 
 Binds 0.0.0.0 by default so you can hit it from another machine; it's
 unauthenticated, so only run it on a network you trust.
