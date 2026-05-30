@@ -12,7 +12,7 @@ ensure_lodepng()
 add_library(palindrome)
 add_library(palindrome::palindrome ALIAS palindrome)
 
-target_sources(palindrome PRIVATE sigmf.cpp demod.cpp fir.cpp mixer.cpp biquad.cpp dc_blocker.cpp wav.cpp image.cpp)
+target_sources(palindrome PRIVATE sigmf.cpp demod.cpp fir.cpp mixer.cpp biquad.cpp dc_blocker.cpp wav.cpp image.cpp video.cpp)
 
 target_sources(palindrome
         PUBLIC
@@ -30,6 +30,7 @@ target_sources(palindrome
         include/palindrome/biquad.hpp
         include/palindrome/dc_blocker.hpp
         include/palindrome/wav.hpp
-        include/palindrome/image.hpp)
+        include/palindrome/image.hpp
+        include/palindrome/video.hpp)
 
 target_link_libraries(palindrome PUBLIC opt::cxx_std nlohmann_json::nlohmann_json PRIVATE opt::pedantic opt::arch lodepng::lodepng)
