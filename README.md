@@ -2,21 +2,41 @@
 
 Convert to and from PAL with a variety of techniques to try and capture that authentic 1980s/1990s vibe in your emulator.
 
-## Capturing reference clips from an RX888
+## Where we're at
 
-`tools/capture_corpus.py` grabs a short off-air clip from an RX888 mk2 and
-saves it as a SigMF recording (raw IF samples plus metadata) under `corpus/`.
-These are the lossless RF masters the decoders are tested against.
+PALindrome ingests a lossless RF/IQ master of a real PAL source (captured off a
+console via an SDR) and decodes it the way a 1980s television would — as an
+analog machine, not a DSP textbook. The current state:
 
-Needs on your `$PATH`:
+- **Capture** from an RX888 (real-sampled IF) or an AirSpy R2 (complex
+  baseband), saved as SigMF masters under `corpus/`.
+- **`demod`** — AM-demodulates the vision carrier to a WAV for inspection.
+- **`render`** — a **working sync-locked monochrome decode**: a streaming video
+  graph that separates sync, locks horizontal and vertical timebases with
+  flywheel PLLs, and paints brightness onto a phosphor screen. Interlace falls
+  out of the half-line field offset on its own.
+- **`sync`** — a diagnostic that slices the composite and reports the pulse-width
+  distribution, line-sync jitter, vertical field structure, and the locks the
+  timebases settle on. This is the microscope the decode was built with.
 
-- `rx888_stream`, built `--release` from the matt-main fork:
-  https://github.com/mattgodbolt/rx888_stream/tree/matt-main
-  (it has the FX3 shutdown and self-heal fixes).
-- The FX3 firmware `.img` from that repo (passed with `--firmware`).
-- `python3` with `numpy`.
+The picture is recognisable but rough: dim (the levels stage is still a
+placeholder), grainy with visible scanlines (the phosphor needs focus), and
+monochrome (no colour yet). See the roadmap below.
 
-Plug in the RX888, feed it the source RF, then from this directory:
+## Capturing reference clips
+
+Two SDRs, two conventions. Both write a self-describing SigMF pair
+(`<name>.sigmf-data` + `<name>.sigmf-meta`) under `corpus/`; the lossless RF/IQ
+master is kept, not demodulated composite, so everything downstream is
+reconstructible from it. `corpus/*.sigmf-data` are large binaries, tracked with
+git LFS.
+
+### RX888 (real-sampled IF)
+
+`tools/capture_corpus.py` drives `rx888_stream` (the matt-main fork — see below).
+Real samples, Nyquist `fs/2`; at 32 MSps the whole stack (vision IF ~3.6 MHz,
+chroma +4.43, sound +6.0) fits with room to spare. Carriers are absolute IF bins
+in the `rx888:*` metadata.
 
 ```
 python3 tools/capture_corpus.py wb3 \
@@ -24,75 +44,107 @@ python3 tools/capture_corpus.py wb3 \
   --source "Sega Master System II, Wonder Boy III, UK PAL"
 ```
 
-That writes `corpus/wb3.sigmf-data` and `corpus/wb3.sigmf-meta`. The first
-argument is the clip name. Defaults: 32 MSps, 12 PAL frames, tuned 0.5 MHz
-below the vision carrier with front-end-heavy gain. The detected vision,
-chroma and sound carriers and the full capture recipe are written into the
-`.sigmf-meta`.
+Needs `rx888_stream` (built `--release` from
+https://github.com/mattgodbolt/rx888_stream/tree/matt-main, with the FX3
+shutdown/self-heal fixes), the FX3 firmware `.img`, and `python3` + `numpy`.
+Defaults: 32 MSps, 12 frames, tuned ~0.5 MHz below the vision carrier with
+front-end-heavy gain. Flags: `--sample-rate`, `--frequency`, `--vhf-lna`,
+`--vhf-vga`, `--frames`, `--outdir`.
 
-Useful flags: `--sample-rate`, `--frequency`, `--vhf-lna`, `--vhf-vga`,
-`--frames`, `--outdir`. Run with `--help` for the rest.
+### AirSpy R2 (complex baseband)
 
-`corpus/*.sigmf-data` are large binaries, tracked with git LFS.
+`tools/capture_airspy.py` drives `airspy_rx` (stock firmware, no FX3 juggling).
+Complex `ci16_le` IQ centred on the tune frequency, Nyquist ±fs/2. At 10 MSps the
+span holds vision + chroma but **not** the +6 MHz sound, so the default tunes on
+the vision carrier (vision + chroma, no sound). Carriers are **offsets from
+`core:frequency`** in the `airspy:*` metadata — the opposite convention to the
+RX888 corpus.
 
-## Decoding: the `demod` command
+```
+python3 tools/capture_airspy.py wb3 \
+  --source "Sega Master System II, Wonder Boy III, UK PAL"
+```
 
-`palindrome demod corpus/wb3 -o wb3.wav` AM-demodulates a recording's vision
-carrier and writes the recovered composite envelope as a WAV. The envelope is
-peak-normalised and polarity-inverted (sync to the bottom) for comfortable
-viewing, and the WAV is stamped at `(sample_rate / decimation) / slowdown`
-(default 1000x slowdown, no decimation) so it opens at audio rates in a viewer
-like Audacity. It's a debugging/inspection tool while the decode is built up.
+Needs `airspy_rx` (from `airspy-tools`) on `$PATH` and `python3` + `numpy`.
+Defaults: 10 MSps, gain 21 (front-end-heavy, ~−7 dBFS no clipping), 25 frames
+(1 s). Flags: `--frequency`, `--gain`, `--frames`, `--sample-rate`. Decoding from
+AirSpy masters needs a `ci16` reader + offset down-mix in the tools, which is not
+wired up yet — capture is proven, decode from IQ is the next ingest task.
 
-Useful flags: `--carrier`, `--cutoff` (default 5 MHz), `--decimate N` (keep one
-output sample per N inputs, default 1), `--slowdown`, and `--no-sound-trap` /
-`--sound-q` for the sound-carrier notch. Run with `--help` for the rest.
+## Decoding
+
+### `render` — the picture
+
+`palindrome render corpus/wb3 -o /tmp/wb3.png` decodes a recording to a PNG.
+The signal flows through a streaming, branching video graph modelled on the
+analog set:
 
 ```mermaid
 flowchart TD
-    subgraph cap["Capture"]
-      RF["RX888 off-air IF"] --> SIGMF["corpus sigmf-data<br/>real int16 LE, 32 MS/s"]
+    SIGMF["corpus sigmf-data<br/>real int16 IF (RX888)"] --> VIS
+
+    subgraph vis["vision chain (Chain&lt;float&gt;)"]
+      VIS["sound trap → DC block →<br/>mix to baseband → FIR LP →<br/>AM envelope (× decimation)"]
     end
 
-    subgraph demod["palindrome demod (implemented)"]
-      SIGMF --> TRAP["sound trap<br/>Biquad notch at sound IF"]
-      TRAP --> DC["DC blocker<br/>one-pole high-pass"]
-      DC --> MIX["mix to baseband<br/>multiply by complex carrier"]
-      MIX --> LP["FIR low-pass, I and Q<br/>windowed-sinc approx 5 MHz<br/>optional decimation"]
-      LP --> MAG["envelope<br/>magnitude of I and Q, scaled 2x"]
-      MAG --> NORM["normalise + invert<br/>peak-scaled for viewing"]
-      NORM --> WAV["WAV out<br/>stamped fs/decimation over slowdown"]
-    end
-
-    subgraph todo["PAL decode (not yet)"]
-      MAG -.-> LVL["levels<br/>sync-locked black-level clamp"]
-      LVL -.-> SYNC["sync detect<br/>H and V timing"]
-      SYNC -.-> SEP["luma and chroma split"]
-      SEP -.-> COL["colour decode<br/>burst-locked QAM, PAL delay line"]
-      COL -.-> RGB["RGB frames"]
-    end
+    VIS -->|envelope| SEP["SyncSeparator<br/>AGC + slice → 1-bit sync"]
+    VIS -->|picture rail| SCR
+    SEP -->|sync bit| HS["HorizontalSweep<br/>pulse-width gate + AFC flywheel<br/>→ h_phase, line_start"]
+    SEP -->|sync bit| VS["VerticalSync<br/>integrator + field flywheel<br/>→ v_phase, field_start"]
+    HS -->|timing rail| SCR["Screen (phosphor)<br/>deposit at (h_phase·w, v_phase·h)<br/>+ lazy decay → frame"]
+    VS -->|timing rail| SCR
+    SCR --> PNG["PNG"]
 ```
 
-Each stage (`palindrome::dsp::Fir`, `palindrome::dsp::Biquad`,
-`palindrome::demod::AmEnvelope`) is a streaming, span-based block: state carries
-across calls, so the result is independent of how the input is chunked.
+Every stage is a streaming block (`prepare` / `process(span)→span`, state carried
+across calls), so the output is independent of how the input is chunked — a
+tested invariant, because the target is live RF, not finite files. The whole
+graph is a `video::Decoder` composite node; `render` just pumps it 64K-sample
+blocks. Flags: `--width`, `--height`, `--decimate`, `--carrier`, `--cutoff`.
 
-Known limitations of this first pass: the low-pass is a linear-phase FIR (some
-pre-ringing); detection is a plain envelope (no synchronous/quasi-sync option
-yet); and decimation is available (`--decimate N`) but off by default, so out of
-the box it runs the full-rate convolution and isn't fast. The output is only
-peak-normalised and polarity-inverted for viewing — proper sync-locked
-black-level clamping comes with the sync/levels stage.
+### `demod` — composite envelope to WAV (inspection)
+
+`palindrome demod corpus/wb3 -o /tmp/wb3.wav` AM-demodulates the vision carrier
+and writes the recovered composite envelope as a WAV (peak-normalised,
+sync-to-the-bottom, slowed so it opens at audio rates in Audacity). A
+debugging/inspection tool. Flags: `--carrier`, `--cutoff`, `--decimate`,
+`--slowdown`, `--no-sound-trap`, `--sound-q`.
+
+### `sync` — the timebase microscope
+
+`palindrome sync corpus/wb3` slices the composite and reports the pulse-width
+histogram (line-sync vs the vertical-interval broad/equalising pulses), the
+line-sync spacing jitter, the vertical field structure (broad-pulse runs, field
+period), and the horizontal/vertical locks. No picture — just the numbers that
+tell you whether the sync chain is healthy.
+
+## Roadmap
+
+- **A decent monochrome picture.** Sync-locked black-level clamp (a real levels
+  stage, replacing the placeholder AGC — fixes the dimness); phosphor focus / a
+  Gaussian beam splat instead of a single-pixel hit (fills the scanline gaps);
+  snapshot-at-vsync, plus a multi-frame PNG-sequence mode (one per field/frame).
+- **Colour — the PAL bit.** Burst-locked subcarrier regeneration, the 1H delay
+  line, U/V demodulation with the PAL alternation, Y/C separation. The chroma is
+  in the captures, waiting.
+- **AirSpy ingest.** A `ci16` complex-baseband reader and an offset down-mix so
+  AirSpy masters decode (capture already works).
+- **Optimisation, then SIMD.** Profile the hot paths; revisit `std::simd` for the
+  DSP loops (see the note below).
+- **Multi-threading.** The streaming-block model is already structured for it.
+- **Live mode.** The whole point: decode a live RF stream off the SDR, not just
+  finite corpus files. The graph is bounded-memory and block-driven for exactly
+  this.
 
 ## Notes
 
 ### Dependencies
 
 All third-party deps (Catch2, nlohmann_json, Lyra, lodepng) come in via CPM,
-pinned by tag or commit, no system packages required. To prefer
-system-installed copies (find_package first, fall back to CPM fetch) configure
-with `-DCPM_USE_LOCAL_PACKAGES=ON` — that's CPM's own switch, and we use it
-directly rather than wrapping it.
+pinned by tag or commit, no system packages required. To prefer system-installed
+copies (find_package first, fall back to CPM fetch) configure with
+`-DCPM_USE_LOCAL_PACKAGES=ON` — that's CPM's own switch, and we use it directly
+rather than wrapping it.
 
 ### SIMD (`std::simd`) — parked
 
