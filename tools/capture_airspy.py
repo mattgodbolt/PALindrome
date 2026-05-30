@@ -19,9 +19,12 @@ At 10 MSPS the 10 MHz span holds vision + chroma but not the +6 MHz sound; tune
 on the vision carrier for video/colour work (the default), or mid-channel if you
 ever want intercarrier sound (see --frequency).
 
+Run inspect_capture.py on the result before trusting it — a clip can lock sync
+yet still be undecodable (see the gain note below).
+
 Usage:
     capture_airspy.py wb3 --source "SMS II, Wonder Boy III, UK PAL"
-    capture_airspy.py wb3 --frequency 591200000 --gain 21 --frames 25
+    capture_airspy.py wb3 --frequency 591200000 --gain 9 --frames 25
 """
 import argparse
 import datetime
@@ -127,9 +130,18 @@ def main():
     ap.add_argument("--frequency", type=int, default=591_200_000,
                     help="tune frequency in Hz; default sits the vision carrier "
                          "near DC (vision+chroma, no sound)")
-    ap.add_argument("--gain", type=int, default=21,
-                    help="airspy_rx linearity gain (0-21); 21 = front-end-heavy, "
-                         "~-7 dBFS no clipping. Avoid pushing higher (clips)")
+    # Gain 9 is the measured sweet spot, NOT the higher values you'd expect.
+    # At >=13 the strong vision carrier drives the AirSpy's ADC into an
+    # intermodulation product: a coherent, video-bearing ghost of the carrier
+    # ~fs/70 (~143 kHz) away, only ~17 dB down at g21. It beats into the AM
+    # envelope as drifting vertical bars and wrecks the decode -- while the ADC
+    # clip percentage stays 0%, so it's invisible unless you look at the
+    # spectrum (inspect_capture.py flags it). Below ~6 the front end is
+    # under-driven. g9 clears the ghost with the best line-comb SNR.
+    ap.add_argument("--gain", type=int, default=9,
+                    help="airspy_rx linearity gain (0-21); 9 = sweet spot. "
+                         ">=13 drives the ADC into an intermod ghost that kills "
+                         "the decode (clip % stays 0); <=6 under-drives")
     # Clip geometry. Default 25 frames = 1 s — longer than the 0.48 s RX888
     # corpus, to give the sync flywheels room to settle.
     ap.add_argument("--frames", type=int, default=25,

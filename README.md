@@ -9,12 +9,16 @@ console via an SDR) and decodes it the way a 1980s television would — as an
 analog machine, not a DSP textbook. The current state:
 
 - **Capture** from an RX888 (real-sampled IF) or an AirSpy R2 (complex
-  baseband), saved as SigMF masters under `corpus/`.
+  baseband), saved as SigMF masters under `corpus/`. Both decode through the
+  same pipeline.
 - **`demod`** — AM-demodulates the vision carrier to a WAV for inspection.
 - **`render`** — a **working sync-locked monochrome decode**: a streaming video
   graph that separates sync, locks horizontal and vertical timebases with
   flywheel PLLs, and paints brightness onto a phosphor screen. Interlace falls
   out of the half-line field offset on its own.
+- **`tools/inspect_capture.py`** — fast capture QC: predicts whether a clip is
+  decodable (carrier/sideband reach, line-comb SNR) and flags near-carrier ghost
+  spurs, before you sink time into a full decode.
 - **`sync`** — a diagnostic that slices the composite and reports the pulse-width
   distribution, line-sync jitter, vertical field structure, and the locks the
   timebases settle on. This is the microscope the decode was built with.
@@ -63,13 +67,20 @@ RX888 corpus.
 ```
 python3 tools/capture_airspy.py wb3 \
   --source "Sega Master System II, Wonder Boy III, UK PAL"
+python3 tools/inspect_capture.py corpus/wb3   # QC before decoding
 ```
 
-Needs `airspy_rx` (from `airspy-tools`) on `$PATH` and `python3` + `numpy`.
-Defaults: 10 MSps, gain 21 (front-end-heavy, ~−7 dBFS no clipping), 25 frames
-(1 s). Flags: `--frequency`, `--gain`, `--frames`, `--sample-rate`. Decoding from
-AirSpy masters needs a `ci16` reader + offset down-mix in the tools, which is not
-wired up yet — capture is proven, decode from IQ is the next ingest task.
+Needs `airspy_rx` (from `airspy-tools`) on `$PATH` and `python3` + `numpy` (+
+`scipy`/`pillow` for `inspect_capture.py`). Defaults: 10 MSps, **gain 9**, 25
+frames (1 s). Flags: `--frequency`, `--gain`, `--frames`, `--sample-rate`.
+
+**Gain 9, not higher.** Counter-intuitively, a front-end-heavy gain (≥13)
+overdrives the AirSpy's ADC into an intermodulation product: a coherent,
+video-bearing *ghost* of the vision carrier ~fs/70 (~143 kHz) away, ~17 dB down.
+It beats into the AM envelope as drifting vertical bars and renders the decode
+unrecognisable — all while the ADC clip percentage reads 0%. `inspect_capture.py`
+flags it; `g9` clears it with the best line-comb SNR. The decode itself works:
+`render`/`demod`/`sync` read `ci16` and down-mix the carrier offset directly.
 
 ## Decoding
 
@@ -81,10 +92,10 @@ analog set:
 
 ```mermaid
 flowchart TD
-    SIGMF["corpus sigmf-data<br/>real int16 IF (RX888)"] --> VIS
+    SIGMF["corpus sigmf-data<br/>real IF (RX888) /<br/>complex baseband (AirSpy)"] --> VIS
 
     subgraph vis["vision chain (Chain&lt;float&gt;)"]
-      VIS["sound trap → DC block →<br/>mix to baseband → FIR LP →<br/>AM envelope (× decimation)"]
+      VIS["sound trap → DC block →<br/>mix carrier to baseband → FIR LP →<br/>AM envelope (× decimation)"]
     end
 
     VIS -->|envelope| SEP["SyncSeparator<br/>AGC + slice → 1-bit sync"]
@@ -100,7 +111,8 @@ Every stage is a streaming block (`prepare` / `process(span)→span`, state carr
 across calls), so the output is independent of how the input is chunked — a
 tested invariant, because the target is live RF, not finite files. The whole
 graph is a `video::Decoder` composite node; `render` just pumps it 64K-sample
-blocks. Flags: `--width`, `--height`, `--decimate`, `--carrier`, `--cutoff`.
+blocks. Flags: `--width`, `--height`, `--decimate`, `--carrier`, `--cutoff`,
+`--sync-cutoff` (the narrow low-pass on the sync-detection branch).
 
 ### `demod` — composite envelope to WAV (inspection)
 
@@ -127,8 +139,6 @@ tell you whether the sync chain is healthy.
 - **Colour — the PAL bit.** Burst-locked subcarrier regeneration, the 1H delay
   line, U/V demodulation with the PAL alternation, Y/C separation. The chroma is
   in the captures, waiting.
-- **AirSpy ingest.** A `ci16` complex-baseband reader and an offset down-mix so
-  AirSpy masters decode (capture already works).
 - **Optimisation, then SIMD.** Profile the hot paths; revisit `std::simd` for the
   DSP loops (see the note below).
 - **Multi-threading.** The streaming-block model is already structured for it.
