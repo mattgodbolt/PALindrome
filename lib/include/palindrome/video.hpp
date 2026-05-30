@@ -226,6 +226,11 @@ struct ScreenConfig {
   // focus) and is the hook a wider kernel turns into bloom later. 0 => a single
   // pixel (no splat).
   double beam_sigma_rows = 0.8;
+  // Electron-gun gamma: beam current rises as drive^gamma. The source pre-distorts
+  // its video (~1/2.2) expecting a CRT to undo it, so ~2.2-2.8 restores the
+  // midtones/contrast; 1.0 is linear (no gamma). Readout normalisation makes the
+  // absolute drive scale irrelevant, so no white reference is needed.
+  double gamma = 1.0;
 };
 
 // The picture tube. A join sink fed three aligned rails — the picture
@@ -307,11 +312,18 @@ struct DecoderConfig {
   // complex-baseband capture). The picture rail is untouched, so this trades
   // nothing on the image. Cutoff is a fraction of a sync pulse's bandwidth.
   double sync_lp_cutoff_hz = 1.2e6;
+  // The sub-stage configs, so every knob is reachable from one place (the
+  // interactive tuner, and eventually live control). Their sample_rate_hz is
+  // filled in from this config's at construction, so leave it 0 here.
+  SyncSeparatorConfig sep{};
+  HorizontalSweepConfig hsweep{};
+  VerticalSyncConfig vsync{};
   // Phosphor persistence, in field periods (see ScreenConfig). Higher evens out
   // the brightness between the two interlaced fields; lower sharpens motion.
   double persistence_fields = 1.2;
   // Beam-spot vertical size in output rows (see ScreenConfig::beam_sigma_rows).
   double beam_sigma_rows = 0.8;
+  double gamma = 1.0; // electron-gun gamma (see ScreenConfig::gamma)
 };
 
 // The whole video graph as one streaming node: it owns the separator, the two

@@ -30,6 +30,7 @@ private:
   std::size_t height_{576};
   double persistence_{1.2}; // phosphor persistence in field periods
   double beam_sigma_{0.8}; // beam-spot vertical size in output rows
+  double gamma_{1.0}; // electron-gun gamma
   std::size_t frame_stride_{0}; // 0 => one image; N => a PNG every Nth field boundary
   bool no_sound_trap_{false};
   double sound_q_{10.0};

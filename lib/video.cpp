@@ -297,7 +297,11 @@ float Screen::intensity_of(float env_f, float h_phase) {
   if (h_phase >= kBackPorchLo && h_phase < kBackPorchHi)
     black_ += kBlackTrack * (env - black_);
   const double drive = black_ - env;
-  return static_cast<float>(drive > 0.0 ? drive : 0.0);
+  if (drive <= 0.0)
+    return 0.0f;
+  // Gun gamma: beam current ~ drive^gamma. Peak-normalised at readout, so the
+  // absolute drive scale washes out and the curve shape is all that matters.
+  return static_cast<float>(cfg_.gamma == 1.0 ? drive : std::pow(drive, cfg_.gamma));
 }
 
 void Screen::process(std::span<const float> envelope, std::span<const BeamSample> hbeam, std::span<const VSample> vbeam,
@@ -372,17 +376,25 @@ namespace {
 // Sync-branch low-pass length. Modest, so the group delay (~half this) stays a
 // small fraction of a line — a constant horizontal offset, not a smear.
 constexpr std::size_t kSyncLpTaps = 63;
+
+// Copy a sub-stage config and stamp the shared sample rate into it; lets
+// DecoderConfig carry the sub-configs with their sample_rate_hz left at 0.
+template<class C>
+[[nodiscard]] C with_rate(C c, double rate) {
+  c.sample_rate_hz = rate;
+  return c;
+}
 } // namespace
 
 Decoder::Decoder(const DecoderConfig &cfg) :
     sync_lp_{dsp::lowpass_kernel(kSyncLpTaps, cfg.sample_rate_hz, cfg.sync_lp_cutoff_hz)},
-    sep_{SyncSeparatorConfig{.sample_rate_hz = cfg.sample_rate_hz}},
-    hsweep_{HorizontalSweepConfig{.sample_rate_hz = cfg.sample_rate_hz}},
-    vsync_{VerticalSyncConfig{.sample_rate_hz = cfg.sample_rate_hz}}, screen_{ScreenConfig{.width = cfg.width,
-                                                                          .height = cfg.height,
-                                                                          .sample_rate_hz = cfg.sample_rate_hz,
-                                                                          .persistence_fields = cfg.persistence_fields,
-                                                                          .beam_sigma_rows = cfg.beam_sigma_rows}} {}
+    sep_{with_rate(cfg.sep, cfg.sample_rate_hz)}, hsweep_{with_rate(cfg.hsweep, cfg.sample_rate_hz)},
+    vsync_{with_rate(cfg.vsync, cfg.sample_rate_hz)}, screen_{ScreenConfig{.width = cfg.width,
+                                                          .height = cfg.height,
+                                                          .sample_rate_hz = cfg.sample_rate_hz,
+                                                          .persistence_fields = cfg.persistence_fields,
+                                                          .beam_sigma_rows = cfg.beam_sigma_rows,
+                                                          .gamma = cfg.gamma}} {}
 
 void Decoder::prepare(std::size_t max_in) {
   sync_lp_.prepare(max_in);

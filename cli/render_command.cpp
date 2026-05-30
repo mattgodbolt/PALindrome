@@ -38,6 +38,7 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(height_, "px")["--height"]("Output image height"))
           .add_argument(lyra::opt(persistence_, "fields")["--persistence"]("Phosphor persistence in field periods"))
           .add_argument(lyra::opt(beam_sigma_, "rows")["--beam-sigma"]("Beam-spot vertical size in output rows"))
+          .add_argument(lyra::opt(gamma_, "g")["--gamma"]("Electron-gun gamma (1.0 = linear)"))
           .add_argument(lyra::opt(frame_stride_, "n")["--frame-stride"](
               "Write a PNG every Nth field boundary (<stem>_NNNN.png); 0 = one image"))
           .add_argument(lyra::opt(no_sound_trap_)["--no-sound-trap"]("Disable the sound-carrier notch"))
@@ -97,7 +98,8 @@ int RenderCommand::run() const {
       .height = height_,
       .sync_lp_cutoff_hz = sync_cutoff_,
       .persistence_fields = persistence_,
-      .beam_sigma_rows = beam_sigma_}};
+      .beam_sigma_rows = beam_sigma_,
+      .gamma = gamma_}};
 
   constexpr std::size_t kBlock = std::size_t{1} << 16;
   decoder.prepare(kBlock);

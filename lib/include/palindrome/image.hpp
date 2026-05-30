@@ -20,6 +20,12 @@ public:
   using std::runtime_error::runtime_error;
 };
 
+// Encode `pixels` as an 8-bit greyscale PNG into a byte buffer (no file I/O).
+// Row-major, exactly width*height bytes, 0 = black, 255 = white. Throws
+// WriteError on a size mismatch or encode failure.
+[[nodiscard]] std::vector<unsigned char> encode_png_grey(
+    std::span<const std::uint8_t> pixels, unsigned width, unsigned height);
+
 // Write `pixels` to `path` as an 8-bit greyscale PNG. The buffer is row-major,
 // exactly width*height bytes, with 0 = black and 255 = white. Throws WriteError
 // on a size mismatch or any encode/I-O failure.
