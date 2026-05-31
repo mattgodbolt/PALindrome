@@ -70,6 +70,40 @@ std::vector<float> lowpass_kernel(std::size_t num_taps, double sample_rate_hz, d
   return taps;
 }
 
+std::vector<float> bandpass_kernel(
+    std::size_t num_taps, double sample_rate_hz, double low_hz, double high_hz, Window window) {
+  if (num_taps == 0)
+    throw std::invalid_argument("num_taps must be non-zero");
+  if (!(low_hz > 0.0 && low_hz < high_hz && high_hz < sample_rate_hz / 2.0))
+    throw std::invalid_argument("bandpass needs 0 < low < high < sample_rate / 2");
+
+  const double flo = low_hz / sample_rate_hz; // cycles per sample
+  const double fhi = high_hz / sample_rate_hz;
+  const auto m = static_cast<double>(num_taps - 1);
+  const double centre = m / 2.0;
+
+  // Band-pass = high-cut sinc minus low-cut sinc, windowed. Then scale to unity
+  // gain at the band centre frequency so the chroma amplitude is preserved.
+  std::vector<float> taps(num_taps);
+  const double fc = 0.5 * (flo + fhi); // band centre, cycles per sample
+  double gain_re = 0.0;
+  double gain_im = 0.0;
+  for (std::size_t i = 0; i < num_taps; ++i) {
+    const auto k = static_cast<double>(i) - centre;
+    const double hi = (k == 0.0) ? 2.0 * fhi : std::sin(2.0 * pi * fhi * k) / (pi * k);
+    const double lo = (k == 0.0) ? 2.0 * flo : std::sin(2.0 * pi * flo * k) / (pi * k);
+    const double tap = (hi - lo) * window_value(window, static_cast<double>(i), m);
+    taps[i] = static_cast<float>(tap);
+    gain_re += tap * std::cos(2.0 * pi * fc * k);
+    gain_im += tap * std::sin(2.0 * pi * fc * k);
+  }
+  const double gain = std::hypot(gain_re, gain_im);
+  if (gain > 0.0)
+    for (float &tap: taps)
+      tap = static_cast<float>(tap / gain);
+  return taps;
+}
+
 Fir::Fir(std::vector<float> taps, std::size_t decimation) : taps_{std::move(taps)}, decimation_{decimation} {
   if (taps_.empty())
     throw std::invalid_argument("FIR needs at least one tap");

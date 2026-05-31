@@ -39,6 +39,13 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(persistence_, "fields")["--persistence"]("Phosphor persistence in field periods"))
           .add_argument(lyra::opt(beam_sigma_, "rows")["--beam-sigma"]("Beam-spot vertical size in output rows"))
           .add_argument(lyra::opt(gamma_, "g")["--gamma"]("Electron-gun gamma (1.0 = linear)"))
+          .add_argument(lyra::opt(colour_)["--colour"]["--color"](
+              "Decode PAL colour (RGB). AirSpy captures need --decimate 1 to keep the subcarrier"))
+          .add_argument(lyra::opt(saturation_, "x")["--saturation"]("Colour: chroma gain into the gun matrix"))
+          .add_argument(lyra::opt(subcarrier_, "hz")["--subcarrier"]("Colour: subcarrier crystal Hz (default 4.43361875 MHz)"))
+          .add_argument(lyra::opt(burst_gate_lo_, "x")["--burst-lo"]("Colour: burst gate start (h_phase; ~0.16 at 10 MS/s)"))
+          .add_argument(lyra::opt(burst_gate_hi_, "x")["--burst-hi"]("Colour: burst gate end (h_phase)"))
+          .add_argument(lyra::opt(no_delay_line_)["--no-delay-line"]("Colour: disable the PAL-D line-pair comb"))
           .add_argument(lyra::opt(sync_level_, "x")["--sync-level"]("Sync-separator slice level"))
           .add_argument(lyra::opt(h_kp_, "x")["--h-kp"]("Horizontal hold: AFC kp"))
           .add_argument(lyra::opt(h_ki_, "x")["--h-ki"]("Horizontal hold: AFC ki"))
@@ -107,6 +114,13 @@ int RenderCommand::run() const {
   dc.persistence_fields = persistence_;
   dc.beam_sigma_rows = beam_sigma_;
   dc.gamma = gamma_;
+  dc.colour = colour_;
+  dc.saturation = saturation_;
+  if (subcarrier_ > 0.0) // else the crystal default (textbook fsc)
+    dc.chroma.subcarrier_hz = subcarrier_;
+  dc.chroma.burst_gate_lo = burst_gate_lo_;
+  dc.chroma.burst_gate_hi = burst_gate_hi_;
+  dc.chroma.delay_line = !no_delay_line_;
   dc.sep.sync_level = sync_level_;
   dc.hsweep.pll_kp = h_kp_;
   dc.hsweep.pll_ki = h_ki_;
@@ -132,7 +146,10 @@ int RenderCommand::run() const {
   std::size_t written = 0;
   std::optional<video::Screen::Frame> last_frame;
   const auto save = [](const std::filesystem::path &p, const video::Screen::Frame &f) {
-    image::write_png_grey(p, f.grey, static_cast<unsigned>(f.width), static_cast<unsigned>(f.height));
+    if (f.channels == 3)
+      image::write_png_rgb(p, f.pixels, static_cast<unsigned>(f.width), static_cast<unsigned>(f.height));
+    else
+      image::write_png_grey(p, f.pixels, static_cast<unsigned>(f.width), static_cast<unsigned>(f.height));
   };
   const video::Screen::FieldCallback on_field = [&](const video::Screen::Frame &f) {
     if (frame_stride_ == 0) {
@@ -158,6 +175,10 @@ int RenderCommand::run() const {
 
   if (frame_stride_ == 0)
     save(output, last_frame ? *last_frame : decoder.snapshot());
+
+  if (colour_)
+    std::println("colour: crystal {:.4f} MHz, burst amplitude {:.4g}, PAL-switch consistency {:.1f} deg",
+        decoder.subcarrier_hz() / 1e6, decoder.burst_amplitude(), decoder.parity_consistency_deg());
 
   const double line_hz = decoder.line_omega() * envelope_rate;
   const double field_hz = decoder.field_omega() * envelope_rate;

@@ -3,6 +3,7 @@
 #include "palindrome/buffer.hpp"
 #include "palindrome/fir.hpp"
 
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -69,7 +70,7 @@ private:
   double peak_ = 0.0; // running sync-tip level
   double floor_ = 0.0; // running white level
   bool sync_ = false; // current sliced state (hysteresis)
-  bool seeded_ = false; // peak/floor seeded from the first sample yet?
+  bool seeded_ = false;
   Buffer<SyncSample> out_;
 };
 
@@ -208,6 +209,116 @@ private:
   Buffer<VSample> out_;
 };
 
+// === Chroma decoder (the colour channel) ===
+
+// One decoded sample on the colour rail: the chroma-notched luma (still in
+// envelope units — negatively modulated, so a *lower* value is whiter) plus the
+// two colour-difference components recovered by synchronous demodulation. u and
+// v are zero on a monochrome line (no burst lock) and on the grey rail.
+struct ChromaSample {
+  float luma = 0.0f;
+  float u = 0.0f;
+  float v = 0.0f;
+};
+
+struct ChromaDecoderConfig {
+  double sample_rate_hz;
+  // The subcarrier crystal: a fixed 4.43361875 MHz reference, exactly as a real
+  // PAL set's colour crystal. It is NOT measured from the spectrum (the strong
+  // peak in 4–5 MHz is chroma SIDEBAND energy, not the burst); the per-line burst
+  // rotation below absorbs the source's small offset from this nominal, just as a
+  // TV's APC pulls its crystal onto the burst.
+  double subcarrier_hz = 4.43361875e6;
+  // Chroma band-pass edges. Upper edge 5.0 MHz (not 5.5) keeps the FM sound
+  // subcarrier at vision+5.5 MHz out, so it can't beat into the U/V passband.
+  double band_lo_hz = 3.5e6;
+  double band_hi_hz = 5.0e6;
+  double uv_bandwidth_hz = 1.3e6; // post-demod U/V low-pass corner
+  std::size_t bandpass_taps = 81;
+  std::size_t demod_lp_taps = 41;
+  // Burst gate as an h_phase window (0 = line-sync leading edge): the back porch
+  // where the burst sits, after the chroma path's group delay. It is rate-
+  // dependent — the same delay is a larger fraction of a shorter line — so a
+  // 10 MS/s capture wants a slightly later window (~0.16) than a 16 MS/s one.
+  double burst_gate_lo = 0.11;
+  double burst_gate_hi = 0.14;
+  bool delay_line = true; // PAL-D line-pair (1H) comb on U/V
+};
+
+// The colour channel, a PAL-D delay-line decoder. Off the same composite envelope
+// and in parallel with luma/sync: a band-pass lifts the 4.43 MHz chroma; a fixed
+// crystal LO synchronously demodulates it to raw (U, V); the back-porch burst is
+// measured per line to recover that line's LO-vs-subcarrier phase, and a class-
+// aware rotation (the PAL ± line alternation) turns raw U/V into transmitted U/V;
+// a 1H comb cancels residual differential phase error. Needs the horizontal rail
+// for the burst gate, so it sits after HorizontalSweep. Streaming and
+// block-invariant like every other stage.
+class ChromaDecoder {
+public:
+  explicit ChromaDecoder(const ChromaDecoderConfig &cfg);
+
+  void prepare(std::size_t max_in);
+  [[nodiscard]] std::span<const ChromaSample> process(
+      std::span<const float> envelope, std::span<const BeamSample> hbeam);
+
+  [[nodiscard]] std::size_t max_output_for(std::size_t n) const noexcept { return n; }
+  [[nodiscard]] std::size_t input_multiple() const noexcept { return 1; }
+
+  // Diagnostics: the crystal frequency (Hz), a smoothed burst amplitude (the ACC
+  // / colour-killer signal), and the running PAL-switch self-consistency in
+  // degrees (≈0 when the V-inversion parity is confidently resolved).
+  [[nodiscard]] double subcarrier_hz() const noexcept { return nco_omega_ * cfg_.sample_rate_hz; }
+  [[nodiscard]] double burst_amplitude() const noexcept { return burst_amp_; }
+  [[nodiscard]] double parity_consistency_deg() const noexcept { return consistency_deg_; }
+
+private:
+  void finalize_line(); // per-line burst measurement + class assignment at gate close
+
+  ChromaDecoderConfig cfg_;
+  dsp::Fir bandpass_; // isolates the chroma subcarrier from the composite
+  dsp::Fir lp_i_, lp_q_; // post-demod low-pass on the two quadratures (raw U, V)
+  dsp::Fir lp_luma_; // luma = low-pass(envelope), the 3 MHz corner rejects chroma
+
+  // The fixed crystal LO, advanced one step per sample (never retuned).
+  double nco_omega_; // cycles/sample (× sample_rate = crystal Hz)
+  std::complex<double> nco_phasor_{1.0, 0.0}; // e^{+i*2π*phase}
+  std::complex<double> nco_step_; // e^{+i*2π*omega}
+  std::size_t since_renorm_ = 0;
+
+  // Per-line burst gate + the recovered rotation it sets for the line.
+  std::complex<double> burst_acc_{0.0, 0.0}; // Σ(raw U, raw V) over the gate
+  std::size_t burst_count_ = 0;
+  bool in_gate_prev_ = false;
+  double burst_amp_ = 0.0; // smoothed |burst| (ACC)
+  double burst_ref_ = 0.0; // slow-decay peak burst level for the colour-killer
+  double psi_cos_ = 1.0, psi_sin_ = 0.0; // this line's rotation R(ψ)
+  double v_flip_ = 1.0; // +1 on NTSC-style lines, −1 on PAL-style (V inversion)
+
+  // PAL-switch parity. parity_ toggles every line (the bistable); which parity is
+  // V-inverted is the intrinsic 2-fold ambiguity, resolved by accumulating each
+  // parity's mean burst phasor and picking the hypothesis whose two classes share
+  // one LO offset. A running decision rather than a whole-field batch — it firms
+  // up over the first lines (the ident a real set keys off the field structure).
+  bool parity_ = false;
+  std::complex<double> burst_even_{0.0, 0.0}, burst_odd_{0.0, 0.0};
+  bool even_is_ntsc_ = true;
+  double consistency_deg_ = 180.0; // |ψ_even − ψ_odd|; ~0 once parity is resolved
+
+  // Line-length tracking, for the 1H comb delay depth.
+  std::size_t sample_index_ = 0;
+  std::size_t last_line_start_ = 0;
+  std::size_t line_len_; // samples in the last line (comb delay)
+
+  // The delay line: a ring of the final U/V, one line deep, for the comb.
+  std::vector<float> u_ring_, v_ring_;
+  std::size_t ring_cap_;
+  std::size_t ring_pos_ = 0; // running write position into the comb ring
+
+  // Scratch (reused across calls): the demodulated quadratures pass 1 produces.
+  Buffer<float> mix_i_, mix_q_;
+  Buffer<ChromaSample> out_;
+};
+
 // === Screen (phosphor, the 3-way join sink) ===
 
 struct ScreenConfig {
@@ -231,15 +342,20 @@ struct ScreenConfig {
   // midtones/contrast; 1.0 is linear (no gamma). Readout normalisation makes the
   // absolute drive scale irrelevant, so no white reference is needed.
   double gamma = 1.0;
+  // Colour: a three-phosphor (RGB) triad driven by three guns matrixed from
+  // Y/U/V, vs a single grey phosphor (u/v ignored). saturation scales the
+  // colour-difference signals into the matrix before the per-gun gamma.
+  bool colour = false;
+  double saturation = 1.0;
 };
 
-// The picture tube. A join sink fed three aligned rails — the picture
-// (envelope) and the two timebases (horizontal phase, vertical phase) — it
-// drives each envelope sample through the electron gun (DC-restored black sets
-// the cutoff) and deposits the beam current at (x = h_phase*width, y from the
-// yoke shear) onto a phosphor that decays over time. Interlace falls out for
-// free: field 1's vertical sync is half a line late, so its lines land one
-// output row below field 0's.
+// The picture tube. A join sink fed three aligned rails — the picture (luma +
+// chroma) and the two timebases (horizontal phase, vertical phase) — it drives
+// each luma sample through the electron gun (DC-restored black sets the cutoff),
+// matrixes in the colour difference for the three guns, and deposits the beam
+// current at (x = h_phase*width, y from the yoke shear) onto a phosphor that
+// decays over time. Interlace falls out for free: field 1's vertical sync is
+// half a line late, so its lines land one output row below field 0's.
 class Screen {
 public:
   explicit Screen(const ScreenConfig &cfg);
@@ -247,9 +363,10 @@ public:
   void prepare(std::size_t max_in);
 
   struct Frame {
-    std::vector<std::uint8_t> grey; // width*height, row-major
+    std::vector<std::uint8_t> pixels; // width*height*channels, row-major
     std::size_t width;
     std::size_t height;
+    std::size_t channels; // 1 = grey, 3 = interleaved RGB
   };
 
   // on_field fires once per field boundary (the field_start sample), with the
@@ -257,22 +374,24 @@ public:
   // PNG sequence. (Field, not frame, until even/odd parity tracking lands with
   // colour; then this can fire per full frame.) Empty by default = no snapshots.
   using FieldCallback = std::function<void(const Frame &)>;
-  void process(std::span<const float> envelope, std::span<const BeamSample> hbeam, std::span<const VSample> vbeam,
-      const FieldCallback &on_field = {});
+  void process(std::span<const ChromaSample> picture, std::span<const BeamSample> hbeam,
+      std::span<const VSample> vbeam, const FieldCallback &on_field = {});
 
-  // Decay the phosphor to the current instant and read it out as a grey frame,
-  // peak-normalised. Const — snapshotting doesn't disturb the running sim, so
-  // the per-field callback can call it at every field boundary.
+  // Decay the phosphor to the current instant and read it out, peak-normalised
+  // (one shared scale across R/G/B so hue is preserved). Const — snapshotting
+  // doesn't disturb the running sim, so the per-field callback can call it at
+  // every field boundary.
   [[nodiscard]] Frame snapshot() const;
 
 private:
-  // env -> beam brightness. h_phase locates the back porch (for the black-level
-  // clamp) and the active window (for the white level).
-  [[nodiscard]] float intensity_of(float env, float h_phase);
+  // luma envelope -> beam drive (gun cutoff). h_phase locates the back porch for
+  // the black DC-restore. The colour matrix then derives the three gun drives.
+  [[nodiscard]] float drive_of(float luma, float h_phase);
 
   ScreenConfig cfg_;
+  std::size_t channels_; // 1 (grey) or 3 (RGB), from cfg_.colour
   double log_decay_; // ln(per-sample phosphor decay factor)
-  std::vector<float> bright_; // per-pixel phosphor charge at last_[]
+  std::vector<float> bright_; // per-pixel-per-channel phosphor charge at last_[]
   std::vector<std::size_t> last_; // sample_index_ of each pixel's last deposit
   std::size_t sample_index_ = 0;
 
@@ -324,6 +443,12 @@ struct DecoderConfig {
   // Beam-spot vertical size in output rows (see ScreenConfig::beam_sigma_rows).
   double beam_sigma_rows = 0.8;
   double gamma = 1.0; // electron-gun gamma (see ScreenConfig::gamma)
+  // Colour: decode chroma and render an RGB triad. Off => the grey rail (the
+  // luma envelope straight to the screen, chroma untouched). saturation scales
+  // the colour-difference signals into the gun matrix (see ScreenConfig).
+  bool colour = false;
+  double saturation = 1.0;
+  ChromaDecoderConfig chroma{}; // sample_rate_hz filled in at construction
 };
 
 // The whole video graph as one streaming node: it owns the separator, the two
@@ -346,13 +471,20 @@ public:
   [[nodiscard]] double line_omega() const noexcept { return hsweep_.omega(); }
   [[nodiscard]] std::size_t detected_fields() const noexcept { return vsync_.detected_fields(); }
   [[nodiscard]] double field_omega() const noexcept { return vsync_.omega(); }
+  // Colour diagnostics (meaningful only when colour is enabled).
+  [[nodiscard]] double subcarrier_hz() const noexcept { return chroma_.subcarrier_hz(); }
+  [[nodiscard]] double burst_amplitude() const noexcept { return chroma_.burst_amplitude(); }
+  [[nodiscard]] double parity_consistency_deg() const noexcept { return chroma_.parity_consistency_deg(); }
 
 private:
+  bool colour_;
   dsp::Fir sync_lp_; // narrow low-pass on the sync branch only (picture rail untouched)
   SyncSeparator sep_;
   HorizontalSweep hsweep_;
   VerticalSync vsync_;
+  ChromaDecoder chroma_;
   Screen screen_;
+  Buffer<ChromaSample> grey_pic_; // luma-only wrapper for the monochrome path
 };
 
 } // namespace palindrome::video

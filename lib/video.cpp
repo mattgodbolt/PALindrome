@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 
 namespace palindrome::video {
@@ -248,12 +250,197 @@ std::span<const VSample> VerticalSync::process(std::span<const SyncSample> in) {
   return out_.view();
 }
 
+// === ChromaDecoder ===
+
+namespace {
+constexpr double kTwoPi = 2.0 * std::numbers::pi;
+constexpr double kR135 = 0.75 * std::numbers::pi; // the burst's ±135° (−U±V) modulated phase
+constexpr double kBurstSmooth = 0.05; // |burst| tracker (ACC) per-line coefficient
+constexpr double kLumaCutoffHz = 3.0e6; // luma low-pass: rejects the 4.43 MHz chroma
+constexpr std::size_t kLumaTaps = 121; // chosen so luma and U/V share a group delay
+
+// Wrap a phase in radians into [-π, π).
+[[nodiscard]] double wrap_angle(double a) noexcept { return std::remainder(a, kTwoPi); }
+
+// Keep the chroma band-pass top edge below Nyquist (the AirSpy's 10 MS/s only
+// just spans the subcarrier, so a 5 MHz edge would otherwise overrun it).
+[[nodiscard]] double clamp_high(double hi, double sample_rate_hz) noexcept {
+  return std::min(hi, 0.49 * sample_rate_hz);
+}
+} // namespace
+
+ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
+    cfg_{cfg},
+    bandpass_{dsp::bandpass_kernel(
+        cfg.bandpass_taps, cfg.sample_rate_hz, cfg.band_lo_hz, clamp_high(cfg.band_hi_hz, cfg.sample_rate_hz))},
+    lp_i_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
+    lp_q_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
+    lp_luma_{dsp::lowpass_kernel(kLumaTaps, cfg.sample_rate_hz, kLumaCutoffHz)} {
+  if (!(cfg_.sample_rate_hz > 0.0))
+    throw std::invalid_argument{"ChromaDecoder: sample_rate_hz must be positive"};
+  if (!(cfg_.subcarrier_hz > 0.0 && cfg_.subcarrier_hz < cfg_.sample_rate_hz / 2.0))
+    throw std::invalid_argument{"ChromaDecoder: subcarrier_hz out of range"};
+  if (!(cfg_.burst_gate_lo >= 0.0 && cfg_.burst_gate_lo < cfg_.burst_gate_hi && cfg_.burst_gate_hi < 1.0))
+    throw std::invalid_argument{"ChromaDecoder: burst gate must be 0 <= lo < hi < 1"};
+  nco_omega_ = cfg_.subcarrier_hz / cfg_.sample_rate_hz;
+  nco_step_ = std::polar(1.0, kTwoPi * nco_omega_);
+  // The comb delay is one line; size the ring for the longest line we expect.
+  const double nominal_line = cfg_.sample_rate_hz / 15625.0;
+  line_len_ = static_cast<std::size_t>(std::lround(nominal_line));
+  ring_cap_ = static_cast<std::size_t>(nominal_line * 1.5) + 2;
+  u_ring_.assign(ring_cap_, 0.0f);
+  v_ring_.assign(ring_cap_, 0.0f);
+}
+
+void ChromaDecoder::prepare(std::size_t max_in) {
+  bandpass_.prepare(max_in);
+  lp_i_.prepare(max_in);
+  lp_q_.prepare(max_in);
+  lp_luma_.prepare(max_in);
+  mix_i_.reserve(max_in);
+  mix_q_.reserve(max_in);
+  out_.reserve(max_in);
+}
+
+void ChromaDecoder::finalize_line() {
+  if (burst_count_ == 0)
+    return;
+  parity_ = !parity_; // the PAL-switch bistable: the gate closes exactly once per line
+  // The line's burst phasor: (mean raw_U, mean raw_V) over the gate. Its angle is
+  // φ, the LO-vs-subcarrier phase for this line; its magnitude feeds the ACC.
+  const double bc = burst_acc_.real() / static_cast<double>(burst_count_);
+  const double bs = burst_acc_.imag() / static_cast<double>(burst_count_);
+  const double mag = std::hypot(bc, bs);
+  burst_acc_ = {0.0, 0.0};
+  burst_count_ = 0;
+
+  // Colour-killer: a slow-decay peak tracks the live burst level; lines whose
+  // burst is well below it (the vertical-interval/VBI lines, dropouts) carry no
+  // colour. Skip them entirely — don't pollute the parity hypothesis or move the
+  // rotation — and hold the last good line's rotation across the gap.
+  burst_ref_ = std::max(burst_ref_ * 0.9995, mag);
+  if (mag < 0.3 * burst_ref_)
+    return;
+  burst_amp_ += kBurstSmooth * (mag - burst_amp_);
+  const double phi = std::atan2(bs, bc);
+
+  // Accumulate this parity's mean burst phasor and re-resolve the V-inversion
+  // ambiguity: the true hypothesis gives both line classes one shared LO offset
+  // ψ (so |ψ_even − ψ_odd| ≈ 0); the wrong one puts them ~180° apart.
+  (parity_ ? burst_odd_ : burst_even_) += std::complex<double>{bc, bs};
+  const double phi_even = std::atan2(burst_even_.imag(), burst_even_.real());
+  const double phi_odd = std::atan2(burst_odd_.imag(), burst_odd_.real());
+  const double diff_even_ntsc = wrap_angle((kR135 - phi_even) - (-kR135 - phi_odd));
+  const double diff_even_pal = wrap_angle((-kR135 - phi_even) - (kR135 - phi_odd));
+  if (std::abs(diff_even_ntsc) <= std::abs(diff_even_pal)) {
+    even_is_ntsc_ = true;
+    consistency_deg_ = std::abs(diff_even_ntsc) * 180.0 / std::numbers::pi;
+  }
+  else {
+    even_is_ntsc_ = false;
+    consistency_deg_ = std::abs(diff_even_pal) * 180.0 / std::numbers::pi;
+  }
+
+  // Class-aware de-rotation. ψ brings this line's burst onto −U±V; NTSC-style
+  // lines need no V flip, PAL-style lines are V-inverted in transmission.
+  const bool is_ntsc = (!parity_) == even_is_ntsc_;
+  const double psi = (is_ntsc ? kR135 : -kR135) - phi;
+  psi_cos_ = std::cos(psi);
+  psi_sin_ = std::sin(psi);
+  v_flip_ = is_ntsc ? 1.0 : -1.0;
+}
+
+std::span<const ChromaSample> ChromaDecoder::process(
+    std::span<const float> envelope, std::span<const BeamSample> hbeam) {
+  const std::size_t n = std::min(envelope.size(), hbeam.size());
+
+  // Pass 1: isolate the chroma subcarrier and synchronously demodulate it against
+  // the fixed crystal LO. nco_phasor_ is e^{+i2πθ}, so (c·cosθ, c·sinθ) are the
+  // raw U and V quadratures (matching cos/sin demodulation).
+  const auto chroma = bandpass_.process(envelope.first(n));
+  const auto mi = mix_i_.write_n(n);
+  const auto mq = mix_q_.write_n(n);
+  for (std::size_t k = 0; k < n; ++k) {
+    const double c = static_cast<double>(chroma[k]);
+    mi[k] = static_cast<float>(c * nco_phasor_.real());
+    mq[k] = static_cast<float>(c * nco_phasor_.imag());
+    nco_phasor_ *= nco_step_;
+    if (++since_renorm_ >= 1024) {
+      nco_phasor_ /= std::abs(nco_phasor_);
+      since_renorm_ = 0;
+    }
+  }
+
+  // Pass 2: band-limit the quadratures to the chroma bandwidth (this is where the
+  // 2·fsc image and noise go), and low-pass the envelope to a chroma-free luma.
+  const auto raw_u = lp_i_.process(mi);
+  const auto raw_v = lp_q_.process(mq);
+  const auto luma = lp_luma_.process(envelope.first(n));
+
+  // Pass 3: gate the burst out of the clean quadratures (closing the gate updates
+  // this line's rotation), then de-rotate each sample to transmitted U/V, flip V
+  // on PAL-style lines, and run the 1H comb. Chroma is normalised by the smoothed
+  // burst amplitude (ACC), so the saturation knob is capture-independent.
+  const auto out = out_.write_n(n);
+  for (std::size_t k = 0; k < n; ++k) {
+    if (hbeam[k].line_start) {
+      const std::size_t len = sample_index_ - last_line_start_;
+      if (len > 0 && len < ring_cap_)
+        line_len_ = len;
+      last_line_start_ = sample_index_;
+      burst_acc_ = {0.0, 0.0};
+      burst_count_ = 0;
+      in_gate_prev_ = false;
+    }
+
+    const double i = static_cast<double>(raw_u[k]);
+    const double q = static_cast<double>(raw_v[k]);
+
+    // Gate the burst on h_phase, which is anchored to the sync leading edge (it
+    // wraps to 0 there) — unlike line_start, which fires at the trailing edge.
+    const float hp = hbeam[k].h_phase;
+    const bool in_gate = hp >= static_cast<float>(cfg_.burst_gate_lo) && hp < static_cast<float>(cfg_.burst_gate_hi);
+    if (in_gate) {
+      burst_acc_ += std::complex<double>{i, q};
+      ++burst_count_;
+    }
+    else if (in_gate_prev_) {
+      finalize_line(); // gate closed — recover this line's rotation and class
+    }
+    in_gate_prev_ = in_gate;
+    ++sample_index_;
+
+    // R(ψ): U = cosψ·rawU − sinψ·rawV; V_mod = sinψ·rawU + cosψ·rawV. V flips on
+    // PAL-style lines to recover transmitted V.
+    const double scale = burst_amp_ > 1e-9 ? 1.0 / burst_amp_ : 0.0;
+    float u = static_cast<float>((psi_cos_ * i - psi_sin_ * q) * scale);
+    float v = static_cast<float>((psi_sin_ * i + psi_cos_ * q) * v_flip_ * scale);
+
+    if (cfg_.delay_line) {
+      const std::size_t wi = ring_pos_ % ring_cap_;
+      const std::size_t ri = (ring_pos_ + ring_cap_ - line_len_) % ring_cap_;
+      const float u_avg = 0.5f * (u + u_ring_[ri]);
+      const float v_avg = 0.5f * (v + v_ring_[ri]);
+      u_ring_[wi] = u;
+      v_ring_[wi] = v;
+      u = u_avg;
+      v = v_avg;
+      ++ring_pos_;
+    }
+    out[k] = ChromaSample{.luma = luma[k], .u = u, .v = v};
+  }
+  return out_.view();
+}
+
 // === Screen ===
 
 Screen::Screen(const ScreenConfig &cfg) :
-    cfg_{cfg}, bright_(cfg.width * cfg.height, 0.0f), last_(cfg.width * cfg.height, 0) {
+    cfg_{cfg}, channels_{cfg.colour ? std::size_t{3} : std::size_t{1}},
+    bright_(cfg.width * cfg.height * (cfg.colour ? 3 : 1), 0.0f), last_(cfg.width * cfg.height, 0) {
   if (cfg_.width == 0 || cfg_.height == 0)
     throw std::invalid_argument{"Screen: width and height must be positive"};
+  if (!(cfg_.saturation >= 0.0))
+    throw std::invalid_argument{"Screen: saturation must be non-negative"};
   if (!(cfg_.sample_rate_hz > 0.0 && cfg_.field_hz > 0.0))
     throw std::invalid_argument{"Screen: sample_rate_hz and field_hz must be positive"};
   if (!(cfg_.persistence_fields > 0.0))
@@ -286,27 +473,37 @@ constexpr float kBackPorchHi = 0.14f;
 constexpr double kBlackTrack = 0.02; // black-reference tracking per back-porch sample
 } // namespace
 
-float Screen::intensity_of(float env_f, float h_phase) {
+float Screen::drive_of(float luma_f, float h_phase) {
   // The electron gun (see Screen::black_): DC-restore black from the back-porch
-  // window, then drive = black - env, cut off below black. No upper bound.
-  const auto env = static_cast<double>(env_f);
+  // window, then drive = black - luma, cut off below black. Linear (no gamma —
+  // the per-gun gamma is applied after the colour matrix). No upper bound.
+  const auto luma = static_cast<double>(luma_f);
   if (!seeded_) {
-    black_ = env;
+    black_ = luma;
     seeded_ = true;
   }
   if (h_phase >= kBackPorchLo && h_phase < kBackPorchHi)
-    black_ += kBlackTrack * (env - black_);
-  const double drive = black_ - env;
-  if (drive <= 0.0)
-    return 0.0f;
-  // Gun gamma: beam current ~ drive^gamma. Peak-normalised at readout, so the
-  // absolute drive scale washes out and the curve shape is all that matters.
-  return static_cast<float>(cfg_.gamma == 1.0 ? drive : std::pow(drive, cfg_.gamma));
+    black_ += kBlackTrack * (luma - black_);
+  return static_cast<float>(std::max(0.0, black_ - luma));
 }
 
-void Screen::process(std::span<const float> envelope, std::span<const BeamSample> hbeam, std::span<const VSample> vbeam,
-    const FieldCallback &on_field) {
-  const std::size_t n = std::min({envelope.size(), hbeam.size(), vbeam.size()});
+namespace {
+// One electron gun: drive^gamma, the beam-current curve. 0 stays 0 (cutoff).
+[[nodiscard]] float gun(double drive, double gamma) {
+  if (drive <= 0.0)
+    return 0.0f;
+  return static_cast<float>(gamma == 1.0 ? drive : std::pow(drive, gamma));
+}
+// BT.601 colour-difference -> RGB, in gun-drive space (luma drive is the Y term).
+constexpr double kRv = 1.140;
+constexpr double kGu = -0.395;
+constexpr double kGv = -0.581;
+constexpr double kBu = 2.032;
+} // namespace
+
+void Screen::process(std::span<const ChromaSample> picture, std::span<const BeamSample> hbeam,
+    std::span<const VSample> vbeam, const FieldCallback &on_field) {
+  const std::size_t n = std::min({picture.size(), hbeam.size(), vbeam.size()});
   for (std::size_t i = 0; i < n; ++i) {
     // A field boundary closes off a completed field: snapshot the phosphor as
     // it stands now (before this sample's deposit), then carry on. Block-size
@@ -315,7 +512,20 @@ void Screen::process(std::span<const float> envelope, std::span<const BeamSample
     if (on_field && vbeam[i].field_start)
       on_field(snapshot());
 
-    const float drive = intensity_of(envelope[i], hbeam[i].h_phase);
+    // Gun drives: luma sets the Y term; the matrix adds the colour difference.
+    // Each gun cuts off at zero, then takes its gamma. Grey = the luma gun alone.
+    const double drive = static_cast<double>(drive_of(picture[i].luma, hbeam[i].h_phase));
+    float gun_rgb[3];
+    if (channels_ == 3) {
+      const double u = cfg_.saturation * static_cast<double>(picture[i].u);
+      const double v = cfg_.saturation * static_cast<double>(picture[i].v);
+      gun_rgb[0] = gun(drive + kRv * v, cfg_.gamma);
+      gun_rgb[1] = gun(drive + kGu * u + kGv * v, cfg_.gamma);
+      gun_rgb[2] = gun(drive + kBu * u, cfg_.gamma);
+    }
+    else {
+      gun_rgb[0] = gun(drive, cfg_.gamma);
+    }
 
     auto x = static_cast<std::size_t>(static_cast<double>(hbeam[i].h_phase) * static_cast<double>(cfg_.width));
     if (x >= cfg_.width)
@@ -338,36 +548,51 @@ void Screen::process(std::span<const float> envelope, std::span<const BeamSample
     }
     const double inv = sum > 0.0 ? 1.0 / sum : 0.0;
 
-    // Splat into those rows; each pixel keeps its own lazy phosphor decay (charge
-    // brought forward to now, then the fresh deposit).
+    // Splat into those rows; each pixel-channel keeps its own lazy phosphor decay
+    // (charge brought forward to now, then the fresh deposit). last_ is shared
+    // across the channels of a pixel — the three guns hit it at the same instant.
     for (std::size_t k = 0; k < row_weights_.size(); ++k) {
       const std::ptrdiff_t row = base + static_cast<std::ptrdiff_t>(k);
       if (row < 0 || row >= static_cast<std::ptrdiff_t>(cfg_.height))
         continue;
-      const auto idx = static_cast<std::size_t>(row) * cfg_.width + x;
-      const auto dt = static_cast<double>(sample_index_ - last_[idx]);
-      bright_[idx] = bright_[idx] * static_cast<float>(std::exp(log_decay_ * dt)) +
-                     static_cast<float>(drive * row_weights_[k] * inv);
-      last_[idx] = sample_index_;
+      const auto pixel = static_cast<std::size_t>(row) * cfg_.width + x;
+      const auto dt = static_cast<double>(sample_index_ - last_[pixel]);
+      const auto decay = static_cast<float>(std::exp(log_decay_ * dt));
+      const auto w = static_cast<float>(row_weights_[k] * inv);
+      for (std::size_t ch = 0; ch < channels_; ++ch) {
+        auto &cell = bright_[pixel * channels_ + ch];
+        cell = cell * decay + gun_rgb[ch] * w;
+      }
+      last_[pixel] = sample_index_;
     }
     ++sample_index_;
   }
 }
 
 Screen::Frame Screen::snapshot() const {
-  // Decay every pixel to the current instant, find the peak, normalise to grey.
+  // Decay every cell to the current instant, then normalise by a high percentile
+  // (one shared scale, so hue is preserved). Scaling by the absolute peak instead
+  // lets a single saturated colour — or a startup-edge artifact — darken every
+  // midtone; the percentile clips those few cells (as a real tube does) and keeps
+  // the picture's exposure on the bulk of the content.
   std::vector<float> now(bright_.size());
-  float peak = 0.0f;
-  for (std::size_t i = 0; i < bright_.size(); ++i) {
-    const auto dt = static_cast<double>(sample_index_ - last_[i]);
-    now[i] = bright_[i] * static_cast<float>(std::exp(log_decay_ * dt));
-    peak = std::max(peak, now[i]);
+  for (std::size_t pixel = 0; pixel < last_.size(); ++pixel) {
+    const auto dt = static_cast<double>(sample_index_ - last_[pixel]);
+    const auto decay = static_cast<float>(std::exp(log_decay_ * dt));
+    for (std::size_t ch = 0; ch < channels_; ++ch) {
+      const auto idx = pixel * channels_ + ch;
+      now[idx] = bright_[idx] * decay;
+    }
   }
-  const float scale = peak > 0.0f ? 255.0f / peak : 0.0f;
-  std::vector<std::uint8_t> grey(bright_.size());
-  for (std::size_t i = 0; i < grey.size(); ++i)
-    grey[i] = static_cast<std::uint8_t>(std::clamp(now[i] * scale, 0.0f, 255.0f) + 0.5f);
-  return Frame{.grey = std::move(grey), .width = cfg_.width, .height = cfg_.height};
+  std::vector<float> ranked(now);
+  const auto kth = ranked.begin() + static_cast<std::ptrdiff_t>(0.995 * static_cast<double>(ranked.size() - 1));
+  std::nth_element(ranked.begin(), kth, ranked.end());
+  const float ref = *kth;
+  const float scale = ref > 0.0f ? 255.0f / ref : 0.0f;
+  std::vector<std::uint8_t> pixels(bright_.size());
+  for (std::size_t i = 0; i < pixels.size(); ++i)
+    pixels[i] = static_cast<std::uint8_t>(std::clamp(now[i] * scale, 0.0f, 255.0f) + 0.5f);
+  return Frame{.pixels = std::move(pixels), .width = cfg_.width, .height = cfg_.height, .channels = channels_};
 }
 
 // === Decoder ===
@@ -387,33 +612,51 @@ template<class C>
 } // namespace
 
 Decoder::Decoder(const DecoderConfig &cfg) :
-    sync_lp_{dsp::lowpass_kernel(kSyncLpTaps, cfg.sample_rate_hz, cfg.sync_lp_cutoff_hz)},
+    colour_{cfg.colour}, sync_lp_{dsp::lowpass_kernel(kSyncLpTaps, cfg.sample_rate_hz, cfg.sync_lp_cutoff_hz)},
     sep_{with_rate(cfg.sep, cfg.sample_rate_hz)}, hsweep_{with_rate(cfg.hsweep, cfg.sample_rate_hz)},
-    vsync_{with_rate(cfg.vsync, cfg.sample_rate_hz)}, screen_{ScreenConfig{.width = cfg.width,
-                                                          .height = cfg.height,
-                                                          .sample_rate_hz = cfg.sample_rate_hz,
-                                                          .persistence_fields = cfg.persistence_fields,
-                                                          .beam_sigma_rows = cfg.beam_sigma_rows,
-                                                          .gamma = cfg.gamma}} {}
+    vsync_{with_rate(cfg.vsync, cfg.sample_rate_hz)}, chroma_{with_rate(cfg.chroma, cfg.sample_rate_hz)},
+    screen_{ScreenConfig{.width = cfg.width,
+        .height = cfg.height,
+        .sample_rate_hz = cfg.sample_rate_hz,
+        .persistence_fields = cfg.persistence_fields,
+        .beam_sigma_rows = cfg.beam_sigma_rows,
+        .gamma = cfg.gamma,
+        .colour = cfg.colour,
+        .saturation = cfg.saturation}} {}
 
 void Decoder::prepare(std::size_t max_in) {
   sync_lp_.prepare(max_in);
   sep_.prepare(max_in);
   hsweep_.prepare(max_in);
   vsync_.prepare(max_in);
+  chroma_.prepare(max_in);
   screen_.prepare(max_in);
+  grey_pic_.reserve(max_in);
 }
 
 void Decoder::process(std::span<const float> envelope, const Screen::FieldCallback &on_field) {
   // The branch: the envelope fans to a narrow sync low-pass (whose sliced sync
-  // bit feeds both timebases) and, untouched, to the picture rail. The screen
-  // joins the picture rail with the two timing rails. Spans stay valid because
-  // each producer is read before it runs again next block.
+  // bit feeds both timebases) and, untouched, to the picture rail. In colour the
+  // chroma decoder is a third branch off the envelope (it needs the horizontal
+  // rail for the burst gate); the screen joins the picture rail with the two
+  // timebases. Spans stay valid because each producer is read before it runs
+  // again next block.
   const auto sync_env = sync_lp_.process(envelope);
   const auto sync = sep_.process(sync_env);
   const auto hbeam = hsweep_.process(sync);
   const auto vbeam = vsync_.process(sync);
-  screen_.process(envelope, hbeam, vbeam, on_field);
+  if (colour_) {
+    const auto picture = chroma_.process(envelope, hbeam);
+    screen_.process(picture, hbeam, vbeam, on_field);
+  }
+  else {
+    // Monochrome: the luma rail is the envelope straight through, no chroma.
+    const auto n = envelope.size();
+    const auto pic = grey_pic_.write_n(n);
+    for (std::size_t i = 0; i < n; ++i)
+      pic[i] = ChromaSample{.luma = envelope[i], .u = 0.0f, .v = 0.0f};
+    screen_.process(grey_pic_.view(), hbeam, vbeam, on_field);
+  }
 }
 
 } // namespace palindrome::video

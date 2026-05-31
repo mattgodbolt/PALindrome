@@ -29,10 +29,11 @@ analog machine, not a DSP textbook. The current state:
   distribution, line-sync jitter, vertical field structure, and the locks the
   timebases settle on. This is the microscope the decode was built with.
 
-The picture is now a clean, recognisable monochrome image — true blacks, straight
-geometry, filled scanlines. What's left is colour (still monochrome; the chroma
-shows as faint diagonal dot-crawl until there's Y/C separation) and a possible
-gun-gamma pass for the midtones. See the roadmap below.
+The picture is a clean, recognisable image — true blacks, straight geometry,
+filled scanlines — and now **in colour** (`render --colour`): a PAL-D chroma
+channel recovers U/V off the burst and drives an RGB phosphor triad. The hues are
+correct; what's left is levels/saturation polish (it runs a touch dark, and there
+is a residual edge artifact) and the optional gun-gamma pass. See the roadmap.
 
 ## Capturing reference clips
 
@@ -107,10 +108,13 @@ flowchart TD
 
     VIS -->|envelope| SEP["SyncSeparator<br/>AGC + slice → 1-bit sync"]
     VIS -->|picture rail| SCR
+    VIS -->|picture rail| CH["ChromaDecoder (colour)<br/>4.43 MHz band-pass → crystal demod →<br/>per-line burst rotation + PAL switch →<br/>1H comb → Y/U/V"]
     SEP -->|sync bit| HS["HorizontalSweep<br/>pulse-width gate + AFC flywheel<br/>→ h_phase, line_start"]
     SEP -->|sync bit| VS["VerticalSync<br/>integrator + field flywheel<br/>→ v_phase, field_start"]
-    HS -->|timing rail| SCR["Screen (CRT)<br/>gun drive (DC-restored black) →<br/>yoke shear + Gaussian splat →<br/>phosphor decay → frame"]
+    HS -->|timing rail| CH
+    HS -->|timing rail| SCR["Screen (CRT)<br/>gun drive (DC-restored black) →<br/>RGB matrix + yoke shear + Gaussian splat →<br/>phosphor decay → frame"]
     VS -->|timing rail| SCR
+    CH -->|Y/U/V| SCR
     SCR --> PNG["PNG / per-field sequence"]
 ```
 
@@ -123,6 +127,14 @@ blocks. Flags: `--width`, `--height`, `--decimate`, `--carrier`, `--cutoff`,
 knobs `--persistence` (phosphor decay, in field periods), `--beam-sigma`
 (beam-spot vertical size, in rows), and `--frame-stride` (write a PNG every Nth
 field as `<stem>_NNNN.png` instead of a single image).
+
+For colour, add `--colour`: it decodes the chroma and writes an RGB PNG.
+`--saturation` sets the chroma gain; `--burst-lo`/`--burst-hi` place the burst
+gate as an h_phase window (the default suits ~16 MS/s; a 10 MS/s AirSpy capture
+wants ~0.16, and `--decimate 1 --cutoff 4.8e6` so the subcarrier survives the
+front end). `--no-delay-line` drops the 1H comb. The subcarrier is a fixed
+4.43361875 MHz crystal (override with `--subcarrier`); the per-line burst
+rotation tracks the source's offset from it, exactly as a real set's APC does.
 
 ### `demod` — composite envelope to WAV (inspection)
 
@@ -157,9 +169,11 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
   the rotated deflection yoke (straight scanlines), a Gaussian beam splat (filled
   scanlines), the electron-gun gamma, per-field snapshots, and a web-slider tuner
   (`tools/tune.py`) for dialling the knobs in.
-- **Colour — the PAL bit.** Burst-locked subcarrier regeneration, the 1H delay
-  line, U/V demodulation with the PAL alternation, Y/C separation. The chroma is
-  in the captures, waiting (and shows as faint diagonal dot-crawl until separated).
+- **Colour — the PAL bit.** ✅ Working (`render --colour`): a fixed 4.43 MHz
+  crystal LO, per-line back-porch burst measurement, the class-aware PAL ± line
+  rotation with a self-resolving V-switch, a 1H comb, and the RGB phosphor matrix.
+  Hues are correct; remaining polish is levels/saturation and a residual edge
+  artifact, plus a rate-aware burst gate so one default fits every sample rate.
 - **Optimisation, then SIMD.** Profile the hot paths; revisit `std::simd` for the
   DSP loops (see the note below).
 - **Multi-threading.** The streaming-block model is already structured for it.

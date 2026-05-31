@@ -31,6 +31,12 @@ private:
   double persistence_{1.2}; // phosphor persistence in field periods
   double beam_sigma_{0.8}; // beam-spot vertical size in output rows
   double gamma_{1.0}; // electron-gun gamma
+  // Colour decode (PAL-D chroma channel). Off => a grey render.
+  bool colour_{false};
+  double saturation_{0.2}; // chroma gain into the gun matrix
+  double subcarrier_{0.0}; // subcarrier crystal Hz; 0 => textbook 4.43361875 MHz
+  double burst_gate_lo_{0.11}, burst_gate_hi_{0.14}; // burst gate, h_phase window
+  bool no_delay_line_{false}; // disable the PAL-D line-pair comb
   std::size_t frame_stride_{0}; // 0 => one image; N => a PNG every Nth field boundary
   bool no_sound_trap_{false};
   double sound_q_{10.0};

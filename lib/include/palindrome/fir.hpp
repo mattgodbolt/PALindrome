@@ -20,6 +20,13 @@ enum class Window { Hamming, Blackman };
 [[nodiscard]] std::vector<float> lowpass_kernel(
     std::size_t num_taps, double sample_rate_hz, double cutoff_hz, Window window = Window::Hamming);
 
+// A windowed-sinc band-pass kernel (difference of two low-pass sincs), normalised
+// to unity gain at the band centre. Passes (low_hz, high_hz); an odd num_taps is
+// linear-phase with group delay (num_taps - 1) / 2. Throws std::invalid_argument
+// if num_taps is 0 or the band is not 0 < low < high < sample_rate / 2.
+[[nodiscard]] std::vector<float> bandpass_kernel(std::size_t num_taps, double sample_rate_hz, double low_hz,
+    double high_hz, Window window = Window::Hamming);
+
 class Fir {
 public:
   // A decimating FIR: with `decimation` D it keeps one of every D output

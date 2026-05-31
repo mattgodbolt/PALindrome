@@ -26,6 +26,12 @@ public:
 void write_png_grey(
     const std::filesystem::path &path, std::span<const std::uint8_t> pixels, unsigned width, unsigned height);
 
+// Write `pixels` to `path` as an 8-bit RGB PNG. The buffer is row-major,
+// exactly 3*width*height bytes, interleaved R,G,B per pixel. Throws WriteError
+// on a size mismatch or any encode/I-O failure.
+void write_png_rgb(
+    const std::filesystem::path &path, std::span<const std::uint8_t> pixels, unsigned width, unsigned height);
+
 // An 8-bit greyscale image read from disk: row-major width*height bytes.
 struct GreyImage {
   unsigned width{};
