@@ -257,7 +257,6 @@ constexpr double kTwoPi = 2.0 * std::numbers::pi;
 constexpr double kBurstSmooth = 0.05; // |burst| tracker (ACC) per-line coefficient
 constexpr double kApc = 0.1; // APC EMA rate (averages the ±45° swing over ~10 lines)
 constexpr double kIdent = 0.1; // ident leaky-integrator rate for the PAL-switch bistable
-constexpr double kLumaNotchHalfHz = 1.0e6; // luma chroma-trap half-width around fsc
 constexpr std::size_t kLumaTaps = 121; // chosen so luma and U/V share a group delay
 
 // Wrap a phase in radians into [-π, π).
@@ -289,8 +288,8 @@ ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
         cfg.bandpass_taps, cfg.sample_rate_hz, cfg.band_lo_hz, clamp_high(cfg.band_hi_hz, cfg.sample_rate_hz))},
     lp_i_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
     lp_q_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
-    lp_luma_{notch_kernel(kLumaTaps, cfg.sample_rate_hz, cfg.subcarrier_hz - kLumaNotchHalfHz,
-        clamp_high(cfg.subcarrier_hz + kLumaNotchHalfHz, cfg.sample_rate_hz))} {
+    lp_luma_{notch_kernel(kLumaTaps, cfg.sample_rate_hz, cfg.subcarrier_hz - cfg.luma_notch_half_hz,
+        clamp_high(cfg.subcarrier_hz + cfg.luma_notch_half_hz, cfg.sample_rate_hz))} {
   if (!(cfg_.sample_rate_hz > 0.0))
     throw std::invalid_argument{"ChromaDecoder: sample_rate_hz must be positive"};
   if (!(cfg_.subcarrier_hz > 0.0 && cfg_.subcarrier_hz < cfg_.sample_rate_hz / 2.0))
@@ -543,32 +542,40 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // Each gun cuts off at zero, then takes its gamma. Grey = the luma gun alone.
     const double drive = static_cast<double>(drive_of(picture[i].luma, hbeam[i].h_phase));
     const float luma_gun = gun(drive, cfg_.gamma);
-    // IF AGC: track the peak luma gun, fast up, slow down. This is the white
-    // reference the readout normalises by — pre-colour, so an over-saturated hue
-    // clips against white rather than dragging the whole picture's exposure.
+    // IF AGC: track the peak luma gun (readout white) and the peak luma drive (the
+    // chroma reference), fast up, slow down. Tracking drive ties the colour to the
+    // luma scale: U/V arrive normalised to the burst, so scaling them by the white
+    // drive makes saturation a bounded fraction of white, not a free multiplier.
     white_ref_ = std::max(static_cast<double>(luma_gun), white_ref_ * agc_release_);
-    float gun_rgb[3];
-    if (channels_ == 3) {
-      const double u = cfg_.saturation * static_cast<double>(picture[i].u);
-      const double v = cfg_.saturation * static_cast<double>(picture[i].v);
-      gun_rgb[0] = gun(drive + kRv * v, cfg_.gamma);
-      gun_rgb[1] = gun(drive + kGu * u + kGv * v, cfg_.gamma);
-      gun_rgb[2] = gun(drive + kBu * u, cfg_.gamma);
-    }
-    else {
-      gun_rgb[0] = luma_gun;
-    }
-
-    // Beam blanking during horizontal retrace + back porch + burst: no deposit,
-    // so the demodulated burst can't paint a coloured bar down the left edge.
+    white_drive_ = std::max(drive, white_drive_ * agc_release_);
+    // Retrace blanking: the beam is off through sync, back porch and burst, the
+    // line-blanking pulse of a real set. This is why the burst — a big subcarrier
+    // sitting in the back porch — never paints a coloured bar; it's blanked, not
+    // gated on luma.
     if (hbeam[i].h_phase < static_cast<float>(cfg_.h_blank)) {
       ++sample_index_;
       continue;
     }
 
-    auto x = static_cast<std::size_t>(static_cast<double>(hbeam[i].h_phase) * static_cast<double>(cfg_.width));
-    if (x >= cfg_.width)
-      x = cfg_.width - 1;
+    // R/G/B guns: luma drive plus the colour difference, each cut off then gamma'd.
+    float gun_rgb[3] = {luma_gun, 0.0f, 0.0f};
+    if (channels_ == 3) {
+      const double cs = cfg_.saturation * white_drive_; // chroma referenced to white
+      const double u = cs * static_cast<double>(picture[i].u);
+      const double v = cs * static_cast<double>(picture[i].v);
+      gun_rgb[0] = gun(drive + kRv * v, cfg_.gamma);
+      gun_rgb[1] = gun(drive + kGu * u + kGv * v, cfg_.gamma);
+      gun_rgb[2] = gun(drive + kBu * u, cfg_.gamma);
+    }
+
+    // Sub-pixel horizontal position: the beam sweeps continuously, so spread the
+    // deposit across the two columns it straddles. Without this, each sample dumps
+    // its whole charge into one integer column and the ~1.4 samples per output
+    // pixel beat into vertical stripes.
+    const double xf = static_cast<double>(hbeam[i].h_phase) * static_cast<double>(cfg_.width);
+    const auto x0 = static_cast<std::ptrdiff_t>(std::floor(xf));
+    const double fx = xf - static_cast<double>(x0);
+    const double col_w[2] = {1.0 - fx, fx};
 
     // Yoke shear: un-creep the vertical so the scanline is flat (see header).
     const auto yc = static_cast<double>(vbeam[i].v_phase) * static_cast<double>(cfg_.height) -
@@ -587,22 +594,29 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     }
     const double inv = sum > 0.0 ? 1.0 / sum : 0.0;
 
-    // Splat into those rows; each pixel-channel keeps its own lazy phosphor decay
-    // (charge brought forward to now, then the fresh deposit). last_ is shared
-    // across the channels of a pixel — the three guns hit it at the same instant.
+    // Splat into those rows × the two straddled columns; each pixel-channel keeps
+    // its own lazy phosphor decay (charge brought forward to now, then the fresh
+    // deposit). last_ is shared across the channels of a pixel — the three guns
+    // hit it at the same instant.
     for (std::size_t k = 0; k < row_weights_.size(); ++k) {
       const std::ptrdiff_t row = base + static_cast<std::ptrdiff_t>(k);
       if (row < 0 || row >= static_cast<std::ptrdiff_t>(cfg_.height))
         continue;
-      const auto pixel = static_cast<std::size_t>(row) * cfg_.width + x;
-      const auto dt = static_cast<double>(sample_index_ - last_[pixel]);
-      const auto decay = static_cast<float>(std::exp(log_decay_ * dt));
-      const auto w = static_cast<float>(row_weights_[k] * inv);
-      for (std::size_t ch = 0; ch < channels_; ++ch) {
-        auto &cell = bright_[pixel * channels_ + ch];
-        cell = cell * decay + gun_rgb[ch] * w;
+      const double rw = row_weights_[k] * inv;
+      for (std::size_t cc = 0; cc < 2; ++cc) {
+        const std::ptrdiff_t col = x0 + static_cast<std::ptrdiff_t>(cc);
+        if (col < 0 || col >= static_cast<std::ptrdiff_t>(cfg_.width))
+          continue;
+        const auto pixel = static_cast<std::size_t>(row) * cfg_.width + static_cast<std::size_t>(col);
+        const auto dt = static_cast<double>(sample_index_ - last_[pixel]);
+        const auto decay = static_cast<float>(std::exp(log_decay_ * dt));
+        const auto w = static_cast<float>(rw * col_w[cc]);
+        for (std::size_t ch = 0; ch < channels_; ++ch) {
+          auto &cell = bright_[pixel * channels_ + ch];
+          cell = cell * decay + gun_rgb[ch] * w;
+        }
+        last_[pixel] = sample_index_;
       }
-      last_[pixel] = sample_index_;
     }
     ++sample_index_;
   }

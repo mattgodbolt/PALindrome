@@ -234,6 +234,9 @@ struct ChromaDecoderConfig {
   double band_lo_hz = 3.5e6;
   double band_hi_hz = 5.0e6;
   double uv_bandwidth_hz = 1.3e6; // post-demod U/V low-pass corner
+  // Luma chroma-trap half-width around fsc. Narrower keeps more luma detail (the
+  // notch removes ±this around 4.43 MHz) at the cost of a little more dot-crawl.
+  double luma_notch_half_hz = 0.6e6;
   std::size_t bandpass_taps = 81;
   std::size_t demod_lp_taps = 41;
   // Burst gate as an h_phase window (0 = line-sync leading edge): the back porch
@@ -357,11 +360,11 @@ struct ScreenConfig {
   // luma. 1.0 puts tracked white at full scale; lower dims, higher clips into
   // white. The analog of the contrast pot in front of a set's IF AGC.
   double contrast = 1.0;
-  // Horizontal blanking: the beam is off for h_phase below this — the sync, back
-  // porch and colour burst. Without it the burst (a strong subcarrier) demodulates
-  // to a coloured bar at the left of the active region. The beam blanking of a
-  // real set during retrace.
-  double h_blank = 0.15;
+  // Retrace blanking: the beam is held off for h_phase below this — the sync,
+  // back porch and colour burst — exactly as a real set's line-blanking pulse
+  // keeps the flyback (and the burst) off the screen. h_phase = 0 is the sync
+  // leading edge; active video starts after the back porch.
+  double h_blank = 0.16;
 };
 
 // The picture tube. A join sink fed three aligned rails — the picture (luma +
@@ -409,7 +412,8 @@ private:
   // IF-style AGC: a fast-attack, slow-release peak tracker on the luma gun drive,
   // advanced every sample. It sets the readout white point the way a real set's
   // IF AGC fixes the carrier-to-drive mapping — causal, no per-frame statistic.
-  double white_ref_ = 0.0; // tracked peak luma gun output
+  double white_ref_ = 0.0; // tracked peak luma gun output (readout white)
+  double white_drive_ = 0.0; // tracked peak luma drive (chroma reference, pre-gamma)
   double agc_release_; // per-sample release factor (multi-field time constant)
   double phosphor_gain_; // steady-state accumulation of a per-frame re-deposit
   std::vector<float> bright_; // per-pixel-per-channel phosphor charge at last_[]
