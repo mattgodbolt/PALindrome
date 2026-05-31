@@ -183,11 +183,17 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
   chroma referenced to the luma white, an IF-AGC white reference, retrace
   blanking, and the RGB phosphor matrix — a faithful PAL-D path matching the
   TDA3561A datasheet (`docs/TDA3561A.md`). The burst gate is calibrated per SDR
-  (`--burst-lo/-hi --h-blank`): the RX888 (direct-sampling) and AirSpy R2 (tuner +
-  decimation) present the 4.43 MHz burst at different times relative to sync —
-  ~2 µs of front-end group delay that lives in the AirSpy *capture*, not the
-  decoder (it survives full decoder bypass on the raw IQ). One computed gate can't
-  cover both radios; it's a real hardware characteristic, not a missing feature.
+  (`--burst-lo/-hi --h-blank`), and the reason is worth recording: a *uniform*
+  front-end delay would cancel (it shifts the sync reference and the burst
+  together), but the AirSpy R2's is *dispersive* — its analog tuner IF (and the
+  near-Nyquist decimation, with chroma at 0.885·Nyquist) delay the 4.43 MHz burst
+  ~2 µs more than the low-frequency sync edge, so their spacing shifts. The RX888
+  direct-samples (no tuner), which is phase-linear, so it doesn't — and real PAL
+  TVs put group-delay equalisers in the IF for exactly this reason. The skew is in
+  the AirSpy *capture* (it survives full decoder bypass on the raw IQ), so one
+  computed gate can't cover both radios; it's a real hardware characteristic, not
+  a missing feature. (For wideband, phase-linear work like composite video,
+  direct-sampling suits better than a tuner front end.)
 - **Optimisation, then SIMD.** Profile the hot paths; revisit `std::simd` for the
   DSP loops (see the note below).
 - **Multi-threading.** The streaming-block model is already structured for it.
