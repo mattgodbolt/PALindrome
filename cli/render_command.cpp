@@ -137,7 +137,8 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(no_sound_trap_)["--no-sound-trap"]("Disable the sound-carrier notch"))
           .add_argument(lyra::opt(sound_q_, "q")["--sound-q"]("Sound-trap notch Q"))
           .add_argument(lyra::opt(no_sync_)["--no-sync"]("Debug: naive-fold the envelope, bypassing sync"))
-          .add_argument(lyra::opt(threaded_)["--threads"]("Run decode and screen deposit on a stage pipeline"))
+          .add_argument(
+              lyra::opt(no_threads_)["--no-threads"]("Decode serially (default is a threaded stage pipeline)"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to render (e.g. corpus/alex_kidd)")));
 }
 
@@ -245,7 +246,7 @@ int RenderCommand::run() const {
   // second thread a block behind the front-end+decode, fed owned blocks from a
   // bounded pool so memory stays bounded — the live-streaming shape.
   EnvelopeStream es;
-  if (threaded_) {
+  if (!no_threads_) {
     // Three stages a block apart: front-end (here, on the main thread, inside
     // stream_envelope) -> decode -> screen deposit. Each downstream stage is an
     // ordered FIFO run_loop drained by one thread, so the per-stage state and
