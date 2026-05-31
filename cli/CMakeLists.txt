@@ -11,4 +11,4 @@ add_executable(palindrome_cli
 # `palindrome`.
 set_target_properties(palindrome_cli PROPERTIES OUTPUT_NAME palindrome)
 
-target_link_libraries(palindrome_cli PRIVATE palindrome lyra opt::pedantic)
+target_link_libraries(palindrome_cli PRIVATE palindrome lyra opt::pedantic STDEXEC::stdexec)
