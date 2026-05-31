@@ -35,9 +35,10 @@ The picture is a clean, recognisable image — true blacks, straight geometry,
 filled scanlines — and **in colour** (`render --colour`): a PAL-D chroma channel
 recovers U/V off the burst and drives an RGB phosphor triad. Levels are period-
 correct (an IF-AGC white reference, ACC chroma referenced to the luma, retrace
-blanking), and the RGB matrix matches the TDA3561A datasheet. What's left is small
-— a rate-aware burst gate so one set of defaults fits every sample rate. See the
-roadmap.
+blanking), and the RGB matrix matches the TDA3561A datasheet. The burst gate is
+calibrated per SDR (the AirSpy's tuner shifts the 4.43 MHz burst ~2 µs vs the
+RX888's flat direct-sampling — a real front-end characteristic, not a decoder
+gap). See the roadmap.
 
 ## Capturing reference clips
 
@@ -181,9 +182,12 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
   with a self-resolving V-switch (bistable + ident), the 1H delay-line comb, ACC
   chroma referenced to the luma white, an IF-AGC white reference, retrace
   blanking, and the RGB phosphor matrix — a faithful PAL-D path matching the
-  TDA3561A datasheet (`docs/TDA3561A.md`). Remaining: a rate-aware burst gate so
-  one set of defaults fits every sample rate (the AirSpy currently needs explicit
-  `--burst-lo/-hi --h-blank`).
+  TDA3561A datasheet (`docs/TDA3561A.md`). The burst gate is calibrated per SDR
+  (`--burst-lo/-hi --h-blank`): the RX888 (direct-sampling) and AirSpy R2 (tuner +
+  decimation) present the 4.43 MHz burst at different times relative to sync —
+  ~2 µs of front-end group delay that lives in the AirSpy *capture*, not the
+  decoder (it survives full decoder bypass on the raw IQ). One computed gate can't
+  cover both radios; it's a real hardware characteristic, not a missing feature.
 - **Optimisation, then SIMD.** Profile the hot paths; revisit `std::simd` for the
   DSP loops (see the note below).
 - **Multi-threading.** The streaming-block model is already structured for it.
