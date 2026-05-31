@@ -6,10 +6,12 @@
 #include "palindrome/video.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <exception>
 #include <filesystem>
 #include <format>
 #include <iostream>
@@ -19,6 +21,7 @@
 #include <semaphore>
 #include <span>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <exec/async_scope.hpp>
@@ -36,20 +39,52 @@ std::filesystem::path numbered_path(const std::filesystem::path &base, std::size
 // blocks when every buffer is in flight, so a fast producer can't outrun a slow
 // consumer — backpressure that keeps memory bounded (the live-streaming shape).
 // Buffers live in a deque for stable addresses; the free list is a plain stack.
+// acquire() returns a move-only Handle that returns the buffer to the pool on
+// destruction, so a buffer is released down every path — including an exception
+// in a worker task or the handle being dropped mid-pipeline.
 template<class T>
 class Pool {
 public:
+  class Handle {
+  public:
+    Handle() = default;
+    Handle(Pool *pool, T *buf) : pool_{pool}, buf_{buf} {}
+    Handle(Handle &&o) noexcept : pool_{o.pool_}, buf_{std::exchange(o.buf_, nullptr)} {}
+    Handle &operator=(Handle &&o) noexcept {
+      if (this != &o) {
+        reset();
+        pool_ = o.pool_;
+        buf_ = std::exchange(o.buf_, nullptr);
+      }
+      return *this;
+    }
+    ~Handle() { reset(); }
+    [[nodiscard]] T &operator*() const noexcept { return *buf_; }
+    [[nodiscard]] T *operator->() const noexcept { return buf_; }
+
+  private:
+    void reset() noexcept {
+      if (buf_)
+        pool_->release(std::exchange(buf_, nullptr));
+    }
+    Pool *pool_ = nullptr;
+    T *buf_ = nullptr;
+  };
+
   explicit Pool(std::ptrdiff_t n) : avail_{n}, buffers_(static_cast<std::size_t>(n)) {
     for (auto &b: buffers_)
       free_.push_back(&b);
   }
-  [[nodiscard]] T *acquire() {
+  [[nodiscard]] Handle acquire() {
     avail_.acquire();
     const std::lock_guard lk{mtx_};
     T *b = free_.back();
     free_.pop_back();
-    return b;
+    return Handle{this, b};
   }
+  [[nodiscard]] std::deque<T> &buffers() { return buffers_; }
+
+private:
   void release(T *b) {
     {
       const std::lock_guard lk{mtx_};
@@ -57,9 +92,6 @@ public:
     }
     avail_.release();
   }
-  [[nodiscard]] std::deque<T> &buffers() { return buffers_; }
-
-private:
   std::counting_semaphore<> avail_;
   std::mutex mtx_;
   std::deque<T> buffers_;
@@ -236,28 +268,68 @@ int RenderCommand::run() const {
     const auto decode_sched = decode_loop.get_scheduler();
     const auto screen_sched = screen_loop.get_scheduler();
 
-    es = stream_envelope(
-        loaded, opts,
-        [&](std::span<const float> env) {
-          std::vector<float> *ebuf = env_pool.acquire(); // backpressure if decode is behind
-          ebuf->assign(env.begin(), env.end());
-          scope.spawn(stdexec::schedule(decode_sched) | stdexec::then([&, ebuf] {
-            video::DecodedBlock *dbuf = blk_pool.acquire(); // backpressure if the screen is behind
-            decoder.decode_into(*dbuf, *ebuf);
-            env_pool.release(ebuf);
-            scope.spawn(stdexec::schedule(screen_sched) | stdexec::then([&, dbuf] {
-              decoder.deposit(*dbuf, on_field);
-              blk_pool.release(dbuf);
-            }));
-          }));
-        },
-        kBlock);
+    // A worker task must not let an exception escape (async_scope would
+    // std::terminate). Capture the first one, flag the pipeline to wind down
+    // (later blocks skip their work and just drain), and rethrow on the main
+    // thread after shutdown — so a write failure surfaces exactly like the
+    // serial path, through main's top-level handler.
+    std::mutex err_mtx;
+    std::exception_ptr first_error;
+    std::atomic<bool> failed{false};
+    const auto fail = [&] {
+      const std::lock_guard lk{err_mtx};
+      if (!first_error)
+        first_error = std::current_exception();
+      failed.store(true, std::memory_order_relaxed);
+    };
 
-    stdexec::sync_wait(scope.on_empty()); // wait for every queued decode + deposit
+    std::exception_ptr front_end_error;
+    try {
+      es = stream_envelope(
+          loaded, opts,
+          [&](std::span<const float> env) {
+            auto eh = env_pool.acquire(); // blocks here if decode is behind (backpressure)
+            eh->assign(env.begin(), env.end());
+            scope.spawn(stdexec::schedule(decode_sched) | stdexec::then([&, eh = std::move(eh)]() mutable {
+              if (failed.load(std::memory_order_relaxed))
+                return; // eh releases its buffer here
+              try {
+                auto dh = blk_pool.acquire(); // blocks here if the screen is behind
+                decoder.decode_into(*dh, *eh);
+                scope.spawn(stdexec::schedule(screen_sched) | stdexec::then([&, dh = std::move(dh)]() mutable {
+                  if (failed.load(std::memory_order_relaxed))
+                    return; // dh releases its buffer here
+                  try {
+                    decoder.deposit(*dh, on_field);
+                  }
+                  catch (...) {
+                    fail();
+                  }
+                }));
+              }
+              catch (...) {
+                fail();
+              }
+            }));
+          },
+          kBlock);
+    }
+    catch (...) {
+      front_end_error = std::current_exception(); // the front end (main thread) threw
+    }
+
+    // Always drain and shut down — in every path — before the scope, loops and
+    // threads destruct (an async_scope must be empty and a run_loop finished).
+    stdexec::sync_wait(scope.on_empty());
     decode_loop.finish();
     screen_loop.finish();
     decode_thread.join();
     screen_thread.join();
+
+    if (front_end_error)
+      std::rethrow_exception(front_end_error);
+    if (first_error)
+      std::rethrow_exception(first_error);
   }
   else {
     es = stream_envelope(loaded, opts, [&](std::span<const float> env) { decoder.process(env, on_field); }, kBlock);
