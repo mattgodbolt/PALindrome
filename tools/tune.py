@@ -46,7 +46,7 @@ KNOBS = [
     dict(name="persistence", flag="--persistence", label="Phosphor persistence (fields)",
          min=0.3, max=6.0, step=0.1, default=0.9,
          help="How long the phosphor glows, in field periods (~20 ms each). Higher blends more fields together "
-              "(smoother, averages noise, but smears motion); lower is sharper but flickers. ~1.2 ≈ the last two fields."),
+              "(smoother, averages noise, but smears motion); lower is sharper but flickers. ~1 ≈ roughly the last field."),
     dict(name="beam_sigma", flag="--beam-sigma", label="Beam sigma (rows)",
          min=0.0, max=2.5, step=0.05, default=1.2,
          help="Vertical size of the electron-beam spot, in output rows. Bigger fills the gaps between scanlines "

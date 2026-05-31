@@ -36,7 +36,6 @@ std::size_t auto_decimate(double sample_rate_hz, double subcarrier_hz) {
   const double n = kMaxSubcarrierNyquistFraction * 0.5 * sample_rate_hz / subcarrier_hz;
   return std::max<std::size_t>(1, static_cast<std::size_t>(n));
 }
-
 } // namespace
 
 void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
@@ -90,9 +89,10 @@ int RenderCommand::run() const {
   const auto loaded = load_recording(recording_, carrier_);
 
   // --decimate 0 (the default) means pick the decimation from the signal; any
-  // explicit value wins. The subcarrier is the textbook PAL crystal unless
-  // --subcarrier overrides it.
-  const double subcarrier_hz = subcarrier_ != 0.0 ? subcarrier_ : 4.43361875e6;
+  // explicit value wins. The subcarrier is the textbook PAL crystal unless a
+  // positive --subcarrier overrides it (matching the decoder, which ignores a
+  // non-positive value — so auto_decimate never divides by zero or negative).
+  const double subcarrier_hz = subcarrier_ > 0.0 ? subcarrier_ : 4.43361875e6;
   const std::size_t decimate = decimate_ != 0 ? decimate_ : auto_decimate(loaded.sample_rate_hz, subcarrier_hz);
 
   const auto envelope_rate = loaded.sample_rate_hz / static_cast<double>(decimate);
