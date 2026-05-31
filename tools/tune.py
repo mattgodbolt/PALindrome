@@ -123,7 +123,7 @@ body{font-family:sans-serif;margin:1em;background:#111;color:#ddd}
 .knob{display:flex;align-items:center;gap:.5em;margin:.1em 0}
 .knob label{width:15em;font-size:.82em}.knob input{width:13em}
 .knob output{width:6em;text-align:right;font:.8em monospace}
-img{background:#000;image-rendering:pixelated}
+img{background:#000;image-rendering:pixelated;image-rendering:crisp-edges}
 button{margin:.4em .4em 0 0}#status{font:.85em monospace;margin-top:.5em;color:#9c9}
 </style></head><body><div id=wrap>
 <div><div id=knobs></div>
@@ -144,6 +144,7 @@ for(const k of KNOBS){vals[k.name]=k.def;
 let count=0,gen=0,playing=null;
 const img=document.getElementById('img'),scrub=document.getElementById('scrub'),
  fnum=document.getElementById('fnum'),status=document.getElementById('status');
+img.addEventListener('load',()=>{img.style.width=(img.naturalWidth*2)+'px';}); // 2x, nearest-neighbour
 function show(i){fnum.textContent=i;img.src='/frame?i='+i+'&g='+gen;}
 scrub.addEventListener('input',()=>show(+scrub.value));
 document.getElementById('play').addEventListener('click',()=>{
