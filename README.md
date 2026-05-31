@@ -36,9 +36,9 @@ filled scanlines — and **in colour** (`render --colour`): a PAL-D chroma chann
 recovers U/V off the burst and drives an RGB phosphor triad. Levels are period-
 correct (an IF-AGC white reference, ACC chroma referenced to the luma, retrace
 blanking), and the RGB matrix matches the TDA3561A datasheet. The burst gate is
-calibrated per SDR (the AirSpy's tuner shifts the 4.43 MHz burst ~2 µs vs the
-RX888's flat direct-sampling — a real front-end characteristic, not a decoder
-gap). See the roadmap.
+calibrated per SDR (the AirSpy's narrow 10 MS/s puts the 4.43 MHz chroma near
+Nyquist, where its front-end group delay shifts the burst ~2 µs vs the RX888's
+wide 32 MS/s — a real capture characteristic, not a decoder gap). See the roadmap.
 
 ## Capturing reference clips
 
@@ -185,15 +185,20 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
   TDA3561A datasheet (`docs/TDA3561A.md`). The burst gate is calibrated per SDR
   (`--burst-lo/-hi --h-blank`), and the reason is worth recording: a *uniform*
   front-end delay would cancel (it shifts the sync reference and the burst
-  together), but the AirSpy R2's is *dispersive* — its analog tuner IF (and the
-  near-Nyquist decimation, with chroma at 0.885·Nyquist) delay the 4.43 MHz burst
-  ~2 µs more than the low-frequency sync edge, so their spacing shifts. The RX888
-  direct-samples (no tuner), which is phase-linear, so it doesn't — and real PAL
-  TVs put group-delay equalisers in the IF for exactly this reason. The skew is in
-  the AirSpy *capture* (it survives full decoder bypass on the raw IQ), so one
-  computed gate can't cover both radios; it's a real hardware characteristic, not
-  a missing feature. (For wideband, phase-linear work like composite video,
-  direct-sampling suits better than a tuner front end.)
+  together), but the AirSpy R2's is *dispersive* — different frequencies are
+  delayed by different amounts, so the 4.43 MHz burst lands ~2 µs later than the
+  low-frequency sync edge and their spacing shifts. Both these RF captures went
+  through a tuner (the RX888 mk2 used its R828D VHF path, `--vhf-*`, not its
+  direct-sampling HF path), so it isn't tuner-vs-direct — it's bandwidth: the
+  RX888's wide 32 MS/s keeps the chroma at ~0.5·Nyquist where the response is
+  flat, while the AirSpy's narrow 10 MS/s puts it at 0.885·Nyquist, in the
+  anti-alias roll-off where group delay climbs (and the upper sideband clips).
+  Real PAL TVs add group-delay equalisers in the IF for exactly this reason. The
+  skew is in the AirSpy *capture* (it survives full decoder bypass on the raw IQ),
+  so one computed gate can't cover both radios; it's a real capture characteristic,
+  not a missing feature. (Direct-sampling the composite baseband — feeding video
+  straight to the ADC, no tuner — would sidestep this, but we haven't captured
+  that way yet.)
 - **Optimisation, then SIMD.** Profile the hot paths; revisit `std::simd` for the
   DSP loops (see the note below).
 - **Multi-threading.** The streaming-block model is already structured for it.
