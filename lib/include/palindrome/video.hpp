@@ -267,19 +267,19 @@ public:
   [[nodiscard]] std::size_t max_output_for(std::size_t n) const noexcept { return n; }
   [[nodiscard]] std::size_t input_multiple() const noexcept { return 1; }
 
-  // Diagnostics: the crystal frequency (Hz), a smoothed burst amplitude (the ACC
-  // / colour-killer signal), and the running PAL-switch self-consistency in
-  // degrees (≈0 when the V-inversion parity is confidently resolved).
+  // Diagnostics: the crystal frequency (Hz), the smoothed burst amplitude (the
+  // ACC level), and this line's burst swing in degrees (~45° once the colour is
+  // locked — the ±45° −U±V swinging burst).
   [[nodiscard]] double subcarrier_hz() const noexcept { return nco_omega_ * cfg_.sample_rate_hz; }
   [[nodiscard]] double burst_amplitude() const noexcept { return burst_amp_; }
-  [[nodiscard]] double parity_consistency_deg() const noexcept { return consistency_deg_; }
+  [[nodiscard]] double burst_swing_deg() const noexcept { return swing_deg_; }
 
 private:
   void finalize_line(); // per-line burst measurement + class assignment at gate close
 
   ChromaDecoderConfig cfg_;
   dsp::Fir bandpass_; // isolates the chroma subcarrier from the composite
-  dsp::Fir lp_i_, lp_q_; // post-demod low-pass on the two quadratures (raw U, V)
+  dsp::Fir lp_u_, lp_v_; // post-demod low-pass on the two quadratures (raw U, V)
   dsp::Fir lp_luma_; // luma = notch(envelope): a 4.43 MHz chroma trap, luma stays wide
 
   // The fixed crystal LO, advanced one step per sample (never retuned).
@@ -292,15 +292,16 @@ private:
   std::complex<double> burst_acc_{0.0, 0.0}; // Σ(raw U, raw V) over the gate
   std::size_t burst_count_ = 0;
   bool in_gate_prev_ = false;
-  double burst_amp_ = 0.0; // smoothed |burst| (ACC)
+  double burst_amp_ = 0.0; // ACC level = √2·|apc_phasor_| (the swing-averaged burst)
   double burst_ref_ = 0.0; // slow-decay peak burst level for the colour-killer
   double psi_cos_ = 1.0, psi_sin_ = 0.0; // this line's rotation R(ψ)
   double v_flip_ = 1.0; // +1 on NTSC-style lines, −1 on PAL-style (V inversion)
 
   // Automatic phase control: a slow complex EMA of the back-porch burst locks the
-  // reference onto the −U axis. The ±135° (−U±V) swing alternates every line, so
-  // it averages out of this loop, exactly as a real set's APC averages it to lock
-  // its crystal phase. The rotation derives from this axis (held in psi_cos_/sin_).
+  // reference onto the −U axis. The burst swings ±45° about that axis line to line
+  // (the −U±V swinging burst), so the swing averages out of this loop, exactly as
+  // a real set's APC averages it to lock its crystal phase. The rotation derives
+  // from this axis (held in psi_cos_/sin_); its magnitude is the ACC (burst_amp_).
   std::complex<double> apc_phasor_{0.0, 0.0};
 
   // PAL-switch bistable + ident. parity_ toggles every line (the V-switch); the
@@ -311,7 +312,7 @@ private:
   bool parity_ = false;
   bool polarity_ = false; // which bistable phase is the V-inverted (PAL) line
   double ident_ = 0.0; // leaky agreement: < 0 means the bistable is mis-phased
-  double consistency_deg_ = 90.0; // this line's |swing|; ~45 once locked
+  double swing_deg_ = 90.0; // this line's burst |swing|; ~45 once locked
 
   // Line-length tracking, for the 1H comb delay depth.
   std::size_t sample_index_ = 0;
@@ -324,7 +325,7 @@ private:
   std::size_t ring_pos_ = 0; // running write position into the comb ring
 
   // Scratch (reused across calls): the demodulated quadratures pass 1 produces.
-  Buffer<float> mix_i_, mix_q_;
+  Buffer<float> mix_u_, mix_v_;
   Buffer<ChromaSample> out_;
 };
 
@@ -500,7 +501,7 @@ public:
   // Colour diagnostics (meaningful only when colour is enabled).
   [[nodiscard]] double subcarrier_hz() const noexcept { return chroma_.subcarrier_hz(); }
   [[nodiscard]] double burst_amplitude() const noexcept { return chroma_.burst_amplitude(); }
-  [[nodiscard]] double parity_consistency_deg() const noexcept { return chroma_.parity_consistency_deg(); }
+  [[nodiscard]] double burst_swing_deg() const noexcept { return chroma_.burst_swing_deg(); }
 
 private:
   bool colour_;

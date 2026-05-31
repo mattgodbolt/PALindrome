@@ -254,10 +254,8 @@ std::span<const VSample> VerticalSync::process(std::span<const SyncSample> in) {
 
 namespace {
 constexpr double kTwoPi = 2.0 * std::numbers::pi;
-constexpr double kBurstSmooth = 0.05; // |burst| tracker (ACC) per-line coefficient
 constexpr double kApc = 0.1; // APC EMA rate (averages the ±45° swing over ~10 lines)
 constexpr double kIdent = 0.1; // ident leaky-integrator rate for the PAL-switch bistable
-constexpr std::size_t kLumaTaps = 121; // chosen so luma and U/V share a group delay
 
 // Wrap a phase in radians into [-π, π).
 [[nodiscard]] double wrap_angle(double a) noexcept { return std::remainder(a, kTwoPi); }
@@ -286,9 +284,12 @@ ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
     cfg_{cfg},
     bandpass_{dsp::bandpass_kernel(
         cfg.bandpass_taps, cfg.sample_rate_hz, cfg.band_lo_hz, clamp_high(cfg.band_hi_hz, cfg.sample_rate_hz))},
-    lp_i_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
-    lp_q_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
-    lp_luma_{notch_kernel(kLumaTaps, cfg.sample_rate_hz, cfg.subcarrier_hz - cfg.luma_notch_half_hz,
+    lp_u_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
+    lp_v_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
+    // Luma notch length = band-pass + demod low-pass lengths, so its group delay
+    // equals the chroma path's and the two rails stay aligned at the screen.
+    lp_luma_{notch_kernel(cfg.bandpass_taps + cfg.demod_lp_taps - 1, cfg.sample_rate_hz,
+        cfg.subcarrier_hz - cfg.luma_notch_half_hz,
         clamp_high(cfg.subcarrier_hz + cfg.luma_notch_half_hz, cfg.sample_rate_hz))} {
   if (!(cfg_.sample_rate_hz > 0.0))
     throw std::invalid_argument{"ChromaDecoder: sample_rate_hz must be positive"};
@@ -308,11 +309,11 @@ ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
 
 void ChromaDecoder::prepare(std::size_t max_in) {
   bandpass_.prepare(max_in);
-  lp_i_.prepare(max_in);
-  lp_q_.prepare(max_in);
+  lp_u_.prepare(max_in);
+  lp_v_.prepare(max_in);
   lp_luma_.prepare(max_in);
-  mix_i_.reserve(max_in);
-  mix_q_.reserve(max_in);
+  mix_u_.reserve(max_in);
+  mix_v_.reserve(max_in);
   out_.reserve(max_in);
 }
 
@@ -321,7 +322,7 @@ void ChromaDecoder::finalize_line() {
     return;
   parity_ = !parity_; // the PAL-switch bistable: the gate closes exactly once per line
   // The line's burst phasor: (mean raw_U, mean raw_V) over the gate. Its angle is
-  // φ, the LO-vs-subcarrier phase for this line; its magnitude feeds the ACC.
+  // φ, the LO-vs-subcarrier phase for this line.
   const double bc = burst_acc_.real() / static_cast<double>(burst_count_);
   const double bs = burst_acc_.imag() / static_cast<double>(burst_count_);
   const double mag = std::hypot(bc, bs);
@@ -330,18 +331,20 @@ void ChromaDecoder::finalize_line() {
 
   // Colour-killer: a slow-decay peak tracks the live burst level; lines whose
   // burst is well below it (the vertical-interval/VBI lines, dropouts) carry no
-  // colour. Skip them entirely — don't pollute the parity hypothesis or move the
-  // rotation — and hold the last good line's rotation across the gap.
+  // colour. Skip them entirely — don't move the APC or rotation — and hold the
+  // last good line's rotation across the gap.
   burst_ref_ = std::max(burst_ref_ * 0.9995, mag);
   if (mag < 0.3 * burst_ref_)
     return;
-  burst_amp_ += kBurstSmooth * (mag - burst_amp_);
   const double phi = std::atan2(bs, bc);
 
   // APC: a slow EMA of the burst phasor locks the reference onto the −U axis. The
   // ±45° swing alternates line to line, so it averages out and the EMA tracks the
   // steady LO-vs-subcarrier offset (and any slow source drift), like a real APC.
   apc_phasor_ = (1.0 - kApc) * apc_phasor_ + kApc * std::complex<double>{bc, bs};
+  // The ACC level: the same phasor's magnitude is the swing-averaged burst (the
+  // ±45° swing shrinks it by cos45°, so ×√2 recovers |burst|). One tracker, not two.
+  burst_amp_ = std::numbers::sqrt2 * std::abs(apc_phasor_);
   const double psi_axis = std::atan2(apc_phasor_.imag(), apc_phasor_.real());
   const double swing = wrap_angle(phi - psi_axis); // ±45°; its sign is the V-sense
 
@@ -358,7 +361,7 @@ void ChromaDecoder::finalize_line() {
     ident_ = 0.0;
   }
   v_flip_ = (parity_ == polarity_) ? 1.0 : -1.0;
-  consistency_deg_ = std::abs(swing) * 180.0 / std::numbers::pi;
+  swing_deg_ = std::abs(swing) * 180.0 / std::numbers::pi;
 
   // De-rotate by π − psi_axis so the −U axis lands on the negative-real axis;
   // U = −Re, V = Im (switch-corrected by v_flip_) then follow in process().
@@ -375,12 +378,12 @@ std::span<const ChromaSample> ChromaDecoder::process(
   // the fixed crystal LO. nco_phasor_ is e^{+i2πθ}, so (c·cosθ, c·sinθ) are the
   // raw U and V quadratures (matching cos/sin demodulation).
   const auto chroma = bandpass_.process(envelope.first(n));
-  const auto mi = mix_i_.write_n(n);
-  const auto mq = mix_q_.write_n(n);
+  const auto mu = mix_u_.write_n(n);
+  const auto mv = mix_v_.write_n(n);
   for (std::size_t k = 0; k < n; ++k) {
     const double c = static_cast<double>(chroma[k]);
-    mi[k] = static_cast<float>(c * nco_phasor_.real());
-    mq[k] = static_cast<float>(c * nco_phasor_.imag());
+    mu[k] = static_cast<float>(c * nco_phasor_.real());
+    mv[k] = static_cast<float>(c * nco_phasor_.imag());
     nco_phasor_ *= nco_step_;
     if (++since_renorm_ >= 1024) {
       nco_phasor_ /= std::abs(nco_phasor_);
@@ -390,8 +393,8 @@ std::span<const ChromaSample> ChromaDecoder::process(
 
   // Pass 2: band-limit the quadratures to the chroma bandwidth (this is where the
   // 2·fsc image and noise go), and notch the envelope to a chroma-free luma.
-  const auto raw_u = lp_i_.process(mi);
-  const auto raw_v = lp_q_.process(mq);
+  const auto raw_u = lp_u_.process(mu);
+  const auto raw_v = lp_v_.process(mv);
   const auto luma = lp_luma_.process(envelope.first(n));
 
   // Pass 3: gate the burst out of the clean quadratures (closing the gate updates
@@ -500,9 +503,10 @@ constexpr double kBlackTrack = 0.02; // black-reference tracking per back-porch 
 } // namespace
 
 float Screen::drive_of(float luma_f, float h_phase) {
-  // The electron gun (see Screen::black_): DC-restore black from the back-porch
-  // window, then drive = black - luma, cut off below black. Linear (no gamma —
-  // the per-gun gamma is applied after the colour matrix). No upper bound.
+  // luma arrives in negative-modulation envelope units (lower = whiter, see
+  // ChromaSample). The electron gun (see Screen::black_): DC-restore black from
+  // the back-porch window, then drive = black - luma, cut off below black. Linear
+  // (no gamma — the per-gun gamma is applied after the colour matrix). No upper bound.
   const auto luma = static_cast<double>(luma_f);
   if (!seeded_) {
     black_ = luma;
@@ -521,6 +525,8 @@ namespace {
   return static_cast<float>(gamma == 1.0 ? drive : std::pow(drive, gamma));
 }
 // BT.601 colour-difference -> RGB, in gun-drive space (luma drive is the Y term).
+// These match the TDA3561A demodulator ratios: (B−Y)/(R−Y) = kBu/kRv = 1.78, and
+// the (G−Y) axis within the datasheet's tolerance (see docs/TDA3561A.md).
 constexpr double kRv = 1.140;
 constexpr double kGu = -0.395;
 constexpr double kGv = -0.581;

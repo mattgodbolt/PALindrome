@@ -179,8 +179,8 @@ int RenderCommand::run() const {
     save(output, last_frame ? *last_frame : decoder.snapshot());
 
   if (colour_)
-    std::println("colour: crystal {:.4f} MHz, burst amplitude {:.4g}, PAL-switch consistency {:.1f} deg",
-        decoder.subcarrier_hz() / 1e6, decoder.burst_amplitude(), decoder.parity_consistency_deg());
+    std::println("colour: crystal {:.4f} MHz, burst amplitude {:.4g}, burst swing {:.1f} deg",
+        decoder.subcarrier_hz() / 1e6, decoder.burst_amplitude(), decoder.burst_swing_deg());
 
   const double line_hz = decoder.line_omega() * envelope_rate;
   const double field_hz = decoder.field_omega() * envelope_rate;
