@@ -3,29 +3,20 @@
 #include "cli_util.hpp"
 #include "palindrome/demod.hpp"
 #include "palindrome/image.hpp"
+#include "palindrome/pipeline_run.hpp"
 #include "palindrome/video.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
-#include <exception>
 #include <filesystem>
 #include <format>
 #include <iostream>
-#include <mutex>
 #include <optional>
 #include <print>
-#include <semaphore>
 #include <span>
-#include <thread>
-#include <utility>
 #include <vector>
-
-#include <exec/async_scope.hpp>
-#include <stdexec/execution.hpp>
 
 namespace palindrome::cli {
 
@@ -46,68 +37,6 @@ std::size_t auto_decimate(double sample_rate_hz, double subcarrier_hz) {
   return std::max<std::size_t>(1, static_cast<std::size_t>(n));
 }
 
-// A fixed pool of reusable buffers handed between pipeline stages. acquire()
-// blocks when every buffer is in flight, so a fast producer can't outrun a slow
-// consumer — backpressure that keeps memory bounded (the live-streaming shape).
-// Buffers live in a deque for stable addresses; the free list is a plain stack.
-// acquire() returns a move-only Handle that returns the buffer to the pool on
-// destruction, so a buffer is released down every path — including an exception
-// in a worker task or the handle being dropped mid-pipeline.
-template<class T>
-class Pool {
-public:
-  class Handle {
-  public:
-    Handle() = default;
-    Handle(Pool *pool, T *buf) : pool_{pool}, buf_{buf} {}
-    Handle(Handle &&o) noexcept : pool_{o.pool_}, buf_{std::exchange(o.buf_, nullptr)} {}
-    Handle &operator=(Handle &&o) noexcept {
-      if (this != &o) {
-        reset();
-        pool_ = o.pool_;
-        buf_ = std::exchange(o.buf_, nullptr);
-      }
-      return *this;
-    }
-    ~Handle() { reset(); }
-    [[nodiscard]] T &operator*() const noexcept { return *buf_; }
-    [[nodiscard]] T *operator->() const noexcept { return buf_; }
-
-  private:
-    void reset() noexcept {
-      if (buf_)
-        pool_->release(std::exchange(buf_, nullptr));
-    }
-    Pool *pool_ = nullptr;
-    T *buf_ = nullptr;
-  };
-
-  explicit Pool(std::ptrdiff_t n) : avail_{n}, buffers_(static_cast<std::size_t>(n)) {
-    for (auto &b: buffers_)
-      free_.push_back(&b);
-  }
-  [[nodiscard]] Handle acquire() {
-    avail_.acquire();
-    const std::lock_guard lk{mtx_};
-    T *b = free_.back();
-    free_.pop_back();
-    return Handle{this, b};
-  }
-  [[nodiscard]] std::deque<T> &buffers() { return buffers_; }
-
-private:
-  void release(T *b) {
-    {
-      const std::lock_guard lk{mtx_};
-      free_.push_back(b);
-    }
-    avail_.release();
-  }
-  std::counting_semaphore<> avail_;
-  std::mutex mtx_;
-  std::deque<T> buffers_;
-  std::vector<T *> free_;
-};
 } // namespace
 
 void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
@@ -123,8 +52,7 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(persistence_, "fields")["--persistence"]("Phosphor persistence in field periods"))
           .add_argument(lyra::opt(beam_sigma_, "rows")["--beam-sigma"]("Beam-spot vertical size in output rows"))
           .add_argument(lyra::opt(gamma_, "g")["--gamma"]("Electron-gun gamma (1.0 = linear)"))
-          .add_argument(lyra::opt(colour_)["--colour"]["--color"](
-              "Decode PAL colour (RGB). AirSpy captures need --decimate 1 to keep the subcarrier"))
+          .add_argument(lyra::opt(colour_)["--colour"]["--color"]("Decode PAL colour (RGB)"))
           .add_argument(lyra::opt(saturation_, "x")["--saturation"]("Colour: chroma gain into the gun matrix"))
           .add_argument(lyra::opt(contrast_, "x")["--contrast"]("Readout white point (AGC-relative; the contrast pot)"))
           .add_argument(lyra::opt(h_blank_, "x")["--h-blank"]("Retrace blanking end (h_phase; ~0.21 at 10 MS/s)"))
@@ -258,100 +186,19 @@ int RenderCommand::run() const {
       save(numbered_path(output, written++), f);
   };
 
-  // stream_envelope hides the real-IF vs complex-baseband front end; the decoder
-  // just sees composite-envelope blocks. --threads runs the screen deposit on a
-  // second thread a block behind the front-end+decode, fed owned blocks from a
-  // bounded pool so memory stays bounded — the live-streaming shape.
+  // The pipeline: a push source (the real-IF/complex front end, which the
+  // decoder just sees as composite-envelope blocks) -> decode -> screen deposit.
+  // pipe::run threads it (each stage on its own in-order worker, owned blocks
+  // through bounded pools — the live-streaming shape) or runs it inline for
+  // --no-threads, from this one description. Either way it's bit-identical.
+  constexpr std::ptrdiff_t kInFlight = 4;
   EnvelopeStream es;
-  if (!no_threads_) {
-    // Three stages a block apart: front-end (here, on the main thread, inside
-    // stream_envelope) -> decode -> screen deposit. Each downstream stage is an
-    // ordered FIFO run_loop drained by one thread, so the per-stage state and
-    // the phosphor framebuffer stay single-threaded and the result is identical
-    // to the serial path. Owned buffers flow between stages through bounded
-    // pools, which apply backpressure so a fast stage can't outrun a slow one.
-    constexpr std::ptrdiff_t kInFlight = 4;
-    Pool<std::vector<float>> env_pool{kInFlight};
-    for (auto &b: env_pool.buffers())
-      b.reserve(kBlock);
-    Pool<video::DecodedBlock> blk_pool{kInFlight};
-    for (auto &b: blk_pool.buffers())
-      b.resize(kBlock);
-
-    stdexec::run_loop decode_loop;
-    stdexec::run_loop screen_loop;
-    std::jthread decode_thread{[&] { decode_loop.run(); }};
-    std::jthread screen_thread{[&] { screen_loop.run(); }};
-    exec::async_scope scope;
-    const auto decode_sched = decode_loop.get_scheduler();
-    const auto screen_sched = screen_loop.get_scheduler();
-
-    // A worker task must not let an exception escape (async_scope would
-    // std::terminate). Capture the first one, flag the pipeline to wind down
-    // (later blocks skip their work and just drain), and rethrow on the main
-    // thread after shutdown — so a write failure surfaces exactly like the
-    // serial path, through main's top-level handler.
-    std::mutex err_mtx;
-    std::exception_ptr first_error;
-    std::atomic<bool> failed{false};
-    const auto fail = [&] {
-      const std::lock_guard lk{err_mtx};
-      if (!first_error)
-        first_error = std::current_exception();
-      failed.store(true, std::memory_order_relaxed);
-    };
-
-    std::exception_ptr front_end_error;
-    try {
-      es = stream_envelope(
-          loaded, opts,
-          [&](std::span<const float> env) {
-            auto eh = env_pool.acquire(); // blocks here if decode is behind (backpressure)
-            eh->assign(env.begin(), env.end());
-            scope.spawn(stdexec::schedule(decode_sched) | stdexec::then([&, eh = std::move(eh)]() mutable {
-              if (failed.load(std::memory_order_relaxed))
-                return; // eh releases its buffer here
-              try {
-                auto dh = blk_pool.acquire(); // blocks here if the screen is behind
-                decoder.decode_into(*dh, *eh);
-                scope.spawn(stdexec::schedule(screen_sched) | stdexec::then([&, dh = std::move(dh)]() mutable {
-                  if (failed.load(std::memory_order_relaxed))
-                    return; // dh releases its buffer here
-                  try {
-                    decoder.deposit(*dh, on_field);
-                  }
-                  catch (...) {
-                    fail();
-                  }
-                }));
-              }
-              catch (...) {
-                fail();
-              }
-            }));
-          },
-          kBlock);
-    }
-    catch (...) {
-      front_end_error = std::current_exception(); // the front end (main thread) threw
-    }
-
-    // Always drain and shut down — in every path — before the scope, loops and
-    // threads destruct (an async_scope must be empty and a run_loop finished).
-    stdexec::sync_wait(scope.on_empty());
-    decode_loop.finish();
-    screen_loop.finish();
-    decode_thread.join();
-    screen_thread.join();
-
-    if (front_end_error)
-      std::rethrow_exception(front_end_error);
-    if (first_error)
-      std::rethrow_exception(first_error);
-  }
-  else {
-    es = stream_envelope(loaded, opts, [&](std::span<const float> env) { decoder.process(env, on_field); }, kBlock);
-  }
+  pipe::run(
+      !no_threads_, kInFlight, //
+      [&](const auto &emit) { es = stream_envelope(loaded, opts, emit, kBlock); },
+      pipe::transform<video::DecodedBlock>(
+          kInFlight, [&](std::span<const float> env, video::DecodedBlock &out) { decoder.decode_into(out, env); }),
+      pipe::sink([&](const video::DecodedBlock &block) { decoder.deposit(block, on_field); }));
   for (const auto &w: es.warnings)
     std::println(std::cerr, "render: warning: {}", w);
 

@@ -519,16 +519,10 @@ public:
   explicit Decoder(const DecoderConfig &cfg);
 
   void prepare(std::size_t max_in);
-  // on_field, if set, fires the phosphor snapshot at every field boundary (the
-  // hook for a per-field PNG sequence); otherwise just integrates the screen.
-  void process(std::span<const float> envelope, const Screen::FieldCallback &on_field = {});
-  // The two halves of process(), split so a pipeline can run them on separate
-  // threads: decode() runs the sync/chroma stages into an owned block; deposit()
-  // paints that block onto the phosphor screen. Single-threaded, process() is
-  // just the two back to back.
-  [[nodiscard]] const DecodedBlock &decode(std::span<const float> envelope);
-  // Decode straight into a caller-owned block, so a pipeline can hand each block
-  // to the screen thread without an extra copy. decode() is this into a member.
+  // The decode is split into two halves so a pipeline can run them on separate
+  // threads: decode_into() runs the sync/chroma stages into a caller-owned block;
+  // deposit() paints that block onto the phosphor screen, firing on_field (if
+  // set) at each field boundary. Run back to back they are a full decode.
   void decode_into(DecodedBlock &out, std::span<const float> envelope);
   void deposit(const DecodedBlock &block, const Screen::FieldCallback &on_field = {});
   [[nodiscard]] Screen::Frame snapshot() const { return screen_.snapshot(); }
@@ -551,7 +545,6 @@ private:
   VerticalSync vsync_;
   ChromaDecoder chroma_;
   Screen screen_;
-  DecodedBlock decoded_; // reused owned handoff buffer for the single-thread path
 };
 
 } // namespace palindrome::video

@@ -723,7 +723,6 @@ void Decoder::prepare(std::size_t max_in) {
   vsync_.prepare(max_in);
   chroma_.prepare(max_in);
   screen_.prepare(max_in);
-  decoded_.resize(max_in);
 }
 
 void Decoder::decode_into(DecodedBlock &out, std::span<const float> envelope) {
@@ -750,19 +749,10 @@ void Decoder::decode_into(DecodedBlock &out, std::span<const float> envelope) {
   }
 }
 
-const DecodedBlock &Decoder::decode(std::span<const float> envelope) {
-  decode_into(decoded_, envelope);
-  return decoded_;
-}
-
 void Decoder::deposit(const DecodedBlock &block, const Screen::FieldCallback &on_field) {
   // The screen joins the picture rail with the two timing rails; it owns the
   // phosphor framebuffer, so only ever one thread runs this.
   screen_.process(block.picture, block.hbeam, block.vbeam, on_field);
-}
-
-void Decoder::process(std::span<const float> envelope, const Screen::FieldCallback &on_field) {
-  deposit(decode(envelope), on_field);
 }
 
 } // namespace palindrome::video
