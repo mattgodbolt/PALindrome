@@ -723,32 +723,42 @@ void Decoder::prepare(std::size_t max_in) {
   vsync_.prepare(max_in);
   chroma_.prepare(max_in);
   screen_.prepare(max_in);
-  grey_pic_.reserve(max_in);
+  decoded_.resize(max_in);
 }
 
-void Decoder::process(std::span<const float> envelope, const Screen::FieldCallback &on_field) {
+const DecodedBlock &Decoder::decode(std::span<const float> envelope) {
   // The branch: the envelope fans to a narrow sync low-pass (whose sliced sync
   // bit feeds both timebases) and, untouched, to the picture rail. In colour the
   // chroma decoder is a third branch off the envelope (it needs the horizontal
-  // rail for the burst gate); the screen joins the picture rail with the two
-  // timebases. Spans stay valid because each producer is read before it runs
-  // again next block.
+  // rail for the burst gate). The rails are copied into owned vectors so the
+  // screen deposit can run on a different thread a block behind.
   const auto sync_env = sync_lp_.process(envelope);
   const auto sync = sep_.process(sync_env);
   const auto hbeam = hsweep_.process(sync);
   const auto vbeam = vsync_.process(sync);
+  const auto n = envelope.size();
+  decoded_.resize(n);
+  std::ranges::copy(hbeam, decoded_.hbeam.begin());
+  std::ranges::copy(vbeam, decoded_.vbeam.begin());
   if (colour_) {
-    const auto picture = chroma_.process(envelope, hbeam);
-    screen_.process(picture, hbeam, vbeam, on_field);
+    std::ranges::copy(chroma_.process(envelope, hbeam), decoded_.picture.begin());
   }
   else {
     // Monochrome: the luma rail is the envelope straight through, no chroma.
-    const auto n = envelope.size();
-    const auto pic = grey_pic_.write_n(n);
     for (std::size_t i = 0; i < n; ++i)
-      pic[i] = ChromaSample{.luma = envelope[i], .u = 0.0f, .v = 0.0f};
-    screen_.process(grey_pic_.view(), hbeam, vbeam, on_field);
+      decoded_.picture[i] = ChromaSample{.luma = envelope[i], .u = 0.0f, .v = 0.0f};
   }
+  return decoded_;
+}
+
+void Decoder::deposit(const DecodedBlock &block, const Screen::FieldCallback &on_field) {
+  // The screen joins the picture rail with the two timing rails; it owns the
+  // phosphor framebuffer, so only ever one thread runs this.
+  screen_.process(block.picture, block.hbeam, block.vbeam, on_field);
+}
+
+void Decoder::process(std::span<const float> envelope, const Screen::FieldCallback &on_field) {
+  deposit(decode(envelope), on_field);
 }
 
 } // namespace palindrome::video
