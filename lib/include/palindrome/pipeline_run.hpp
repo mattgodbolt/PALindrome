@@ -8,8 +8,10 @@
 #include <mutex>
 #include <semaphore>
 #include <span>
+#include <stdexcept>
 #include <thread>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -70,7 +72,7 @@ public:
     T *buf_ = nullptr;
   };
 
-  explicit Pool(std::ptrdiff_t n) : avail_{n}, buffers_(static_cast<std::size_t>(n)) {
+  explicit Pool(std::ptrdiff_t n) : avail_{require_positive(n)}, buffers_(static_cast<std::size_t>(n)) {
     for (auto &b: buffers_)
       free_.push_back(&b);
   }
@@ -83,6 +85,14 @@ public:
   }
 
 private:
+  // Validate before the semaphore/buffer members initialise — a non-positive
+  // count would be a deadlocked semaphore and (via the signed->unsigned cast) a
+  // gigantic buffer allocation.
+  static std::ptrdiff_t require_positive(std::ptrdiff_t n) {
+    if (n <= 0)
+      throw std::invalid_argument{"pipe::Pool: in_flight must be positive"};
+    return n;
+  }
   void release(T *b) {
     {
       const std::lock_guard lk{mtx_};
