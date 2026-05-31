@@ -22,6 +22,7 @@ import argparse
 import glob
 import json
 import os
+import shlex
 import subprocess
 import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -194,6 +195,9 @@ class Tuner:
                     cmd.append(k["flag"])
             else:
                 cmd += [k["flag"], str(v)]
+        # Echo the exact command so a knob setting can be reproduced offline
+        # (swap the temp -o for your own output path).
+        print(shlex.join(cmd), flush=True)
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or "render failed")
