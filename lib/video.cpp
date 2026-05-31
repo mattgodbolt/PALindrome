@@ -453,6 +453,15 @@ Screen::Screen(const ScreenConfig &cfg) :
   // field periods: tau_samples = persistence * (sample_rate / field_hz).
   const double tau_samples = cfg_.persistence_fields * cfg_.sample_rate_hz / cfg_.field_hz;
   log_decay_ = -1.0 / tau_samples;
+  // AGC release: hold the tracked white for a few fields, so the white point is
+  // steady against picture content (the slow time constant of a real IF AGC).
+  constexpr double kAgcFields = 8.0;
+  agc_release_ = std::exp(-1.0 / (kAgcFields * cfg_.sample_rate_hz / cfg_.field_hz));
+  // A pixel hit once per frame (two field periods, interlaced) accumulates its
+  // deposit to a steady 1/(1 - decay_per_frame); white reads that, so divide it
+  // out to put tracked white at full scale.
+  const double decay_per_frame = std::exp(log_decay_ * 2.0 * cfg_.sample_rate_hz / cfg_.field_hz);
+  phosphor_gain_ = 1.0 / (1.0 - decay_per_frame);
   // Yoke shear: the beam steps (field_hz / line_hz) of a field per line, i.e.
   // this many output rows — the amount to un-creep within each line.
   yoke_tilt_rows_ = static_cast<double>(cfg_.height) * cfg_.field_hz / cfg_.nominal_line_hz;
@@ -515,6 +524,11 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // Gun drives: luma sets the Y term; the matrix adds the colour difference.
     // Each gun cuts off at zero, then takes its gamma. Grey = the luma gun alone.
     const double drive = static_cast<double>(drive_of(picture[i].luma, hbeam[i].h_phase));
+    const float luma_gun = gun(drive, cfg_.gamma);
+    // IF AGC: track the peak luma gun, fast up, slow down. This is the white
+    // reference the readout normalises by — pre-colour, so an over-saturated hue
+    // clips against white rather than dragging the whole picture's exposure.
+    white_ref_ = std::max(static_cast<double>(luma_gun), white_ref_ * agc_release_);
     float gun_rgb[3];
     if (channels_ == 3) {
       const double u = cfg_.saturation * static_cast<double>(picture[i].u);
@@ -524,7 +538,7 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
       gun_rgb[2] = gun(drive + kBu * u, cfg_.gamma);
     }
     else {
-      gun_rgb[0] = gun(drive, cfg_.gamma);
+      gun_rgb[0] = luma_gun;
     }
 
     auto x = static_cast<std::size_t>(static_cast<double>(hbeam[i].h_phase) * static_cast<double>(cfg_.width));
@@ -570,28 +584,21 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
 }
 
 Screen::Frame Screen::snapshot() const {
-  // Decay every cell to the current instant, then normalise by a high percentile
-  // (one shared scale, so hue is preserved). Scaling by the absolute peak instead
-  // lets a single saturated colour — or a startup-edge artifact — darken every
-  // midtone; the percentile clips those few cells (as a real tube does) and keeps
-  // the picture's exposure on the bulk of the content.
-  std::vector<float> now(bright_.size());
+  // Scale by the AGC white reference (the steady-state phosphor brightness a
+  // tracked-white pixel reaches), one shared scale so hue is preserved. Contrast
+  // moves the white point; cells above it clip into white, as a real tube does —
+  // no per-frame statistic, so the exposure is causal and doesn't breathe.
+  const double white = white_ref_ * phosphor_gain_;
+  const float scale = white > 0.0 ? static_cast<float>(255.0 * cfg_.contrast / white) : 0.0f;
+  std::vector<std::uint8_t> pixels(bright_.size());
   for (std::size_t pixel = 0; pixel < last_.size(); ++pixel) {
     const auto dt = static_cast<double>(sample_index_ - last_[pixel]);
     const auto decay = static_cast<float>(std::exp(log_decay_ * dt));
     for (std::size_t ch = 0; ch < channels_; ++ch) {
       const auto idx = pixel * channels_ + ch;
-      now[idx] = bright_[idx] * decay;
+      pixels[idx] = static_cast<std::uint8_t>(std::clamp(bright_[idx] * decay * scale, 0.0f, 255.0f) + 0.5f);
     }
   }
-  std::vector<float> ranked(now);
-  const auto kth = ranked.begin() + static_cast<std::ptrdiff_t>(0.995 * static_cast<double>(ranked.size() - 1));
-  std::nth_element(ranked.begin(), kth, ranked.end());
-  const float ref = *kth;
-  const float scale = ref > 0.0f ? 255.0f / ref : 0.0f;
-  std::vector<std::uint8_t> pixels(bright_.size());
-  for (std::size_t i = 0; i < pixels.size(); ++i)
-    pixels[i] = static_cast<std::uint8_t>(std::clamp(now[i] * scale, 0.0f, 255.0f) + 0.5f);
   return Frame{.pixels = std::move(pixels), .width = cfg_.width, .height = cfg_.height, .channels = channels_};
 }
 
@@ -622,7 +629,8 @@ Decoder::Decoder(const DecoderConfig &cfg) :
         .beam_sigma_rows = cfg.beam_sigma_rows,
         .gamma = cfg.gamma,
         .colour = cfg.colour,
-        .saturation = cfg.saturation}} {}
+        .saturation = cfg.saturation,
+        .contrast = cfg.contrast}} {}
 
 void Decoder::prepare(std::size_t max_in) {
   sync_lp_.prepare(max_in);

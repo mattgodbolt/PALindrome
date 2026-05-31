@@ -42,6 +42,7 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(colour_)["--colour"]["--color"](
               "Decode PAL colour (RGB). AirSpy captures need --decimate 1 to keep the subcarrier"))
           .add_argument(lyra::opt(saturation_, "x")["--saturation"]("Colour: chroma gain into the gun matrix"))
+          .add_argument(lyra::opt(contrast_, "x")["--contrast"]("Readout white point (AGC-relative; the contrast pot)"))
           .add_argument(lyra::opt(subcarrier_, "hz")["--subcarrier"]("Colour: subcarrier crystal Hz (default 4.43361875 MHz)"))
           .add_argument(lyra::opt(burst_gate_lo_, "x")["--burst-lo"]("Colour: burst gate start (h_phase; ~0.16 at 10 MS/s)"))
           .add_argument(lyra::opt(burst_gate_hi_, "x")["--burst-hi"]("Colour: burst gate end (h_phase)"))
@@ -116,6 +117,7 @@ int RenderCommand::run() const {
   dc.gamma = gamma_;
   dc.colour = colour_;
   dc.saturation = saturation_;
+  dc.contrast = contrast_;
   if (subcarrier_ > 0.0) // else the crystal default (textbook fsc)
     dc.chroma.subcarrier_hz = subcarrier_;
   dc.chroma.burst_gate_lo = burst_gate_lo_;

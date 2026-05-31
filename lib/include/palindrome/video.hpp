@@ -347,6 +347,10 @@ struct ScreenConfig {
   // colour-difference signals into the matrix before the per-gun gamma.
   bool colour = false;
   double saturation = 1.0;
+  // Contrast: the readout white point, as a fraction of the AGC-tracked peak
+  // luma. 1.0 puts tracked white at full scale; lower dims, higher clips into
+  // white. The analog of the contrast pot in front of a set's IF AGC.
+  double contrast = 1.0;
 };
 
 // The picture tube. A join sink fed three aligned rails — the picture (luma +
@@ -377,10 +381,10 @@ public:
   void process(std::span<const ChromaSample> picture, std::span<const BeamSample> hbeam,
       std::span<const VSample> vbeam, const FieldCallback &on_field = {});
 
-  // Decay the phosphor to the current instant and read it out, peak-normalised
-  // (one shared scale across R/G/B so hue is preserved). Const — snapshotting
-  // doesn't disturb the running sim, so the per-field callback can call it at
-  // every field boundary.
+  // Decay the phosphor to the current instant and read it out, scaled by the
+  // AGC-tracked white reference (one shared scale across R/G/B so hue is
+  // preserved). Const — snapshotting doesn't disturb the running sim, so the
+  // per-field callback can call it at every field boundary.
   [[nodiscard]] Frame snapshot() const;
 
 private:
@@ -391,6 +395,12 @@ private:
   ScreenConfig cfg_;
   std::size_t channels_; // 1 (grey) or 3 (RGB), from cfg_.colour
   double log_decay_; // ln(per-sample phosphor decay factor)
+  // IF-style AGC: a fast-attack, slow-release peak tracker on the luma gun drive,
+  // advanced every sample. It sets the readout white point the way a real set's
+  // IF AGC fixes the carrier-to-drive mapping — causal, no per-frame statistic.
+  double white_ref_ = 0.0; // tracked peak luma gun output
+  double agc_release_; // per-sample release factor (multi-field time constant)
+  double phosphor_gain_; // steady-state accumulation of a per-frame re-deposit
   std::vector<float> bright_; // per-pixel-per-channel phosphor charge at last_[]
   std::vector<std::size_t> last_; // sample_index_ of each pixel's last deposit
   std::size_t sample_index_ = 0;
@@ -448,6 +458,7 @@ struct DecoderConfig {
   // the colour-difference signals into the gun matrix (see ScreenConfig).
   bool colour = false;
   double saturation = 1.0;
+  double contrast = 1.0; // readout white point (see ScreenConfig::contrast)
   ChromaDecoderConfig chroma{}; // sample_rate_hz filled in at construction
 };
 
