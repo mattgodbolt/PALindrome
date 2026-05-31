@@ -35,6 +35,17 @@ std::filesystem::path numbered_path(const std::filesystem::path &base, std::size
   return base.parent_path() / std::format("{}_{:04}{}", base.stem().string(), idx, base.extension().string());
 }
 
+// The largest decimation that still keeps the colour subcarrier at or below
+// 0.7*Nyquist of the decimated rate — so it stays out of the anti-alias roll-off
+// where group delay climbs (the AirSpy's near-Nyquist problem). Decimating is
+// purely a speed lever, so take as much as the signal allows: RX888 32 MS/s ->
+// /2, AirSpy 10 MS/s -> /1. An explicit --decimate overrides this.
+std::size_t auto_decimate(double sample_rate_hz, double subcarrier_hz) {
+  constexpr double kMaxSubcarrierNyquistFraction = 0.7;
+  const double n = kMaxSubcarrierNyquistFraction * 0.5 * sample_rate_hz / subcarrier_hz;
+  return std::max<std::size_t>(1, static_cast<std::size_t>(n));
+}
+
 // A fixed pool of reusable buffers handed between pipeline stages. acquire()
 // blocks when every buffer is in flight, so a fast producer can't outrun a slow
 // consumer — backpressure that keeps memory bounded (the live-streaming shape).
@@ -106,7 +117,7 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(carrier_, "hz")["--carrier"]("Carrier Hz (default: rx888:vision_if_hz)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz"))
           .add_argument(lyra::opt(sync_cutoff_, "hz")["--sync-cutoff"]("Sync-branch low-pass cutoff Hz"))
-          .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs"))
+          .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs (0 = auto from Nyquist)"))
           .add_argument(lyra::opt(width_, "px")["--width"]("Output image width"))
           .add_argument(lyra::opt(height_, "px")["--height"]("Output image height"))
           .add_argument(lyra::opt(persistence_, "fields")["--persistence"]("Phosphor persistence in field periods"))
@@ -150,10 +161,16 @@ int RenderCommand::run() const {
 
   const auto loaded = load_recording(recording_, carrier_);
 
-  const auto envelope_rate = loaded.sample_rate_hz / static_cast<double>(decimate_);
+  // --decimate 0 (the default) means pick the decimation from the signal; any
+  // explicit value wins. The subcarrier is the textbook PAL crystal unless
+  // --subcarrier overrides it.
+  const double subcarrier_hz = subcarrier_ != 0.0 ? subcarrier_ : 4.43361875e6;
+  const std::size_t decimate = decimate_ != 0 ? decimate_ : auto_decimate(loaded.sample_rate_hz, subcarrier_hz);
+
+  const auto envelope_rate = loaded.sample_rate_hz / static_cast<double>(decimate);
 
   const EnvelopeOptions opts{
-      .cutoff_hz = cutoff_, .decimation = decimate_, .no_sound_trap = no_sound_trap_, .sound_q = sound_q_};
+      .cutoff_hz = cutoff_, .decimation = decimate, .no_sound_trap = no_sound_trap_, .sound_q = sound_q_};
 
   if (no_sync_) {
     // Debug: fold the raw envelope into the frame (sample i -> x = i % width,
@@ -358,7 +375,7 @@ int RenderCommand::run() const {
                                       : std::format("wrote {}", output.string());
   std::println("{} ({}x{}); envelope @ {:g} MS/s after /{} decimation, carrier {:.4f} MHz; "
                "horizontal locked {} edges @ {:.1f} Hz ({:+.2f}%); vertical locked {} fields @ {:.2f} Hz ({:+.2f}%)",
-      what, width_, height_, envelope_rate / 1e6, decimate_, loaded.vision_carrier_hz / 1e6, decoder.accepted_edges(),
+      what, width_, height_, envelope_rate / 1e6, decimate, loaded.vision_carrier_hz / 1e6, decoder.accepted_edges(),
       line_hz, 100.0 * (line_hz - 15625.0) / 15625.0, decoder.detected_fields(), field_hz,
       100.0 * (field_hz - 50.0) / 50.0);
   return 0;

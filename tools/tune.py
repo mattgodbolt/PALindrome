@@ -252,7 +252,7 @@ def main():
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--width", type=int, default=643)
     ap.add_argument("--height", type=int, default=576)
-    ap.add_argument("--decimate", type=int, default=1)
+    ap.add_argument("--decimate", type=int, default=0, help="0 = auto from the sample rate (the CLI default)")
     args = ap.parse_args()
 
     tuner = Tuner(args)
