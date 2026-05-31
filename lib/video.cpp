@@ -437,15 +437,19 @@ std::span<const ChromaSample> ChromaDecoder::process(
     float v = static_cast<float>((psi_sin_ * i + psi_cos_ * q) * v_flip_ * scale);
 
     if (cfg_.delay_line) {
-      const std::size_t wi = ring_pos_ % ring_cap_;
-      const std::size_t ri = (ring_pos_ + ring_cap_ - line_len_) % ring_cap_;
+      // ring_pos_ is kept wrapped in [0, ring_cap_) so the comb's read index is a
+      // conditional subtract, not a (non-power-of-two) modulo per sample. line_len_
+      // < ring_cap_, so the read offset wraps at most once.
+      const std::size_t wi = ring_pos_;
+      const std::size_t ri = wi >= line_len_ ? wi - line_len_ : wi + ring_cap_ - line_len_;
       const float u_avg = 0.5f * (u + u_ring_[ri]);
       const float v_avg = 0.5f * (v + v_ring_[ri]);
       u_ring_[wi] = u;
       v_ring_[wi] = v;
       u = u_avg;
       v = v_avg;
-      ++ring_pos_;
+      if (++ring_pos_ == ring_cap_)
+        ring_pos_ = 0;
     }
     out[k] = ChromaSample{.luma = luma[k], .u = u, .v = v};
   }
@@ -648,9 +652,13 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
         const auto pixel = static_cast<std::size_t>(row) * cfg_.width + static_cast<std::size_t>(col);
         const auto decay = decay_for(sample_index_ - last_[pixel]);
         const auto w = static_cast<float>(rw * col_w[cc]);
-        for (std::size_t ch = 0; ch < channels_; ++ch) {
-          auto &cell = bright_[pixel * channels_ + ch];
-          cell = cell * decay + gun_rgb[ch] * w;
+        // channels_ is 1 or 3; spell both out so the guns stay in registers and
+        // the RGB triple isn't a variable-trip loop.
+        float *cell = &bright_[pixel * channels_];
+        cell[0] = cell[0] * decay + gun_rgb[0] * w;
+        if (channels_ == 3) {
+          cell[1] = cell[1] * decay + gun_rgb[1] * w;
+          cell[2] = cell[2] * decay + gun_rgb[2] * w;
         }
         last_[pixel] = sample_index_;
       }
