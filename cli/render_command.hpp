@@ -43,6 +43,7 @@ private:
   bool no_sound_trap_{false};
   double sound_q_{10.0};
   bool no_sync_{false}; // debug: naive-fold the envelope, bypassing the sync graph
+  bool threaded_{false}; // run the decode and the screen deposit on a stage pipeline
   // Sync/sweep hold knobs — the rest of the decoder, surfaced for the tuner.
   double sync_level_{0.85}; // separator slice level
   double h_kp_{1.0}, h_ki_{1.0e-5}, h_clamp_{0.2}; // horizontal hold (AFC PI + omega clamp)

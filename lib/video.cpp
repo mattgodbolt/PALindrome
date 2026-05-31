@@ -726,7 +726,7 @@ void Decoder::prepare(std::size_t max_in) {
   decoded_.resize(max_in);
 }
 
-const DecodedBlock &Decoder::decode(std::span<const float> envelope) {
+void Decoder::decode_into(DecodedBlock &out, std::span<const float> envelope) {
   // The branch: the envelope fans to a narrow sync low-pass (whose sliced sync
   // bit feeds both timebases) and, untouched, to the picture rail. In colour the
   // chroma decoder is a third branch off the envelope (it needs the horizontal
@@ -737,17 +737,21 @@ const DecodedBlock &Decoder::decode(std::span<const float> envelope) {
   const auto hbeam = hsweep_.process(sync);
   const auto vbeam = vsync_.process(sync);
   const auto n = envelope.size();
-  decoded_.resize(n);
-  std::ranges::copy(hbeam, decoded_.hbeam.begin());
-  std::ranges::copy(vbeam, decoded_.vbeam.begin());
+  out.resize(n);
+  std::ranges::copy(hbeam, out.hbeam.begin());
+  std::ranges::copy(vbeam, out.vbeam.begin());
   if (colour_) {
-    std::ranges::copy(chroma_.process(envelope, hbeam), decoded_.picture.begin());
+    std::ranges::copy(chroma_.process(envelope, hbeam), out.picture.begin());
   }
   else {
     // Monochrome: the luma rail is the envelope straight through, no chroma.
     for (std::size_t i = 0; i < n; ++i)
-      decoded_.picture[i] = ChromaSample{.luma = envelope[i], .u = 0.0f, .v = 0.0f};
+      out.picture[i] = ChromaSample{.luma = envelope[i], .u = 0.0f, .v = 0.0f};
   }
+}
+
+const DecodedBlock &Decoder::decode(std::span<const float> envelope) {
+  decode_into(decoded_, envelope);
   return decoded_;
 }
 

@@ -12,10 +12,16 @@
 #include <filesystem>
 #include <format>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <print>
+#include <semaphore>
 #include <span>
+#include <thread>
 #include <vector>
+
+#include <exec/async_scope.hpp>
+#include <stdexec/execution.hpp>
 
 namespace palindrome::cli {
 
@@ -64,6 +70,7 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(no_sound_trap_)["--no-sound-trap"]("Disable the sound-carrier notch"))
           .add_argument(lyra::opt(sound_q_, "q")["--sound-q"]("Sound-trap notch Q"))
           .add_argument(lyra::opt(no_sync_)["--no-sync"]("Debug: naive-fold the envelope, bypassing sync"))
+          .add_argument(lyra::opt(threaded_)["--threads"]("Run decode and screen deposit on a stage pipeline"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to render (e.g. corpus/alex_kidd)")));
 }
 
@@ -167,9 +174,62 @@ int RenderCommand::run() const {
   };
 
   // stream_envelope hides the real-IF vs complex-baseband front end; the decoder
-  // just sees composite-envelope blocks.
-  const auto es =
-      stream_envelope(loaded, opts, [&](std::span<const float> env) { decoder.process(env, on_field); }, kBlock);
+  // just sees composite-envelope blocks. --threads runs the screen deposit on a
+  // second thread a block behind the front-end+decode, fed owned blocks from a
+  // bounded pool so memory stays bounded — the live-streaming shape.
+  EnvelopeStream es;
+  if (threaded_) {
+    constexpr std::ptrdiff_t kInFlight = 4;
+    std::vector<video::DecodedBlock> pool(kInFlight);
+    for (auto &b: pool)
+      b.resize(kBlock);
+    std::counting_semaphore<kInFlight> free_count{kInFlight};
+    std::mutex free_mtx;
+    std::vector<video::DecodedBlock *> free_list;
+    for (auto &b: pool)
+      free_list.push_back(&b);
+    const auto acquire = [&]() -> video::DecodedBlock * {
+      free_count.acquire(); // blocks when every buffer is in flight (backpressure)
+      const std::lock_guard lk{free_mtx};
+      auto *b = free_list.back();
+      free_list.pop_back();
+      return b;
+    };
+    const auto release = [&](video::DecodedBlock *b) {
+      {
+        const std::lock_guard lk{free_mtx};
+        free_list.push_back(b);
+      }
+      free_count.release();
+    };
+
+    // The screen stage: one FIFO worker (a run_loop drained by a jthread), so
+    // blocks deposit strictly in order — the phosphor framebuffer stays
+    // single-threaded and the result is identical to the serial decode.
+    stdexec::run_loop screen_loop;
+    std::jthread screen_thread{[&] { screen_loop.run(); }};
+    exec::async_scope scope;
+    const auto screen_sched = screen_loop.get_scheduler();
+
+    es = stream_envelope(
+        loaded, opts,
+        [&](std::span<const float> env) {
+          video::DecodedBlock *buf = acquire();
+          decoder.decode_into(*buf, env); // main thread: front-end ran in stream_envelope; decode here, in order
+          scope.spawn(stdexec::schedule(screen_sched) | stdexec::then([&, buf] {
+            decoder.deposit(*buf, on_field); // worker thread, in order off the FIFO
+            release(buf);
+          }));
+        },
+        kBlock);
+
+    stdexec::sync_wait(scope.on_empty()); // wait for every queued deposit
+    screen_loop.finish();
+    screen_thread.join();
+  }
+  else {
+    es = stream_envelope(loaded, opts, [&](std::span<const float> env) { decoder.process(env, on_field); }, kBlock);
+  }
   for (const auto &w: es.warnings)
     std::println(std::cerr, "render: warning: {}", w);
 

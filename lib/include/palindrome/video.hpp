@@ -527,6 +527,9 @@ public:
   // paints that block onto the phosphor screen. Single-threaded, process() is
   // just the two back to back.
   [[nodiscard]] const DecodedBlock &decode(std::span<const float> envelope);
+  // Decode straight into a caller-owned block, so a pipeline can hand each block
+  // to the screen thread without an extra copy. decode() is this into a member.
+  void decode_into(DecodedBlock &out, std::span<const float> envelope);
   void deposit(const DecodedBlock &block, const Screen::FieldCallback &on_field = {});
   [[nodiscard]] Screen::Frame snapshot() const { return screen_.snapshot(); }
 
