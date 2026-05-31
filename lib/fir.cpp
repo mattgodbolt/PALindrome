@@ -46,8 +46,8 @@ float convolve(const float *taps, const float *window, std::size_t n) {
 // to convolve()'s scalar dot. That is what makes a decimating filter equal "filter
 // at full rate, then keep every dth" and the stream independent of how it's chunked
 // (the block-invariance guarantee).
-void convolve_strip(const float *taps, const float *window, float *y, std::size_t n, std::size_t outputs,
-    std::size_t d, std::size_t win_len) {
+void convolve_strip(const float *taps, const float *window, float *y, std::size_t n, std::size_t outputs, std::size_t d,
+    std::size_t win_len) {
   std::size_t k = 0;
 #if defined(__AVX2__) && defined(__FMA__)
   if (d == 1) {

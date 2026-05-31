@@ -264,8 +264,7 @@ constexpr double kIdent = 0.1; // ident leaky-integrator rate for the PAL-switch
 // keeps its full bandwidth except the chroma band around fsc (a chroma trap),
 // rather than being low-passed soft. Same length as the band-pass, so its group
 // delay matches and the notch sits exactly on the subcarrier.
-[[nodiscard]] std::vector<float> notch_kernel(
-    std::size_t taps, double sample_rate_hz, double low_hz, double high_hz) {
+[[nodiscard]] std::vector<float> notch_kernel(std::size_t taps, double sample_rate_hz, double low_hz, double high_hz) {
   auto k = dsp::bandpass_kernel(taps, sample_rate_hz, low_hz, high_hz);
   for (auto &t: k)
     t = -t;
@@ -281,9 +280,8 @@ constexpr double kIdent = 0.1; // ident leaky-integrator rate for the PAL-switch
 } // namespace
 
 ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
-    cfg_{cfg},
-    bandpass_{dsp::bandpass_kernel(
-        cfg.bandpass_taps, cfg.sample_rate_hz, cfg.band_lo_hz, clamp_high(cfg.band_hi_hz, cfg.sample_rate_hz))},
+    cfg_{cfg}, bandpass_{dsp::bandpass_kernel(cfg.bandpass_taps, cfg.sample_rate_hz, cfg.band_lo_hz,
+                   clamp_high(cfg.band_hi_hz, cfg.sample_rate_hz))},
     lp_u_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
     lp_v_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
     // Luma notch length = band-pass + demod low-pass lengths, so its group delay
