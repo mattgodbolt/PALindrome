@@ -118,6 +118,37 @@ TEST_CASE("decimating FIR keeps exactly every Nth full-rate output") {
     CHECK(dec[k] == full[3 * k]); // a decimating FIR == filter then keep every 3rd
 }
 
+TEST_CASE("decimation-2 FIR matches full-rate and streams identically (the deinterleave path)") {
+  // Decimation 2 has its own AVX2 even-lane deinterleave kernel — the front end's
+  // path — that neither the d=3 (scalar) nor d=4 case exercises. 500 inputs give
+  // 250 outputs, so the 8-wide kernel runs and then hands its tail to the scalar
+  // dot; both must agree with a full-rate filter sampled every 2nd output.
+  constexpr double fs = 1000.0;
+  const auto taps = dsp::lowpass_kernel(31, fs, 100.0);
+  const auto x = tone(fs, 40.0, 500);
+
+  dsp::Fir full_fir{taps, 1};
+  const std::span<const float> full = full_fir.process(x);
+  dsp::Fir dut{taps, 2};
+  const std::span<const float> dec = dut.process(x);
+  REQUIRE(dec.size() == (full.size() + 1) / 2);
+  for (std::size_t k = 0; k < dec.size(); ++k)
+    CHECK(dec[k] == full[2 * k]); // deinterleave == filter then keep every 2nd
+
+  // Ragged blocks straddle the SIMD/scalar boundary differently each call, so an
+  // identical stream proves the two kernels are bit-for-bit consistent.
+  std::vector<float> chunked;
+  dsp::Fir streamed{taps, 2};
+  for (std::size_t off = 0; off < x.size(); off += 37) {
+    const std::span<const float> piece =
+        streamed.process(std::span{x}.subspan(off, std::min<std::size_t>(37, x.size() - off)));
+    chunked.insert(chunked.end(), piece.begin(), piece.end());
+  }
+  REQUIRE(chunked.size() == dec.size());
+  for (std::size_t k = 0; k < dec.size(); ++k)
+    CHECK(chunked[k] == dec[k]);
+}
+
 TEST_CASE("decimating FIR streams identically regardless of block size") {
   constexpr double fs = 1000.0;
   const auto taps = dsp::lowpass_kernel(31, fs, 100.0);
