@@ -254,8 +254,9 @@ std::span<const VSample> VerticalSync::process(std::span<const SyncSample> in) {
 
 namespace {
 constexpr double kTwoPi = 2.0 * std::numbers::pi;
-constexpr double kR135 = 0.75 * std::numbers::pi; // the burst's ±135° (−U±V) modulated phase
 constexpr double kBurstSmooth = 0.05; // |burst| tracker (ACC) per-line coefficient
+constexpr double kApc = 0.1; // APC EMA rate (averages the ±45° swing over ~10 lines)
+constexpr double kIdent = 0.1; // ident leaky-integrator rate for the PAL-switch bistable
 constexpr double kLumaCutoffHz = 3.0e6; // luma low-pass: rejects the 4.43 MHz chroma
 constexpr std::size_t kLumaTaps = 121; // chosen so luma and U/V share a group delay
 
@@ -324,30 +325,33 @@ void ChromaDecoder::finalize_line() {
   burst_amp_ += kBurstSmooth * (mag - burst_amp_);
   const double phi = std::atan2(bs, bc);
 
-  // Accumulate this parity's mean burst phasor and re-resolve the V-inversion
-  // ambiguity: the true hypothesis gives both line classes one shared LO offset
-  // ψ (so |ψ_even − ψ_odd| ≈ 0); the wrong one puts them ~180° apart.
-  (parity_ ? burst_odd_ : burst_even_) += std::complex<double>{bc, bs};
-  const double phi_even = std::atan2(burst_even_.imag(), burst_even_.real());
-  const double phi_odd = std::atan2(burst_odd_.imag(), burst_odd_.real());
-  const double diff_even_ntsc = wrap_angle((kR135 - phi_even) - (-kR135 - phi_odd));
-  const double diff_even_pal = wrap_angle((-kR135 - phi_even) - (kR135 - phi_odd));
-  if (std::abs(diff_even_ntsc) <= std::abs(diff_even_pal)) {
-    even_is_ntsc_ = true;
-    consistency_deg_ = std::abs(diff_even_ntsc) * 180.0 / std::numbers::pi;
-  }
-  else {
-    even_is_ntsc_ = false;
-    consistency_deg_ = std::abs(diff_even_pal) * 180.0 / std::numbers::pi;
-  }
+  // APC: a slow EMA of the burst phasor locks the reference onto the −U axis. The
+  // ±45° swing alternates line to line, so it averages out and the EMA tracks the
+  // steady LO-vs-subcarrier offset (and any slow source drift), like a real APC.
+  apc_phasor_ = (1.0 - kApc) * apc_phasor_ + kApc * std::complex<double>{bc, bs};
+  const double psi_axis = std::atan2(apc_phasor_.imag(), apc_phasor_.real());
+  const double swing = wrap_angle(phi - psi_axis); // ±45°; its sign is the V-sense
 
-  // Class-aware de-rotation. ψ brings this line's burst onto −U±V; NTSC-style
-  // lines need no V flip, PAL-style lines are V-inverted in transmission.
-  const bool is_ntsc = (!parity_) == even_is_ntsc_;
-  const double psi = (is_ntsc ? kR135 : -kR135) - phi;
+  // PAL-switch bistable + ident. parity_ alternates the V-switch every line; the
+  // ident leaky-integrates whether the burst's measured sense agrees with the
+  // bistable's claim and flips polarity_ on persistent disagreement. Driving the
+  // flip off the bistable (not the raw per-line sign) rides out single noisy
+  // bursts; the ident only re-phases the bistable, never a per-line decision.
+  const double predicted = (parity_ == polarity_) ? 1.0 : -1.0;
+  const double measured = (swing >= 0.0) ? -1.0 : 1.0; // +V-burst lines (swing<0) take no flip
+  ident_ += kIdent * (predicted * measured - ident_);
+  if (ident_ < -0.5) {
+    polarity_ = !polarity_;
+    ident_ = 0.0;
+  }
+  v_flip_ = (parity_ == polarity_) ? 1.0 : -1.0;
+  consistency_deg_ = std::abs(swing) * 180.0 / std::numbers::pi;
+
+  // De-rotate by π − psi_axis so the −U axis lands on the negative-real axis;
+  // U = −Re, V = Im (switch-corrected by v_flip_) then follow in process().
+  const double psi = std::numbers::pi - psi_axis;
   psi_cos_ = std::cos(psi);
   psi_sin_ = std::sin(psi);
-  v_flip_ = is_ntsc ? 1.0 : -1.0;
 }
 
 std::span<const ChromaSample> ChromaDecoder::process(

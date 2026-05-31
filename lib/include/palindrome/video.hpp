@@ -294,15 +294,21 @@ private:
   double psi_cos_ = 1.0, psi_sin_ = 0.0; // this line's rotation R(ψ)
   double v_flip_ = 1.0; // +1 on NTSC-style lines, −1 on PAL-style (V inversion)
 
-  // PAL-switch parity. parity_ toggles every line (the bistable); which parity is
-  // V-inverted is the intrinsic 2-fold ambiguity, resolved by accumulating each
-  // parity's mean burst phasor and picking the hypothesis whose two classes share
-  // one LO offset. A running decision rather than a whole-field batch — it firms
-  // up over the first lines (the ident a real set keys off the field structure).
+  // Automatic phase control: a slow complex EMA of the back-porch burst locks the
+  // reference onto the −U axis. The ±135° (−U±V) swing alternates every line, so
+  // it averages out of this loop, exactly as a real set's APC averages it to lock
+  // its crystal phase. The rotation derives from this axis (held in psi_cos_/sin_).
+  std::complex<double> apc_phasor_{0.0, 0.0};
+
+  // PAL-switch bistable + ident. parity_ toggles every line (the V-switch); the
+  // V-inversion is the intrinsic 2-fold ambiguity. The ident leaky-integrates
+  // whether the burst's measured swing sense agrees with the bistable's claim,
+  // and flips polarity_ on persistent disagreement — a local, bounded loop, like
+  // the ident/killer in a real decoder, not a whole-signal vote.
   bool parity_ = false;
-  std::complex<double> burst_even_{0.0, 0.0}, burst_odd_{0.0, 0.0};
-  bool even_is_ntsc_ = true;
-  double consistency_deg_ = 180.0; // |ψ_even − ψ_odd|; ~0 once parity is resolved
+  bool polarity_ = false; // which bistable phase is the V-inverted (PAL) line
+  double ident_ = 0.0; // leaky agreement: < 0 means the bistable is mis-phased
+  double consistency_deg_ = 90.0; // this line's |swing|; ~45 once locked
 
   // Line-length tracking, for the 1H comb delay depth.
   std::size_t sample_index_ = 0;
