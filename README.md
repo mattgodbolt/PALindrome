@@ -127,7 +127,9 @@ Every stage is a streaming block (`prepare` / `process(span)→span`, state carr
 across calls), so the output is independent of how the input is chunked — a
 tested invariant, because the target is live RF, not finite files. The whole
 graph is a `video::Decoder` composite node; `render` just pumps it 64K-sample
-blocks. Flags: `--width`, `--height`, `--decimate`, `--carrier`, `--cutoff`,
+blocks. Flags: `--width`, `--height`, `--decimate` (`0` = auto: the largest
+decimation that keeps the 4.43 MHz subcarrier below ~0.7·Nyquist — RX888 32 MS/s
+→ /2, AirSpy 10 MS/s → /1; pass a number to override), `--carrier`, `--cutoff`,
 `--sync-cutoff` (the narrow low-pass on the sync-detection branch), and the CRT
 knobs `--persistence` (phosphor decay, in field periods), `--beam-sigma`
 (beam-spot vertical size, in rows), and `--frame-stride` (write a PNG every Nth
@@ -138,8 +140,8 @@ For colour, add `--colour`: it decodes the chroma and writes an RGB PNG.
 and `--contrast` the white point; `--burst-lo`/`--burst-hi` place the burst gate
 and `--h-blank` the retrace blanking, as h_phase windows (the defaults suit
 ~16 MS/s; a 10 MS/s AirSpy capture wants `--burst-lo 0.16 --burst-hi 0.20
---h-blank 0.21`, plus `--decimate 1 --cutoff 4.8e6` so the subcarrier survives
-the front end). `--no-delay-line` drops the 1H comb. The subcarrier is a fixed
+--h-blank 0.21 --cutoff 4.8e6` so the subcarrier survives the front end —
+decimation auto-picks /1 for it). `--no-delay-line` drops the 1H comb. The subcarrier is a fixed
 4.43361875 MHz crystal (override with `--subcarrier`); the per-line burst
 rotation tracks the source's offset from it, exactly as a real set's APC does.
 
