@@ -12,28 +12,32 @@ analog machine, not a DSP textbook. The current state:
   baseband), saved as SigMF masters under `corpus/`. Both decode through the
   same pipeline.
 - **`demod`** — AM-demodulates the vision carrier to a WAV for inspection.
-- **`render`** — a **working sync-locked monochrome decode**: a streaming video
-  graph that separates sync, locks horizontal and vertical timebases with
-  flywheel PLLs, and paints the beam onto a phosphor screen modelled as an
-  analog set — a rotated deflection yoke (straight scanlines), a Gaussian beam
-  spot, and an electron gun whose cutoff is set by the DC-restored black level.
+- **`render`** — a **working sync-locked decode, in colour** (`--colour`) or
+  monochrome: a streaming video graph that separates sync, locks horizontal and
+  vertical timebases with flywheel PLLs, decodes the PAL chroma (a faithful
+  PAL-D channel — burst-locked crystal, PAL-switch ident, 1H comb), and paints the
+  beam onto a phosphor screen modelled as an analog set — a rotated deflection
+  yoke (straight scanlines), a Gaussian beam spot, and an electron gun whose
+  cutoff is set by the DC-restored black level.
   Interlace falls out of the half-line field offset; `--frame-stride` dumps a
   per-field PNG sequence.
 - **`tools/inspect_capture.py`** — fast capture QC: predicts whether a clip is
   decodable (carrier/sideband reach, line-comb SNR) and flags near-carrier ghost
   spurs, before you sink time into a full decode.
 - **`tools/tune.py`** — a web UI (slider per knob, frame scrubber) that shells
-  out to `render` so you can dial the decode/CRT knobs in live. It lives outside
-  the C++ core — the decoder stays a plain CLI with no webserver in it.
+  out to `render` so you can dial the decode/CRT/colour knobs in live. It lives
+  outside the C++ core — the decoder stays a plain CLI with no webserver in it.
 - **`sync`** — a diagnostic that slices the composite and reports the pulse-width
   distribution, line-sync jitter, vertical field structure, and the locks the
   timebases settle on. This is the microscope the decode was built with.
 
 The picture is a clean, recognisable image — true blacks, straight geometry,
-filled scanlines — and now **in colour** (`render --colour`): a PAL-D chroma
-channel recovers U/V off the burst and drives an RGB phosphor triad. The hues are
-correct; what's left is levels/saturation polish (it runs a touch dark, and there
-is a residual edge artifact) and the optional gun-gamma pass. See the roadmap.
+filled scanlines — and **in colour** (`render --colour`): a PAL-D chroma channel
+recovers U/V off the burst and drives an RGB phosphor triad. Levels are period-
+correct (an IF-AGC white reference, ACC chroma referenced to the luma, retrace
+blanking), and the RGB matrix matches the TDA3561A datasheet. What's left is small
+— a rate-aware burst gate so one set of defaults fits every sample rate. See the
+roadmap.
 
 ## Capturing reference clips
 
@@ -129,10 +133,12 @@ knobs `--persistence` (phosphor decay, in field periods), `--beam-sigma`
 field as `<stem>_NNNN.png` instead of a single image).
 
 For colour, add `--colour`: it decodes the chroma and writes an RGB PNG.
-`--saturation` sets the chroma gain; `--burst-lo`/`--burst-hi` place the burst
-gate as an h_phase window (the default suits ~16 MS/s; a 10 MS/s AirSpy capture
-wants ~0.16, and `--decimate 1 --cutoff 4.8e6` so the subcarrier survives the
-front end). `--no-delay-line` drops the 1H comb. The subcarrier is a fixed
+`--saturation` is the chroma gain (a fraction of the luma white — the colour pot)
+and `--contrast` the white point; `--burst-lo`/`--burst-hi` place the burst gate
+and `--h-blank` the retrace blanking, as h_phase windows (the defaults suit
+~16 MS/s; a 10 MS/s AirSpy capture wants `--burst-lo 0.16 --burst-hi 0.20
+--h-blank 0.21`, plus `--decimate 1 --cutoff 4.8e6` so the subcarrier survives
+the front end). `--no-delay-line` drops the 1H comb. The subcarrier is a fixed
 4.43361875 MHz crystal (override with `--subcarrier`); the per-line burst
 rotation tracks the source's offset from it, exactly as a real set's APC does.
 
@@ -155,9 +161,10 @@ tell you whether the sync chain is healthy.
 ### `tools/tune.py` — dialling the knobs
 
 `tools/tune.py corpus/wb3_airspy` serves a web page with a slider for every
-decode/CRT knob (luma cutoff, sync LP, persistence, beam sigma, gun gamma, sync
-slice, and the horizontal/vertical hold PI loops) plus a frame scrubber and play
-button. Moving a slider re-runs `render` and the page scrubs the per-field PNG
+decode/CRT/colour knob (envelope cutoff, sync LP, persistence, beam sigma, gun
+gamma, the horizontal/vertical hold PI loops, and the colour controls —
+colour on/off, saturation, contrast, burst gate, retrace blanking, 1H comb) plus
+a frame scrubber and play button. Moving a slider re-runs `render` and the page scrubs the per-field PNG
 sequence it produces. It binds `0.0.0.0` by default so you can drive it from
 another machine (`--host`, `--port`, `--binary` to override); it's
 unauthenticated, so keep it to a trusted network. Every knob it offers is just a
@@ -169,11 +176,14 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
   the rotated deflection yoke (straight scanlines), a Gaussian beam splat (filled
   scanlines), the electron-gun gamma, per-field snapshots, and a web-slider tuner
   (`tools/tune.py`) for dialling the knobs in.
-- **Colour — the PAL bit.** ✅ Working (`render --colour`): a fixed 4.43 MHz
-  crystal LO, per-line back-porch burst measurement, the class-aware PAL ± line
-  rotation with a self-resolving V-switch, a 1H comb, and the RGB phosphor matrix.
-  Hues are correct; remaining polish is levels/saturation and a residual edge
-  artifact, plus a rate-aware burst gate so one default fits every sample rate.
+- **Colour — the PAL bit.** ✅ Done (`render --colour`): a fixed 4.43 MHz crystal
+  LO, per-line back-porch burst measurement, the class-aware PAL ± line rotation
+  with a self-resolving V-switch (bistable + ident), the 1H delay-line comb, ACC
+  chroma referenced to the luma white, an IF-AGC white reference, retrace
+  blanking, and the RGB phosphor matrix — a faithful PAL-D path matching the
+  TDA3561A datasheet (`docs/TDA3561A.md`). Remaining: a rate-aware burst gate so
+  one set of defaults fits every sample rate (the AirSpy currently needs explicit
+  `--burst-lo/-hi --h-blank`).
 - **Optimisation, then SIMD.** Profile the hot paths; revisit `std::simd` for the
   DSP loops (see the note below).
 - **Multi-threading.** The streaming-block model is already structured for it.
