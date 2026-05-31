@@ -10,6 +10,27 @@
 
 namespace palindrome::image {
 
+namespace {
+// Fast PNG encode. lodepng defaults optimise for file size — a per-scanline
+// filter search (LFS_MINSUM) plus full LZ77/Huffman — which dominate the encode
+// (~100 ms a frame). This is a research tool that throws its PNGs away (the
+// tuner re-renders every field on every knob change), so size doesn't matter:
+// filter "none" on every row and stored (uncompressed) deflate make the encode
+// essentially a framed copy. The decoded pixels are identical — PNG is lossless.
+unsigned encode_fast(std::vector<unsigned char> &out, const unsigned char *pixels, unsigned width, unsigned height,
+    LodePNGColorType colortype) {
+  lodepng::State state;
+  state.info_raw.colortype = colortype;
+  state.info_raw.bitdepth = 8;
+  state.info_png.color.colortype = colortype;
+  state.info_png.color.bitdepth = 8;
+  state.encoder.auto_convert = 0; // keep the colour type as given; don't analyse for a smaller one
+  state.encoder.filter_strategy = LFS_ZERO; // filter type 0 (none) on every row, no search
+  state.encoder.zlibsettings.btype = 0; // stored deflate: no LZ77, no Huffman
+  return lodepng::encode(out, pixels, width, height, state);
+}
+} // namespace
+
 void write_png_grey(
     const std::filesystem::path &path, std::span<const std::uint8_t> pixels, unsigned width, unsigned height) {
   const auto expected = static_cast<std::size_t>(width) * height;
@@ -21,7 +42,7 @@ void write_png_grey(
   // lodepng_save_file in lodepng.cpp), so a disk-full or short-write after a
   // successful fopen would silently report success and leave a corrupt PNG.
   std::vector<unsigned char> buffer;
-  if (const unsigned err = lodepng::encode(buffer, pixels.data(), width, height, LCT_GREY, 8))
+  if (const unsigned err = encode_fast(buffer, pixels.data(), width, height, LCT_GREY))
     throw WriteError{std::format("lodepng encode of {}: {}", path.string(), lodepng_error_text(err))};
 
   std::ofstream out;
@@ -45,7 +66,7 @@ void write_png_rgb(
   // Encode in memory then write ourselves, for the same reason write_png_grey
   // does: lodepng's filename overload ignores fwrite/fclose return codes.
   std::vector<unsigned char> buffer;
-  if (const unsigned err = lodepng::encode(buffer, pixels.data(), width, height, LCT_RGB, 8))
+  if (const unsigned err = encode_fast(buffer, pixels.data(), width, height, LCT_RGB))
     throw WriteError{std::format("lodepng encode of {}: {}", path.string(), lodepng_error_text(err))};
 
   std::ofstream out;

@@ -498,14 +498,33 @@ struct DecoderConfig {
 // timebases) and the 3-way join (the screen). Feed it envelope blocks; read a
 // frame off snapshot(). This is the reified branching graph — the wiring lives
 // here, once, instead of in each consumer's block lambda.
+// The decode stages' output for one block: the picture rail plus the two timing
+// rails, copied out of the per-stage buffers into owned vectors. Self-contained,
+// so it can be handed to the screen deposit on another thread — the unit that
+// flows down the (eventual) stage pipeline.
+struct DecodedBlock {
+  std::vector<ChromaSample> picture;
+  std::vector<BeamSample> hbeam;
+  std::vector<VSample> vbeam;
+  void resize(std::size_t n) {
+    picture.resize(n);
+    hbeam.resize(n);
+    vbeam.resize(n);
+  }
+  [[nodiscard]] std::size_t size() const noexcept { return picture.size(); }
+};
+
 class Decoder {
 public:
   explicit Decoder(const DecoderConfig &cfg);
 
   void prepare(std::size_t max_in);
-  // on_field, if set, fires the phosphor snapshot at every field boundary (the
-  // hook for a per-field PNG sequence); otherwise just integrates the screen.
-  void process(std::span<const float> envelope, const Screen::FieldCallback &on_field = {});
+  // The decode is split into two halves so a pipeline can run them on separate
+  // threads: decode_into() runs the sync/chroma stages into a caller-owned block;
+  // deposit() paints that block onto the phosphor screen, firing on_field (if
+  // set) at each field boundary. Run back to back they are a full decode.
+  void decode_into(DecodedBlock &out, std::span<const float> envelope);
+  void deposit(const DecodedBlock &block, const Screen::FieldCallback &on_field = {});
   [[nodiscard]] Screen::Frame snapshot() const { return screen_.snapshot(); }
 
   [[nodiscard]] std::size_t accepted_edges() const noexcept { return hsweep_.accepted_edges(); }
@@ -526,7 +545,6 @@ private:
   VerticalSync vsync_;
   ChromaDecoder chroma_;
   Screen screen_;
-  Buffer<ChromaSample> grey_pic_; // luma-only wrapper for the monochrome path
 };
 
 } // namespace palindrome::video

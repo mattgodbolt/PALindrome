@@ -22,6 +22,7 @@ target_sources(palindrome
         FILES
         include/palindrome/buffer.hpp
         include/palindrome/pipeline.hpp
+        include/palindrome/pipeline_run.hpp
         include/palindrome/restrict_ptr.hpp
         include/palindrome/sigmf.hpp
         include/palindrome/demod.hpp
@@ -33,4 +34,4 @@ target_sources(palindrome
         include/palindrome/image.hpp
         include/palindrome/video.hpp)
 
-target_link_libraries(palindrome PUBLIC opt::cxx_std nlohmann_json::nlohmann_json PRIVATE opt::pedantic opt::arch lodepng::lodepng)
+target_link_libraries(palindrome PUBLIC opt::cxx_std nlohmann_json::nlohmann_json STDEXEC::stdexec PRIVATE opt::pedantic opt::arch lodepng::lodepng)

@@ -15,3 +15,14 @@
 - **`switch` over an enum with no `default`**, so adding a value fails to compile
   (`-Wswitch -Werror`) until it's handled; end with `std::unreachable()`.
 - Comments explain "why", not "what".
+
+## Invariants
+
+- **Block-invariance.** Every streaming stage's output must be independent of how
+  the input is chunked into blocks — tested bit-for-bit (`==`), because the target
+  is live RF, not finite files. Preserve it: state recurrences run in sample
+  order, FIRs accumulate taps in natural order, and the threaded `render` pipeline
+  pins each stage to one in-order (FIFO) thread so the result is identical to the
+  serial decode. A change that makes the output depend on block size or thread
+  scheduling is a bug, not a tradeoff — and the optimisation/threading work leans
+  on this, so verify it (golden-image diff and the block-invariance tests).

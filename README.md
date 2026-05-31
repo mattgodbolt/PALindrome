@@ -126,14 +126,22 @@ flowchart TD
 Every stage is a streaming block (`prepare` / `process(span)→span`, state carried
 across calls), so the output is independent of how the input is chunked — a
 tested invariant, because the target is live RF, not finite files. The whole
-graph is a `video::Decoder` composite node; `render` just pumps it 64K-sample
-blocks. Flags: `--width`, `--height`, `--decimate` (`0` = auto: the largest
-decimation that keeps the 4.43 MHz subcarrier below ~0.7·Nyquist — RX888 32 MS/s
-→ /2, AirSpy 10 MS/s → /1; pass a number to override), `--carrier`, `--cutoff`,
+graph is a `video::Decoder` composite node. `render` pumps it 64K-sample blocks
+and, by default, runs the stages as a **threaded pipeline**: the front-end,
+decode and screen deposit each on their own thread, a block apart, with owned
+buffers passed through bounded pools so memory stays bounded (the live-streaming
+shape). It's built on stdexec (`std::execution` / P2300) FIFO stages and is
+bit-identical to the serial path; `--no-threads` forces serial decode.
+
+Flags: `--width`, `--height`, `--decimate` (`0` = auto: the largest decimation
+that keeps the 4.43 MHz subcarrier below ~0.7·Nyquist — RX888 32 MS/s → /2,
+AirSpy 10 MS/s → /1; pass a number to override), `--carrier`, `--cutoff`,
 `--sync-cutoff` (the narrow low-pass on the sync-detection branch), and the CRT
 knobs `--persistence` (phosphor decay, in field periods), `--beam-sigma`
-(beam-spot vertical size, in rows), and `--frame-stride` (write a PNG every Nth
-field as `<stem>_NNNN.png` instead of a single image).
+(beam-spot vertical size, in rows), `--gamma` (electron-gun curve), and
+`--frame-stride` (write a PNG every Nth field as `<stem>_NNNN.png` instead of a
+single image). PNGs are encoded fast (uncompressed) rather than small — this is a
+research tool that throws most of them away.
 
 For colour, add `--colour`: it decodes the chroma and writes an RGB PNG.
 `--saturation` is the chroma gain (a fraction of the luma white — the colour pot)
@@ -201,9 +209,15 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
   not a missing feature. (Direct-sampling the composite baseband — feeding video
   straight to the ADC, no tuner — would sidestep this, but we haven't captured
   that way yet.)
-- **Optimisation, then SIMD.** Profile the hot paths; revisit `std::simd` for the
-  DSP loops (see the note below).
-- **Multi-threading.** The streaming-block model is already structured for it.
+- **Optimisation.** ✅ The hot paths are profiled and tuned — LUTs for the
+  screen's per-sample `exp`, an across-output FIR microkernel, fast PNG encode,
+  auto-decimation. Parked next: a fast gun-gamma `pow` (the last per-sample
+  transcendental, on the critical path to real-time) and a `std::simd` rewrite of
+  the DSP loops (see the SIMD note).
+- **Multi-threading.** ✅ `render` runs a 3-stage stdexec pipeline (front-end |
+  decode | screen), default-on, bit-identical to serial, bounded-memory
+  (`--no-threads` for serial). It's screen-stage-bound today; real-time wants the
+  screen stage shrunk (the gun-`pow` LUT) and/or its scatter banded across threads.
 - **Live mode.** The whole point: decode a live RF stream off the SDR, not just
   finite corpus files. The graph is bounded-memory and block-driven for exactly
   this.
@@ -220,13 +234,18 @@ Smaller things noted in passing, not yet scheduled:
 - **Test the colour-killer on noise.** Feed random/white noise and assert the
   output is an appropriately colourless white-noise image — with no valid burst
   the colour-killer should suppress chroma, not paint spurious colour.
+- **Fast gun-gamma `pow`.** With `--gamma ≠ 1` the electron-gun curve calls
+  `std::pow` per sample in the screen deposit (~0.4s of a colour render) — the
+  last un-LUT'd transcendental and the threaded pipeline's bottleneck stage. LUT
+  or fast-`pow` it (its own PR); it's what unlocks real-time for `render`.
 
 ## Notes
 
 ### Dependencies
 
-All third-party deps (Catch2, nlohmann_json, Lyra, lodepng) come in via CPM,
-pinned by tag or commit, no system packages required. To prefer system-installed
+All third-party deps (Catch2, nlohmann_json, Lyra, lodepng, and NVIDIA stdexec
+for the threaded render pipeline) come in via CPM, pinned by tag or commit, no
+system packages required. To prefer system-installed
 copies (find_package first, fall back to CPM fetch) configure with
 `-DCPM_USE_LOCAL_PACKAGES=ON` — that's CPM's own switch, and we use it directly
 rather than wrapping it.

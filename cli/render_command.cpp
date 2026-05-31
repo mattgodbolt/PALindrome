@@ -3,6 +3,7 @@
 #include "cli_util.hpp"
 #include "palindrome/demod.hpp"
 #include "palindrome/image.hpp"
+#include "palindrome/pipeline_run.hpp"
 #include "palindrome/video.hpp"
 
 #include <algorithm>
@@ -74,6 +75,8 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(no_sound_trap_)["--no-sound-trap"]("Disable the sound-carrier notch"))
           .add_argument(lyra::opt(sound_q_, "q")["--sound-q"]("Sound-trap notch Q"))
           .add_argument(lyra::opt(no_sync_)["--no-sync"]("Debug: naive-fold the envelope, bypassing sync"))
+          .add_argument(
+              lyra::opt(no_threads_)["--no-threads"]("Decode serially (default is a threaded stage pipeline)"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to render (e.g. corpus/alex_kidd)")));
 }
 
@@ -183,10 +186,19 @@ int RenderCommand::run() const {
       save(numbered_path(output, written++), f);
   };
 
-  // stream_envelope hides the real-IF vs complex-baseband front end; the decoder
-  // just sees composite-envelope blocks.
-  const auto es =
-      stream_envelope(loaded, opts, [&](std::span<const float> env) { decoder.process(env, on_field); }, kBlock);
+  // The pipeline: a push source (the real-IF/complex front end, which the
+  // decoder just sees as composite-envelope blocks) -> decode -> screen deposit.
+  // pipe::run threads it (each stage on its own in-order worker, owned blocks
+  // through bounded pools — the live-streaming shape) or runs it inline for
+  // --no-threads, from this one description. Either way it's bit-identical.
+  constexpr std::ptrdiff_t kInFlight = 4;
+  EnvelopeStream es;
+  pipe::run(
+      !no_threads_, kInFlight, //
+      [&](const auto &emit) { es = stream_envelope(loaded, opts, emit, kBlock); },
+      pipe::transform<video::DecodedBlock>(
+          kInFlight, [&](std::span<const float> env, video::DecodedBlock &out) { decoder.decode_into(out, env); }),
+      pipe::sink([&](const video::DecodedBlock &block) { decoder.deposit(block, on_field); }));
   for (const auto &w: es.warnings)
     std::println(std::cerr, "render: warning: {}", w);
 
