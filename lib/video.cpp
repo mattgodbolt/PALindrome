@@ -744,8 +744,8 @@ void Decoder::decode_into(DecodedBlock &out, std::span<const float> envelope) {
   }
   else {
     // Monochrome: the luma rail is the envelope straight through, no chroma.
-    for (std::size_t i = 0; i < n; ++i)
-      out.picture[i] = ChromaSample{.luma = envelope[i], .u = 0.0f, .v = 0.0f};
+    std::ranges::transform(
+        envelope, out.picture.begin(), [](float luma) { return ChromaSample{.luma = luma, .u = 0.0f, .v = 0.0f}; });
   }
 }
 

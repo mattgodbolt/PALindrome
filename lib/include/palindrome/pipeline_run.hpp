@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <deque>
 #include <exception>
-#include <memory>
 #include <mutex>
 #include <semaphore>
 #include <span>
@@ -82,7 +81,6 @@ public:
     free_.pop_back();
     return Handle{this, b};
   }
-  [[nodiscard]] std::deque<T> &buffers() { return buffers_; }
 
 private:
   void release(T *b) {
@@ -106,7 +104,7 @@ public:
   Worker(const Worker &) = delete;
   Worker &operator=(const Worker &) = delete;
   ~Worker() { loop_.finish(); } // run() then returns; the jthread member joins
-  [[nodiscard]] auto scheduler() { return loop_.get_scheduler(); }
+  [[nodiscard]] auto scheduler() noexcept { return loop_.get_scheduler(); }
 
 private:
   stdexec::run_loop loop_;
@@ -125,12 +123,13 @@ public:
   }
   [[nodiscard]] bool stopped() const noexcept { return stopped_.load(std::memory_order_relaxed); }
   void rethrow_if_failed() const {
+    const std::lock_guard lk{mtx_};
     if (error_)
       std::rethrow_exception(error_);
   }
 
 private:
-  std::mutex mtx_;
+  mutable std::mutex mtx_;
   std::exception_ptr error_;
   std::atomic<bool> stopped_{false};
 };
@@ -202,33 +201,42 @@ void serial_step(In &&in, Stages &stages, Outs &outs) {
 // has tripped, so the chain always completes and releases its buffers.
 template<std::size_t I, class Sender, class Stages, class Pools, class Workers>
 [[nodiscard]] auto append_stage(Sender upstream, Stages &stages, Pools &pools, Workers &workers, ErrorFunnel &funnel) {
-  auto sched = workers[I]->scheduler();
+  auto sched = workers[I].scheduler();
   if constexpr (I + 1 == std::tuple_size_v<Stages>) {
+    // Sink: stopped() is checked before arg_for derefs `in`, so an empty handle
+    // from a stopped upstream is never dereferenced.
     return std::move(upstream) | stdexec::continues_on(sched) |
            stdexec::then([&stages, &funnel](auto in) mutable noexcept {
-             if (!funnel.stopped()) {
-               try {
-                 std::get<I>(stages).fn(arg_for<I>(in));
-               }
-               catch (...) {
-                 funnel.capture();
-               }
+             if (funnel.stopped())
+               return;
+             try {
+               std::get<I>(stages).fn(arg_for<I>(in));
+             }
+             catch (...) {
+               funnel.capture();
              }
            });
   }
   else {
+    using Out = typename std::tuple_element_t<I, Stages>::out_type;
     auto next = std::move(upstream) | stdexec::continues_on(sched) |
-                stdexec::then([&stages, &pools, &funnel](auto in) mutable noexcept {
-                  auto out = std::get<I>(pools)->acquire();
-                  if (!funnel.stopped()) {
-                    try {
-                      std::get<I>(stages).fn(arg_for<I>(in), *out);
-                    }
-                    catch (...) {
-                      funnel.capture();
-                    }
+                stdexec::then([&stages, &pools, &funnel](auto in) mutable noexcept -> typename Pool<Out>::Handle {
+                  // Skip before acquiring once the pipeline has tripped — no point
+                  // doing the backpressure wait on work we're abandoning. The whole
+                  // body (the acquire's mutex/semaphore included) is inside the try,
+                  // so nothing escapes this noexcept lambda. An empty handle is
+                  // returned only when stopped, and downstream is stopped too.
+                  if (funnel.stopped())
+                    return {};
+                  try {
+                    auto out = std::get<I>(pools).acquire();
+                    std::get<I>(stages).fn(arg_for<I>(in), *out);
+                    return out;
                   }
-                  return out;
+                  catch (...) {
+                    funnel.capture();
+                    return {};
+                  }
                 });
     return append_stage<I + 1>(std::move(next), stages, pools, workers, funnel);
   }
@@ -247,15 +255,15 @@ void run(bool threaded, std::ptrdiff_t source_in_flight, Source &&source, Stages
     return;
   }
 
-  // One FIFO worker per stage (including the sink).
-  std::array<std::unique_ptr<Worker>, sizeof...(Stages)> workers;
-  for (auto &w: workers)
-    w = std::make_unique<Worker>();
-
-  // One output pool per transform stage (sink has none), sized by its in_flight.
+  // One FIFO worker per stage (the sink included), and one output pool per
+  // transform (the sink has none), sized by its in_flight. Worker and Pool are
+  // non-movable, so both are constructed in place — the array value-inits its
+  // workers, and the pool tuple is a prvalue elided into `pools` (no moves, no
+  // heap indirection).
+  std::array<Worker, sizeof...(Stages)> workers{};
   auto pools = [&]<std::size_t... I>(std::index_sequence<I...>) {
-    return std::make_tuple(std::make_unique<Pool<typename std::tuple_element_t<I, decltype(stage_tuple)>::out_type>>(
-        std::get<I>(stage_tuple).in_flight)...);
+    return std::tuple<Pool<typename std::tuple_element_t<I, decltype(stage_tuple)>::out_type>...>{
+        std::get<I>(stage_tuple).in_flight...};
   }(std::make_index_sequence<sizeof...(Stages) - 1>{});
 
   Pool<std::vector<float>> source_pool{source_in_flight};
@@ -274,10 +282,7 @@ void run(bool threaded, std::ptrdiff_t source_in_flight, Source &&source, Stages
     source_error = std::current_exception();
   }
 
-  stdexec::sync_wait(scope.on_empty()); // drain every spawned chain
-  // workers join on destruction; do that before rethrowing.
-  for (auto &w: workers)
-    w.reset();
+  stdexec::sync_wait(scope.on_empty()); // drain every spawned chain; the workers join on destruction below
 
   if (source_error)
     std::rethrow_exception(source_error);
