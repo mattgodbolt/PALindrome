@@ -257,11 +257,24 @@ constexpr double kTwoPi = 2.0 * std::numbers::pi;
 constexpr double kBurstSmooth = 0.05; // |burst| tracker (ACC) per-line coefficient
 constexpr double kApc = 0.1; // APC EMA rate (averages the ±45° swing over ~10 lines)
 constexpr double kIdent = 0.1; // ident leaky-integrator rate for the PAL-switch bistable
-constexpr double kLumaCutoffHz = 3.0e6; // luma low-pass: rejects the 4.43 MHz chroma
+constexpr double kLumaNotchHalfHz = 1.0e6; // luma chroma-trap half-width around fsc
 constexpr std::size_t kLumaTaps = 121; // chosen so luma and U/V share a group delay
 
 // Wrap a phase in radians into [-π, π).
 [[nodiscard]] double wrap_angle(double a) noexcept { return std::remainder(a, kTwoPi); }
+
+// A band-stop (notch) kernel: the all-pass impulse minus a band-pass, so luma
+// keeps its full bandwidth except the chroma band around fsc (a chroma trap),
+// rather than being low-passed soft. Same length as the band-pass, so its group
+// delay matches and the notch sits exactly on the subcarrier.
+[[nodiscard]] std::vector<float> notch_kernel(
+    std::size_t taps, double sample_rate_hz, double low_hz, double high_hz) {
+  auto k = dsp::bandpass_kernel(taps, sample_rate_hz, low_hz, high_hz);
+  for (auto &t: k)
+    t = -t;
+  k[(taps - 1) / 2] += 1.0f; // + unit impulse at the centre tap
+  return k;
+}
 
 // Keep the chroma band-pass top edge below Nyquist (the AirSpy's 10 MS/s only
 // just spans the subcarrier, so a 5 MHz edge would otherwise overrun it).
@@ -276,7 +289,8 @@ ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
         cfg.bandpass_taps, cfg.sample_rate_hz, cfg.band_lo_hz, clamp_high(cfg.band_hi_hz, cfg.sample_rate_hz))},
     lp_i_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
     lp_q_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
-    lp_luma_{dsp::lowpass_kernel(kLumaTaps, cfg.sample_rate_hz, kLumaCutoffHz)} {
+    lp_luma_{notch_kernel(kLumaTaps, cfg.sample_rate_hz, cfg.subcarrier_hz - kLumaNotchHalfHz,
+        clamp_high(cfg.subcarrier_hz + kLumaNotchHalfHz, cfg.sample_rate_hz))} {
   if (!(cfg_.sample_rate_hz > 0.0))
     throw std::invalid_argument{"ChromaDecoder: sample_rate_hz must be positive"};
   if (!(cfg_.subcarrier_hz > 0.0 && cfg_.subcarrier_hz < cfg_.sample_rate_hz / 2.0))
@@ -376,7 +390,7 @@ std::span<const ChromaSample> ChromaDecoder::process(
   }
 
   // Pass 2: band-limit the quadratures to the chroma bandwidth (this is where the
-  // 2·fsc image and noise go), and low-pass the envelope to a chroma-free luma.
+  // 2·fsc image and noise go), and notch the envelope to a chroma-free luma.
   const auto raw_u = lp_i_.process(mi);
   const auto raw_v = lp_q_.process(mq);
   const auto luma = lp_luma_.process(envelope.first(n));

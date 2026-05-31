@@ -277,7 +277,7 @@ private:
   ChromaDecoderConfig cfg_;
   dsp::Fir bandpass_; // isolates the chroma subcarrier from the composite
   dsp::Fir lp_i_, lp_q_; // post-demod low-pass on the two quadratures (raw U, V)
-  dsp::Fir lp_luma_; // luma = low-pass(envelope), the 3 MHz corner rejects chroma
+  dsp::Fir lp_luma_; // luma = notch(envelope): a 4.43 MHz chroma trap, luma stays wide
 
   // The fixed crystal LO, advanced one step per sample (never retuned).
   double nco_omega_; // cycles/sample (× sample_rate = crystal Hz)
