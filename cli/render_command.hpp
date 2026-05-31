@@ -25,7 +25,7 @@ private:
   double carrier_{0.0}; // 0 => take the vision carrier from metadata
   double cutoff_{5.0e6};
   double sync_cutoff_{1.2e6}; // narrow low-pass on the sync-detection branch
-  std::size_t decimate_{2}; // 32 MS/s / 2 = 16 MS/s => ~1024 samples/line
+  std::size_t decimate_{0}; // 0 => auto from the sample rate (keep chroma below 0.7*Nyquist)
   std::size_t width_{720};
   std::size_t height_{576};
   double persistence_{0.9}; // phosphor persistence in field periods
