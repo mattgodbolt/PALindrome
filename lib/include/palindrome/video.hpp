@@ -475,6 +475,7 @@ struct DecoderConfig {
   bool colour = false;
   double saturation = 1.0;
   double contrast = 1.0; // readout white point (see ScreenConfig::contrast)
+  double h_blank = 0.16; // retrace blanking end, h_phase (see ScreenConfig::h_blank)
   ChromaDecoderConfig chroma{}; // sample_rate_hz filled in at construction
 };
 

@@ -675,7 +675,8 @@ Decoder::Decoder(const DecoderConfig &cfg) :
         .gamma = cfg.gamma,
         .colour = cfg.colour,
         .saturation = cfg.saturation,
-        .contrast = cfg.contrast}} {}
+        .contrast = cfg.contrast,
+        .h_blank = cfg.h_blank}} {}
 
 void Decoder::prepare(std::size_t max_in) {
   sync_lp_.prepare(max_in);

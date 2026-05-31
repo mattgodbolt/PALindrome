@@ -35,6 +35,7 @@ private:
   bool colour_{false};
   double saturation_{0.2}; // chroma gain (fraction of white reference)
   double contrast_{1.0}; // readout white point (AGC-relative)
+  double h_blank_{0.16}; // retrace blanking end, h_phase
   double subcarrier_{0.0}; // subcarrier crystal Hz; 0 => textbook 4.43361875 MHz
   double burst_gate_lo_{0.11}, burst_gate_hi_{0.14}; // burst gate, h_phase window
   bool no_delay_line_{false}; // disable the PAL-D line-pair comb

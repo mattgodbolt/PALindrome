@@ -2,7 +2,8 @@
 """Interactive knob tuner for the PALindrome decoder.
 
 A dev tool that lives outside the C++ core: it serves a tiny web page (a slider
-per decode/CRT knob, plus a frame scrubber and play button) and, on every knob
+per decode/CRT/colour knob — including the colour decode: saturation, contrast,
+burst gate, comb — plus a frame scrubber and play button) and, on every knob
 change, shells out to `palindrome render --frame-stride 1` to re-decode the
 whole recording into a per-field PNG sequence, which the page scrubs and plays
 back. No decode logic lives here — it just maps sliders to `render` flags — so
@@ -29,10 +30,14 @@ from urllib.parse import urlparse, parse_qs
 # One slider per knob: this list drives the sliders, their hover tooltips, and
 # the render invocation, so adding a knob (or fixing its help) is one entry here.
 KNOBS = [
-    dict(name="cutoff", flag="--cutoff", label="Luma cutoff (Hz)",
-         min=1.0e6, max=5.0e6, step=1.0e5, default=3.0e6,
-         help="Low-pass on the demodulated video before the screen. Lower = softer but rejects more "
-              "4.43 MHz chroma dot-crawl; higher = sharper but more colour hatching. ~3 MHz keeps luma, drops chroma."),
+    dict(name="colour", flag="--colour", boolean=True, label="Colour", default=1,
+         help="Decode PAL colour (RGB) vs a monochrome render. With colour on, the chroma is separated "
+              "and demodulated; the colour knobs below take effect."),
+    dict(name="cutoff", flag="--cutoff", label="Envelope cutoff (Hz)",
+         min=3.0e6, max=4.9e6, step=5.0e4, default=4.8e6,
+         help="Front-end low-pass on the demodulated envelope. For colour it MUST pass the 4.43 MHz subcarrier, "
+              "so keep it ≥4.6 MHz — and below Nyquist (<5 MHz for a 10 MS/s AirSpy at --decimate 1). Lower drops "
+              "the subcarrier and colour with it."),
     dict(name="sync_cutoff", flag="--sync-cutoff", label="Sync LP cutoff (Hz)",
          min=0.3e6, max=3.0e6, step=1.0e5, default=1.2e6,
          help="A separate narrow low-pass on the copy of the signal used only for sync detection — keeps chroma and "
@@ -49,6 +54,31 @@ KNOBS = [
          min=1.0, max=3.0, step=0.05, default=1.0,
          help="Electron-gun brightness curve: light ∝ drive^gamma. The source pre-distorts its video expecting a CRT "
               "to undo it, so ~2.2 restores natural contrast and shadows; 1.0 is linear (flat, washed-out midtones)."),
+    dict(name="saturation", flag="--saturation", label="Saturation",
+         min=0.0, max=0.5, step=0.01, default=0.2,
+         help="Colour intensity: the chroma gain as a fraction of the luma white reference (the colour pot). 0 = "
+              "monochrome; too high clips the guns and washes out luma detail into flat colour. ~0.2."),
+    dict(name="contrast", flag="--contrast", label="Contrast",
+         min=0.4, max=2.0, step=0.05, default=1.0,
+         help="Readout white point as a fraction of the AGC-tracked peak luma (the contrast pot). 1.0 puts tracked "
+              "white at full scale; lower dims, higher clips brights into white."),
+    dict(name="burst_lo", flag="--burst-lo", label="Burst gate start (h_phase)",
+         min=0.06, max=0.24, step=0.005, default=0.16,
+         help="Where the colour-burst measurement window opens, as a fraction of a line after sync. Rate-dependent: "
+              "~0.16 at 10 MS/s (AirSpy), ~0.11 at 16 MS/s (RX888 --decimate 2). Watch the 'burst swing' readout — "
+              "~45° means it's on the burst."),
+    dict(name="burst_hi", flag="--burst-hi", label="Burst gate end (h_phase)",
+         min=0.08, max=0.28, step=0.005, default=0.20,
+         help="Where the burst window closes (must be > start). A ~0.03–0.04 window past the start captures the "
+              "~10-cycle burst."),
+    dict(name="no_delay_line", flag="--no-delay-line", boolean=True, label="Disable 1H comb", default=0,
+         help="Turn off the PAL-D line-pair (1H delay-line) comb on U/V. On (comb enabled) cancels differential "
+              "phase error between line pairs; off shows the raw per-line chroma (noisier, more cross-colour)."),
+    dict(name="h_blank", flag="--h-blank", label="Retrace blanking (h_phase)",
+         min=0.10, max=0.28, step=0.005, default=0.21,
+         help="How far into the line the beam stays blanked (sync + back porch + burst). Must clear the burst, or it "
+              "paints a coloured bar down the left edge — so set it just past the burst-gate end (~0.21 at 10 MS/s, "
+              "~0.16 at 16 MS/s)."),
     dict(name="sync_level", flag="--sync-level", label="Sync slice level",
          min=0.5, max=0.95, step=0.01, default=0.85,
          help="Where the separator decides 'sync pulse' vs picture, as a fraction of the white→sync-tip range. ~0.85 "
@@ -133,11 +163,14 @@ render();
 
 
 def knobs_json():
-    return json.dumps([
-        {"name": k["name"], "label": k["label"], "min": k["min"], "max": k["max"],
-         "step": k["step"], "def": k["default"], "help": k["help"]}
-        for k in KNOBS
-    ])
+    # A boolean knob renders as a 0/1 slider (a 2-position toggle); value knobs
+    # carry their own range.
+    out = []
+    for k in KNOBS:
+        lo, hi, step = (0, 1, 1) if k.get("boolean") else (k["min"], k["max"], k["step"])
+        out.append({"name": k["name"], "label": k["label"], "min": lo, "max": hi,
+                    "step": step, "def": k["default"], "help": k["help"]})
+    return json.dumps(out)
 
 
 class Tuner:
@@ -154,7 +187,12 @@ class Tuner:
                "--width", str(self.args.width), "--height", str(self.args.height),
                "--frame-stride", "1", "-o", os.path.join(self.tmp, "f.png")]
         for k in KNOBS:
-            cmd += [k["flag"], str(query.get(k["name"], [k["default"]])[0])]
+            v = query.get(k["name"], [k["default"]])[0]
+            if k.get("boolean"):
+                if float(v) >= 0.5:  # a bare flag, no value
+                    cmd.append(k["flag"])
+            else:
+                cmd += [k["flag"], str(v)]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or "render failed")
