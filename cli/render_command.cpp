@@ -9,6 +9,7 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <format>
 #include <iostream>
@@ -30,6 +31,40 @@ namespace {
 std::filesystem::path numbered_path(const std::filesystem::path &base, std::size_t idx) {
   return base.parent_path() / std::format("{}_{:04}{}", base.stem().string(), idx, base.extension().string());
 }
+
+// A fixed pool of reusable buffers handed between pipeline stages. acquire()
+// blocks when every buffer is in flight, so a fast producer can't outrun a slow
+// consumer — backpressure that keeps memory bounded (the live-streaming shape).
+// Buffers live in a deque for stable addresses; the free list is a plain stack.
+template<class T>
+class Pool {
+public:
+  explicit Pool(std::ptrdiff_t n) : avail_{n}, buffers_(static_cast<std::size_t>(n)) {
+    for (auto &b: buffers_)
+      free_.push_back(&b);
+  }
+  [[nodiscard]] T *acquire() {
+    avail_.acquire();
+    const std::lock_guard lk{mtx_};
+    T *b = free_.back();
+    free_.pop_back();
+    return b;
+  }
+  void release(T *b) {
+    {
+      const std::lock_guard lk{mtx_};
+      free_.push_back(b);
+    }
+    avail_.release();
+  }
+  [[nodiscard]] std::deque<T> &buffers() { return buffers_; }
+
+private:
+  std::counting_semaphore<> avail_;
+  std::mutex mtx_;
+  std::deque<T> buffers_;
+  std::vector<T *> free_;
+};
 } // namespace
 
 void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
@@ -179,52 +214,49 @@ int RenderCommand::run() const {
   // bounded pool so memory stays bounded — the live-streaming shape.
   EnvelopeStream es;
   if (threaded_) {
+    // Three stages a block apart: front-end (here, on the main thread, inside
+    // stream_envelope) -> decode -> screen deposit. Each downstream stage is an
+    // ordered FIFO run_loop drained by one thread, so the per-stage state and
+    // the phosphor framebuffer stay single-threaded and the result is identical
+    // to the serial path. Owned buffers flow between stages through bounded
+    // pools, which apply backpressure so a fast stage can't outrun a slow one.
     constexpr std::ptrdiff_t kInFlight = 4;
-    std::vector<video::DecodedBlock> pool(kInFlight);
-    for (auto &b: pool)
+    Pool<std::vector<float>> env_pool{kInFlight};
+    for (auto &b: env_pool.buffers())
+      b.reserve(kBlock);
+    Pool<video::DecodedBlock> blk_pool{kInFlight};
+    for (auto &b: blk_pool.buffers())
       b.resize(kBlock);
-    std::counting_semaphore<kInFlight> free_count{kInFlight};
-    std::mutex free_mtx;
-    std::vector<video::DecodedBlock *> free_list;
-    for (auto &b: pool)
-      free_list.push_back(&b);
-    const auto acquire = [&]() -> video::DecodedBlock * {
-      free_count.acquire(); // blocks when every buffer is in flight (backpressure)
-      const std::lock_guard lk{free_mtx};
-      auto *b = free_list.back();
-      free_list.pop_back();
-      return b;
-    };
-    const auto release = [&](video::DecodedBlock *b) {
-      {
-        const std::lock_guard lk{free_mtx};
-        free_list.push_back(b);
-      }
-      free_count.release();
-    };
 
-    // The screen stage: one FIFO worker (a run_loop drained by a jthread), so
-    // blocks deposit strictly in order — the phosphor framebuffer stays
-    // single-threaded and the result is identical to the serial decode.
+    stdexec::run_loop decode_loop;
     stdexec::run_loop screen_loop;
+    std::jthread decode_thread{[&] { decode_loop.run(); }};
     std::jthread screen_thread{[&] { screen_loop.run(); }};
     exec::async_scope scope;
+    const auto decode_sched = decode_loop.get_scheduler();
     const auto screen_sched = screen_loop.get_scheduler();
 
     es = stream_envelope(
         loaded, opts,
         [&](std::span<const float> env) {
-          video::DecodedBlock *buf = acquire();
-          decoder.decode_into(*buf, env); // main thread: front-end ran in stream_envelope; decode here, in order
-          scope.spawn(stdexec::schedule(screen_sched) | stdexec::then([&, buf] {
-            decoder.deposit(*buf, on_field); // worker thread, in order off the FIFO
-            release(buf);
+          std::vector<float> *ebuf = env_pool.acquire(); // backpressure if decode is behind
+          ebuf->assign(env.begin(), env.end());
+          scope.spawn(stdexec::schedule(decode_sched) | stdexec::then([&, ebuf] {
+            video::DecodedBlock *dbuf = blk_pool.acquire(); // backpressure if the screen is behind
+            decoder.decode_into(*dbuf, *ebuf);
+            env_pool.release(ebuf);
+            scope.spawn(stdexec::schedule(screen_sched) | stdexec::then([&, dbuf] {
+              decoder.deposit(*dbuf, on_field);
+              blk_pool.release(dbuf);
+            }));
           }));
         },
         kBlock);
 
-    stdexec::sync_wait(scope.on_empty()); // wait for every queued deposit
+    stdexec::sync_wait(scope.on_empty()); // wait for every queued decode + deposit
+    decode_loop.finish();
     screen_loop.finish();
+    decode_thread.join();
     screen_thread.join();
   }
   else {
