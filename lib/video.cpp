@@ -465,8 +465,10 @@ Screen::Screen(const ScreenConfig &cfg) :
     throw std::invalid_argument{"Screen: saturation must be non-negative"};
   if (!(cfg_.sample_rate_hz > 0.0 && cfg_.field_hz > 0.0))
     throw std::invalid_argument{"Screen: sample_rate_hz and field_hz must be positive"};
-  if (!(cfg_.persistence_fields > 0.0))
-    throw std::invalid_argument{"Screen: persistence_fields must be positive"};
+  // Upper bound keeps the decay table (sized ~persistence_fields * rate / field_hz)
+  // bounded; 64 fields is already far longer than any real phosphor.
+  if (!(cfg_.persistence_fields > 0.0 && cfg_.persistence_fields <= 64.0))
+    throw std::invalid_argument{"Screen: persistence_fields must be in (0, 64]"};
   if (!(cfg_.beam_sigma_rows >= 0.0))
     throw std::invalid_argument{"Screen: beam_sigma_rows must be non-negative"};
   if (!(cfg_.nominal_line_hz > cfg_.field_hz))
