@@ -520,6 +520,31 @@ Screen::Screen(const ScreenConfig &cfg) :
     if (v < 1e-12)
       break;
   }
+  // Gun gamma table: drive^gamma sampled over [0, kGunDriveMax], read with linear
+  // interpolation. Linear at gamma 1.0, so leave the table empty and skip the pow.
+  if (cfg_.gamma != 1.0) {
+    gun_lut_.resize(kGunBins + 1);
+    for (std::size_t i = 0; i <= kGunBins; ++i) {
+      const double drive = static_cast<double>(i) * (kGunDriveMax / static_cast<double>(kGunBins));
+      gun_lut_[i] = static_cast<float>(std::pow(drive, cfg_.gamma));
+    }
+  }
+}
+
+// One electron gun: drive^gamma, the beam-current curve. 0 stays 0 (cutoff). The
+// curve is tabulated over [0, kGunDriveMax] (built for cfg_.gamma); above the
+// table — phosphor bloom on overdriven guns — fall back to pow().
+float Screen::gun(double drive) const {
+  if (!(drive > 0.0)) // <= 0 and NaN cut off
+    return 0.0f;
+  if (gun_lut_.empty()) // gamma == 1.0
+    return static_cast<float>(drive);
+  if (!(drive < kGunDriveMax)) // bloom (and NaN) take the pow path, not the table
+    return static_cast<float>(std::pow(drive, cfg_.gamma));
+  const double t = drive * (static_cast<double>(kGunBins) / kGunDriveMax);
+  const auto i = static_cast<std::size_t>(t);
+  const auto f = static_cast<float>(t - static_cast<double>(i));
+  return gun_lut_[i] + f * (gun_lut_[i + 1] - gun_lut_[i]);
 }
 
 // exp(log_decay_ * dt) for integer dt, from the split tables. Beyond the
@@ -558,12 +583,6 @@ float Screen::drive_of(float luma_f, float h_phase) {
 }
 
 namespace {
-// One electron gun: drive^gamma, the beam-current curve. 0 stays 0 (cutoff).
-[[nodiscard]] float gun(double drive, double gamma) {
-  if (drive <= 0.0)
-    return 0.0f;
-  return static_cast<float>(gamma == 1.0 ? drive : std::pow(drive, gamma));
-}
 // BT.601 colour-difference -> RGB, in gun-drive space (luma drive is the Y term).
 // These match the TDA3561A demodulator ratios: (B−Y)/(R−Y) = kBu/kRv = 1.78, and
 // the (G−Y) axis within the datasheet's tolerance (see docs/TDA3561A.md).
@@ -587,7 +606,7 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // Gun drives: luma sets the Y term; the matrix adds the colour difference.
     // Each gun cuts off at zero, then takes its gamma. Grey = the luma gun alone.
     const double drive = static_cast<double>(drive_of(picture[i].luma, hbeam[i].h_phase));
-    const float luma_gun = gun(drive, cfg_.gamma);
+    const float luma_gun = gun(drive);
     // IF AGC: track the peak luma gun (readout white) and the peak luma drive (the
     // chroma reference), fast up, slow down. Tracking drive ties the colour to the
     // luma scale: U/V arrive normalised to the burst, so scaling them by the white
@@ -609,9 +628,9 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
       const double cs = cfg_.saturation * white_drive_; // chroma referenced to white
       const double u = cs * static_cast<double>(picture[i].u);
       const double v = cs * static_cast<double>(picture[i].v);
-      gun_rgb[0] = gun(drive + kRv * v, cfg_.gamma);
-      gun_rgb[1] = gun(drive + kGu * u + kGv * v, cfg_.gamma);
-      gun_rgb[2] = gun(drive + kBu * u, cfg_.gamma);
+      gun_rgb[0] = gun(drive + kRv * v);
+      gun_rgb[1] = gun(drive + kGu * u + kGv * v);
+      gun_rgb[2] = gun(drive + kBu * u);
     }
 
     // Sub-pixel horizontal position: the beam sweeps continuously, so spread the

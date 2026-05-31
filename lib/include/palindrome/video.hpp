@@ -448,6 +448,14 @@ private:
   std::vector<double> decay_hi_; // exp(log_decay_ * 256 * hi), to underflow
   [[nodiscard]] float decay_for(std::size_t dt) const;
 
+  // The electron-gun curve drive^gamma is the last un-LUT'd per-sample
+  // transcendental; tabulate it over the drive domain (built once for cfg_.gamma)
+  // with linear interpolation, falling back to pow() above the table for bloom.
+  static constexpr std::size_t kGunBins = 8192;
+  static constexpr double kGunDriveMax = 8.0;
+  std::vector<float> gun_lut_; // pow(drive, gamma) over [0, kGunDriveMax]; empty when gamma == 1
+  [[nodiscard]] float gun(double drive) const;
+
   // Levels, simulated rather than clamped. black_ tracks the back-porch blanking
   // shelf (DC restoration — a real TV's keyed-clamp circuit), which sets the
   // gun's cutoff: drive = black_ - env, so whiter (lower envelope) drives more
