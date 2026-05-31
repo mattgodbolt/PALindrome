@@ -44,23 +44,23 @@ KNOBS = [
          help="A separate narrow low-pass on the copy of the signal used only for sync detection — keeps chroma and "
               "noise from chattering the sync slicer. Affects lock stability, not the picture itself."),
     dict(name="persistence", flag="--persistence", label="Phosphor persistence (fields)",
-         min=0.3, max=6.0, step=0.1, default=1.2,
+         min=0.3, max=6.0, step=0.1, default=0.9,
          help="How long the phosphor glows, in field periods (~20 ms each). Higher blends more fields together "
               "(smoother, averages noise, but smears motion); lower is sharper but flickers. ~1.2 ≈ the last two fields."),
     dict(name="beam_sigma", flag="--beam-sigma", label="Beam sigma (rows)",
-         min=0.0, max=2.5, step=0.05, default=0.8,
+         min=0.0, max=2.5, step=0.05, default=1.2,
          help="Vertical size of the electron-beam spot, in output rows. Bigger fills the gaps between scanlines "
               "(softer); smaller gives crisp, visible scanlines (sharper but gappy). 0 = a single-pixel hit."),
     dict(name="gamma", flag="--gamma", label="Gun gamma",
-         min=1.0, max=3.0, step=0.05, default=1.0,
+         min=1.0, max=3.0, step=0.05, default=1.5,
          help="Electron-gun brightness curve: light ∝ drive^gamma. The source pre-distorts its video expecting a CRT "
               "to undo it, so ~2.2 restores natural contrast and shadows; 1.0 is linear (flat, washed-out midtones)."),
     dict(name="saturation", flag="--saturation", label="Saturation",
-         min=0.0, max=0.5, step=0.01, default=0.2,
+         min=0.0, max=0.5, step=0.01, default=0.17,
          help="Colour intensity: the chroma gain as a fraction of the luma white reference (the colour pot). 0 = "
               "monochrome; too high clips the guns and washes out luma detail into flat colour. ~0.2."),
     dict(name="contrast", flag="--contrast", label="Contrast",
-         min=0.4, max=2.0, step=0.05, default=1.0,
+         min=0.4, max=2.0, step=0.05, default=0.85,
          help="Readout white point as a fraction of the AGC-tracked peak luma (the contrast pot). 1.0 puts tracked "
               "white at full scale; lower dims, higher clips brights into white."),
     dict(name="burst_lo", flag="--burst-lo", label="Burst gate start (h_phase)",

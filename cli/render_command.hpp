@@ -28,13 +28,13 @@ private:
   std::size_t decimate_{2}; // 32 MS/s / 2 = 16 MS/s => ~1024 samples/line
   std::size_t width_{720};
   std::size_t height_{576};
-  double persistence_{1.2}; // phosphor persistence in field periods
-  double beam_sigma_{0.8}; // beam-spot vertical size in output rows
-  double gamma_{1.0}; // electron-gun gamma
+  double persistence_{0.9}; // phosphor persistence in field periods
+  double beam_sigma_{1.2}; // beam-spot vertical size in output rows
+  double gamma_{1.5}; // electron-gun gamma
   // Colour decode (PAL-D chroma channel). Off => a grey render.
   bool colour_{false};
-  double saturation_{0.2}; // chroma gain (fraction of white reference)
-  double contrast_{1.0}; // readout white point (AGC-relative)
+  double saturation_{0.17}; // chroma gain (fraction of white reference)
+  double contrast_{0.85}; // readout white point (AGC-relative)
   double h_blank_{0.16}; // retrace blanking end, h_phase
   double subcarrier_{0.0}; // subcarrier crystal Hz; 0 => textbook 4.43361875 MHz
   double burst_gate_lo_{0.11}, burst_gate_hi_{0.14}; // burst gate, h_phase window
