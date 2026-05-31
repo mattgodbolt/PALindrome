@@ -393,8 +393,8 @@ public:
   // PNG sequence. (Field, not frame, until even/odd parity tracking lands with
   // colour; then this can fire per full frame.) Empty by default = no snapshots.
   using FieldCallback = std::function<void(const Frame &)>;
-  void process(std::span<const ChromaSample> picture, std::span<const BeamSample> hbeam,
-      std::span<const VSample> vbeam, const FieldCallback &on_field = {});
+  void process(std::span<const ChromaSample> picture, std::span<const BeamSample> hbeam, std::span<const VSample> vbeam,
+      const FieldCallback &on_field = {});
 
   // Decay the phosphor to the current instant and read it out, scaled by the
   // AGC-tracked white reference (one shared scale across R/G/B so hue is
