@@ -485,10 +485,46 @@ Screen::Screen(const ScreenConfig &cfg) :
   // Yoke shear: the beam steps (field_hz / line_hz) of a field per line, i.e.
   // this many output rows — the amount to un-creep within each line.
   yoke_tilt_rows_ = static_cast<double>(cfg_.height) * cfg_.field_hz / cfg_.nominal_line_hz;
-  // Splat the beam spot out to 2.5 sigma; weights themselves are recomputed per
-  // line, since the spot centre sits at a sub-pixel row that shifts line to line.
+  // Splat the beam spot out to 2.5 sigma. The spot centre sits at a sub-pixel row
+  // that shifts line to line, so tabulate the normalised weights per fraction bin.
   splat_radius_ = cfg_.beam_sigma_rows > 0.0 ? static_cast<std::size_t>(std::ceil(2.5 * cfg_.beam_sigma_rows)) : 0;
-  row_weights_.assign(2 * splat_radius_ + 1, 0.0);
+  gauss_stride_ = 2 * splat_radius_ + 1;
+  gauss_lut_.assign(kGaussBins * gauss_stride_, 0.0);
+  const double sigma2 = cfg_.beam_sigma_rows * cfg_.beam_sigma_rows;
+  for (std::size_t bin = 0; bin < kGaussBins; ++bin) {
+    const double frac = (static_cast<double>(bin) + 0.5) / static_cast<double>(kGaussBins);
+    double *row = &gauss_lut_[bin * gauss_stride_];
+    double sum = 0.0;
+    for (std::size_t k = 0; k < gauss_stride_; ++k) {
+      const double d = static_cast<double>(k) - static_cast<double>(splat_radius_) + 0.5 - frac;
+      row[k] = sigma2 > 0.0 ? std::exp(-0.5 * d * d / sigma2) : 1.0;
+      sum += row[k];
+    }
+    const double inv = sum > 0.0 ? 1.0 / sum : 0.0;
+    for (std::size_t k = 0; k < gauss_stride_; ++k)
+      row[k] *= inv;
+  }
+  // Phosphor decay tables: dt = lo + 256*hi, so exp(a*dt) = lo-table * hi-table.
+  // The hi-table runs until the factor underflows below any 8-bit contribution.
+  decay_lo_.resize(kDecayMask + 1);
+  for (std::size_t lo = 0; lo < decay_lo_.size(); ++lo)
+    decay_lo_[lo] = std::exp(log_decay_ * static_cast<double>(lo));
+  const double hi_step = static_cast<double>(kDecayMask + 1);
+  for (std::size_t hi = 0;; ++hi) {
+    const double v = std::exp(log_decay_ * hi_step * static_cast<double>(hi));
+    decay_hi_.push_back(v);
+    if (v < 1e-12)
+      break;
+  }
+}
+
+// exp(log_decay_ * dt) for integer dt, from the split tables. Beyond the
+// hi-table the factor has underflowed, so it reads as zero.
+float Screen::decay_for(std::size_t dt) const {
+  const std::size_t hi = dt >> kDecayShift;
+  if (hi >= decay_hi_.size())
+    return 0.0f;
+  return static_cast<float>(decay_lo_[dt & kDecayMask] * decay_hi_[hi]);
 }
 
 void Screen::prepare(std::size_t) {}
@@ -587,35 +623,30 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     const auto yc = static_cast<double>(vbeam[i].v_phase) * static_cast<double>(cfg_.height) -
                     yoke_tilt_rows_ * static_cast<double>(hbeam[i].h_phase);
 
-    // Gaussian beam spot, centred on the sheared sub-pixel row and normalised so
-    // the splat conserves the deposited charge.
-    const auto base = static_cast<std::ptrdiff_t>(std::floor(yc)) - static_cast<std::ptrdiff_t>(splat_radius_);
-    double sum = 0.0;
-    for (std::size_t k = 0; k < row_weights_.size(); ++k) {
-      const auto d = static_cast<double>(base + static_cast<std::ptrdiff_t>(k)) + 0.5 - yc;
-      const double w =
-          cfg_.beam_sigma_rows > 0.0 ? std::exp(-0.5 * d * d / (cfg_.beam_sigma_rows * cfg_.beam_sigma_rows)) : 1.0;
-      row_weights_[k] = w;
-      sum += w;
-    }
-    const double inv = sum > 0.0 ? 1.0 / sum : 0.0;
+    // Gaussian beam spot, centred on the sheared sub-pixel row. The normalised
+    // weights depend only on yc's fractional part, so look up the matching bin.
+    const double yc_floor = std::floor(yc);
+    const auto base = static_cast<std::ptrdiff_t>(yc_floor) - static_cast<std::ptrdiff_t>(splat_radius_);
+    auto bin = static_cast<std::size_t>((yc - yc_floor) * static_cast<double>(kGaussBins));
+    if (bin >= kGaussBins)
+      bin = kGaussBins - 1;
+    const double *rweights = &gauss_lut_[bin * gauss_stride_];
 
     // Splat into those rows × the two straddled columns; each pixel-channel keeps
     // its own lazy phosphor decay (charge brought forward to now, then the fresh
     // deposit). last_ is shared across the channels of a pixel — the three guns
     // hit it at the same instant.
-    for (std::size_t k = 0; k < row_weights_.size(); ++k) {
+    for (std::size_t k = 0; k < gauss_stride_; ++k) {
       const std::ptrdiff_t row = base + static_cast<std::ptrdiff_t>(k);
       if (row < 0 || row >= static_cast<std::ptrdiff_t>(cfg_.height))
         continue;
-      const double rw = row_weights_[k] * inv;
+      const double rw = rweights[k];
       for (std::size_t cc = 0; cc < 2; ++cc) {
         const std::ptrdiff_t col = x0 + static_cast<std::ptrdiff_t>(cc);
         if (col < 0 || col >= static_cast<std::ptrdiff_t>(cfg_.width))
           continue;
         const auto pixel = static_cast<std::size_t>(row) * cfg_.width + static_cast<std::size_t>(col);
-        const auto dt = static_cast<double>(sample_index_ - last_[pixel]);
-        const auto decay = static_cast<float>(std::exp(log_decay_ * dt));
+        const auto decay = decay_for(sample_index_ - last_[pixel]);
         const auto w = static_cast<float>(rw * col_w[cc]);
         for (std::size_t ch = 0; ch < channels_; ++ch) {
           auto &cell = bright_[pixel * channels_ + ch];
@@ -637,8 +668,7 @@ Screen::Frame Screen::snapshot() const {
   const float scale = white > 0.0 ? static_cast<float>(255.0 * cfg_.contrast / white) : 0.0f;
   std::vector<std::uint8_t> pixels(bright_.size());
   for (std::size_t pixel = 0; pixel < last_.size(); ++pixel) {
-    const auto dt = static_cast<double>(sample_index_ - last_[pixel]);
-    const auto decay = static_cast<float>(std::exp(log_decay_ * dt));
+    const auto decay = decay_for(sample_index_ - last_[pixel]);
     for (std::size_t ch = 0; ch < channels_; ++ch) {
       const auto idx = pixel * channels_ + ch;
       pixels[idx] = static_cast<std::uint8_t>(std::clamp(bright_[idx] * decay * scale, 0.0f, 255.0f) + 0.5f);
