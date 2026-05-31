@@ -22,6 +22,7 @@ import argparse
 import glob
 import json
 import os
+import shlex
 import subprocess
 import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -63,22 +64,22 @@ KNOBS = [
          help="Readout white point as a fraction of the AGC-tracked peak luma (the contrast pot). 1.0 puts tracked "
               "white at full scale; lower dims, higher clips brights into white."),
     dict(name="burst_lo", flag="--burst-lo", label="Burst gate start (h_phase)",
-         min=0.06, max=0.24, step=0.005, default=0.16,
-         help="Where the colour-burst measurement window opens, as a fraction of a line after sync. Rate-dependent: "
-              "~0.16 at 10 MS/s (AirSpy), ~0.11 at 16 MS/s (RX888 --decimate 2). Watch the 'burst swing' readout — "
-              "~45° means it's on the burst."),
+         min=0.06, max=0.24, step=0.005, default=0.11,
+         help="Where the colour-burst measurement window opens, as a fraction of a line after sync. Per-capture: "
+              "~0.11 for the RX888 corpus (the CLI default), ~0.16 for the AirSpy, whose front end delays the burst "
+              "~3 us past sync. Watch the 'burst swing' readout — ~45° means it's on the burst."),
     dict(name="burst_hi", flag="--burst-hi", label="Burst gate end (h_phase)",
-         min=0.08, max=0.28, step=0.005, default=0.20,
+         min=0.08, max=0.28, step=0.005, default=0.14,
          help="Where the burst window closes (must be > start). A ~0.03–0.04 window past the start captures the "
               "~10-cycle burst."),
     dict(name="no_delay_line", flag="--no-delay-line", boolean=True, label="Disable 1H comb", default=0,
          help="Turn off the PAL-D line-pair (1H delay-line) comb on U/V. On (comb enabled) cancels differential "
               "phase error between line pairs; off shows the raw per-line chroma (noisier, more cross-colour)."),
     dict(name="h_blank", flag="--h-blank", label="Retrace blanking (h_phase)",
-         min=0.10, max=0.28, step=0.005, default=0.21,
+         min=0.10, max=0.28, step=0.005, default=0.16,
          help="How far into the line the beam stays blanked (sync + back porch + burst). Must clear the burst, or it "
-              "paints a coloured bar down the left edge — so set it just past the burst-gate end (~0.21 at 10 MS/s, "
-              "~0.16 at 16 MS/s)."),
+              "paints a coloured bar down the left edge — so set it just past the burst-gate end (~0.16 for the RX888 "
+              "corpus, ~0.21 for the AirSpy)."),
     dict(name="sync_level", flag="--sync-level", label="Sync slice level",
          min=0.5, max=0.95, step=0.01, default=0.85,
          help="Where the separator decides 'sync pulse' vs picture, as a fraction of the white→sync-tip range. ~0.85 "
@@ -123,7 +124,7 @@ body{font-family:sans-serif;margin:1em;background:#111;color:#ddd}
 .knob{display:flex;align-items:center;gap:.5em;margin:.1em 0}
 .knob label{width:15em;font-size:.82em}.knob input{width:13em}
 .knob output{width:6em;text-align:right;font:.8em monospace}
-img{background:#000;image-rendering:pixelated}
+img{background:#000;image-rendering:pixelated;image-rendering:crisp-edges}
 button{margin:.4em .4em 0 0}#status{font:.85em monospace;margin-top:.5em;color:#9c9}
 </style></head><body><div id=wrap>
 <div><div id=knobs></div>
@@ -144,6 +145,7 @@ for(const k of KNOBS){vals[k.name]=k.def;
 let count=0,gen=0,playing=null;
 const img=document.getElementById('img'),scrub=document.getElementById('scrub'),
  fnum=document.getElementById('fnum'),status=document.getElementById('status');
+img.addEventListener('load',()=>{img.style.width=(img.naturalWidth*2)+'px';}); // 2x, nearest-neighbour
 function show(i){fnum.textContent=i;img.src='/frame?i='+i+'&g='+gen;}
 scrub.addEventListener('input',()=>show(+scrub.value));
 document.getElementById('play').addEventListener('click',()=>{
@@ -193,6 +195,9 @@ class Tuner:
                     cmd.append(k["flag"])
             else:
                 cmd += [k["flag"], str(v)]
+        # Echo the exact command so a knob setting can be reproduced offline
+        # (swap the temp -o for your own output path).
+        print(shlex.join(cmd), flush=True)
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or "render failed")
