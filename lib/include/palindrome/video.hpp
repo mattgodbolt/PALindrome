@@ -432,7 +432,21 @@ private:
   // sheared row, filling the gaps between scanlines.
   double yoke_tilt_rows_ = 0.0; // vertical rows the beam advances per line
   std::size_t splat_radius_ = 0; // Gaussian half-width in rows
-  std::vector<double> row_weights_; // scratch splat weights, size 2*radius+1
+
+  // The splat shape depends only on the beam centre's sub-pixel row fraction, so
+  // the normalised Gaussian weights are tabulated per fraction bin (a [bin][row]
+  // table) instead of calling exp() per sample. Phosphor decay exp(log_decay_*dt)
+  // over the integer sample gap dt is split as decay_lo_[dt&mask] *
+  // decay_hi_[dt>>shift] — exp(a*lo)*exp(a*256*hi) reproduces exp(a*dt) to a
+  // rounding, so the deposit loop carries no transcendentals.
+  static constexpr std::size_t kGaussBins = 4096;
+  std::size_t gauss_stride_ = 1; // 2*splat_radius_+1
+  std::vector<double> gauss_lut_; // kGaussBins * gauss_stride_, normalised
+  static constexpr std::size_t kDecayShift = 8;
+  static constexpr std::size_t kDecayMask = (std::size_t{1} << kDecayShift) - 1;
+  std::vector<double> decay_lo_; // exp(log_decay_ * lo), lo in [0,256)
+  std::vector<double> decay_hi_; // exp(log_decay_ * 256 * hi), to underflow
+  [[nodiscard]] float decay_for(std::size_t dt) const;
 
   // Levels, simulated rather than clamped. black_ tracks the back-porch blanking
   // shelf (DC restoration — a real TV's keyed-clamp circuit), which sets the

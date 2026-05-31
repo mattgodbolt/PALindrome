@@ -216,16 +216,28 @@ copies (find_package first, fall back to CPM fetch) configure with
 `-DCPM_USE_LOCAL_PACKAGES=ON` — that's CPM's own switch, and we use it directly
 rather than wrapping it.
 
-### SIMD (`std::simd`) — parked
+### SIMD — non-standard now, `std::simd` later
 
-The DSP hot loops (`dsp::convolve`, `demod::envelope_magnitude`) currently
-vectorise via per-function `[[gnu::optimize(...)]]` to license FP reassociation
-/ drop the `sqrt` errno+trapping guards. It's ODR-safe (anonymous-namespace,
-single definition) and the precision loss is bounded and measured, but
-`[[gnu::optimize]]` is a GCC debug-only feature we'd rather not ship.
+Two DSP hot paths are hand-vectorised. Both are deliberately non-portable
+stop-gaps, meant to become `std::simd` once the toolchain is there:
 
-Plan, when we pick this up: rewrite those loops in `std::simd` so the lane
-reduction is explicit and **no** FP-relaxation flags/attributes are needed.
+- **The FIR (`dsp::convolve_strip`)** uses **AVX2/FMA intrinsics**
+  (`<immintrin.h>`, `_mm256_fmadd_ps`, …) to carry a strip of output samples in
+  named vector accumulators across the tap loop, hiding the FMA-latency chain a
+  single-accumulator dot product stalls on. It's guarded by
+  `#if defined(__AVX2__) && defined(__FMA__)`; without those (non-x86, or no
+  AVX2) the scalar `dsp::convolve` — a plain `std::fmaf` dot — is the fallback.
+  Both sum taps in natural order, so the intrinsic and scalar paths are
+  bit-identical and the result stays chunking-invariant.
+- **The AM envelope (`demod::envelope_magnitude`)** uses a per-function
+  `[[gnu::optimize("-fno-math-errno", "-fno-trapping-math")]]` so the `sqrt`
+  lowers to a packed `vsqrtps` without the errno/trap guards. ODR-safe
+  (anonymous-namespace, single definition) and the precision loss is bounded and
+  measured — but `[[gnu::optimize]]` is a GCC debug-only feature.
+
+x86-only intrinsics and a GCC-only attribute are both where we don't want to
+stay. Plan, when we pick it up: rewrite both in `std::simd` so the lanes are
+explicit and portable, needing no target intrinsics or FP-relaxation flags.
 
 Blockers found (2026-05): `std::simd`'s `convolve` is validated working on GCC
 16.1 and 17-trunk, but `simd.math` (`sqrt`) is **not** in shipping libstdc++ even

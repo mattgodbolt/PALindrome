@@ -6,29 +6,98 @@
 #include <stdexcept>
 #include <utility>
 
+#if defined(__AVX2__) && defined(__FMA__)
+#include <immintrin.h>
+#endif
+
 namespace palindrome::dsp {
 
 namespace {
 constexpr double pi = std::numbers::pi;
 
-// One output sample: the dot product of the taps with `window`. Reassociation
-// is enabled for just this function so the sum vectorises into 8-wide FMA lanes;
-// no other floating-point relaxations apply. The accumulator is float, trading
-// precision for throughput: error grows with tap count (~n*eps worst case), so
-// this suits moderate-length, amplitude-limited filters rather than long or
-// ill-conditioned ones that would want a double accumulator.
-//
-// TODO(std::simd): replace this [[gnu::optimize]] attribute (a GCC debug-only
-// feature) with explicit std::simd lanes, which makes the reduction order
-// explicit and needs no FP-relaxation flags. Validated working on GCC 16.1's
-// <simd>; blocked only on getting that toolchain into the build (no gcc-16
-// package for Ubuntu 25.10 yet, so a Compiler Explorer tarball or similar).
-[[gnu::optimize("-fassociative-math", "-fno-signed-zeros", "-fno-trapping-math")]]
+// One output sample: the dot product of the taps with `window`, accumulated in
+// natural order with a single-rounded fused multiply-add. The float accumulator
+// trades precision for throughput (error grows ~n*eps), which suits the moderate,
+// amplitude-limited filters here. Natural order — not a reassociated tree — so the
+// result is bit-identical to convolve_strip's per-output lanes, which is what lets
+// a decimating filter equal "filter at full rate, then keep every Nth", and keeps
+// the stream chunking-invariant. Used for the decimated grid; the non-decimating
+// hot path goes through convolve_strip.
 float convolve(const float *taps, const float *window, std::size_t n) {
   float acc = 0.0f;
   for (std::size_t k = 0; k < n; ++k)
-    acc += taps[k] * window[k];
+    acc = std::fmaf(taps[k], window[k], acc);
   return acc;
+}
+
+// y[k] = sum_t taps[t] * window[k+t] for k in [0, outputs) — the non-decimating
+// convolution. The classic across-taps dot product (convolve) stalls on a single
+// accumulator's FMA-latency chain and pays a horizontal reduction per output; this
+// transposes the loops to carry a strip of outputs in named vector accumulators
+// across the tap sweep, hiding the latency with no per-output reduction (GCC spills
+// any array-based strip, hence the intrinsics). The decimating case (d > 1) keeps
+// one output per d inputs: d == 2 (the front-end's vision low-pass) loads the 2x
+// span and deinterleaves the even lanes, avoiding gather instructions (throttled
+// by the GDS microcode mitigation on this Skylake-X); larger, non-hot strides fall
+// to the scalar dot.
+//
+// Every output — whatever tier or stride lands on it — accumulates the taps in
+// natural order with a single-rounded fused multiply-add, so it is bit-identical
+// to convolve()'s scalar dot. That is what makes a decimating filter equal "filter
+// at full rate, then keep every dth" and the stream independent of how it's chunked
+// (the block-invariance guarantee).
+void convolve_strip(const float *taps, const float *window, float *y, std::size_t n, std::size_t outputs, std::size_t d,
+    std::size_t win_len) {
+  std::size_t k = 0;
+#if defined(__AVX2__) && defined(__FMA__)
+  if (d == 1) {
+    for (; k + 32 <= outputs; k += 32) {
+      __m256 a0 = _mm256_setzero_ps();
+      __m256 a1 = _mm256_setzero_ps();
+      __m256 a2 = _mm256_setzero_ps();
+      __m256 a3 = _mm256_setzero_ps();
+      const float *wb = window + k;
+      for (std::size_t t = 0; t < n; ++t) {
+        const __m256 tap = _mm256_broadcast_ss(taps + t);
+        a0 = _mm256_fmadd_ps(tap, _mm256_loadu_ps(wb + t + 0), a0);
+        a1 = _mm256_fmadd_ps(tap, _mm256_loadu_ps(wb + t + 8), a1);
+        a2 = _mm256_fmadd_ps(tap, _mm256_loadu_ps(wb + t + 16), a2);
+        a3 = _mm256_fmadd_ps(tap, _mm256_loadu_ps(wb + t + 24), a3);
+      }
+      _mm256_storeu_ps(y + k + 0, a0);
+      _mm256_storeu_ps(y + k + 8, a1);
+      _mm256_storeu_ps(y + k + 16, a2);
+      _mm256_storeu_ps(y + k + 24, a3);
+    }
+    for (; k + 8 <= outputs; k += 8) {
+      __m256 a = _mm256_setzero_ps();
+      const float *wb = window + k;
+      for (std::size_t t = 0; t < n; ++t)
+        a = _mm256_fmadd_ps(_mm256_broadcast_ss(taps + t), _mm256_loadu_ps(wb + t), a);
+      _mm256_storeu_ps(y + k, a);
+    }
+  }
+  else if (d == 2) {
+    // Lane L wants window[2k + t + 2L]; load the 16-sample span [2k+t .. 2k+t+15]
+    // and gather its even elements into one register.
+    const __m256i even = _mm256_setr_epi32(0, 1, 4, 5, 2, 3, 6, 7);
+    // The hi load reads window[2k+t+8 .. +15]; cap k so its last access (t=n-1)
+    // stays in the window. The leftover outputs drop to the in-bounds scalar dot.
+    for (; k + 8 <= outputs && 2 * k + n + 15 <= win_len; k += 8) {
+      __m256 a = _mm256_setzero_ps();
+      const float *wb = window + 2 * k;
+      for (std::size_t t = 0; t < n; ++t) {
+        const __m256 lo = _mm256_loadu_ps(wb + t);
+        const __m256 hi = _mm256_loadu_ps(wb + t + 8);
+        const __m256 sh = _mm256_shuffle_ps(lo, hi, _MM_SHUFFLE(2, 0, 2, 0));
+        a = _mm256_fmadd_ps(_mm256_broadcast_ss(taps + t), _mm256_permutevar8x32_ps(sh, even), a);
+      }
+      _mm256_storeu_ps(y + k, a);
+    }
+  }
+#endif
+  for (; k < outputs; ++k)
+    y[k] = convolve(taps, window + d * k, n);
 }
 
 double window_value(Window window, double n, double m) {
@@ -143,10 +212,12 @@ std::span<const float> Fir::process(std::span<const float> in) {
   auto *y = out_.write_n(outputs).data();
   const auto *taps = taps_.data();
   const auto *w = window.data();
-  std::size_t j = phase_;
-  for (std::size_t k = 0; k < outputs; ++k, j += decimation_)
-    y[k] = convolve(taps, w + j, n);
-  phase_ = j - m;
+  // From the first kept position, convolve_strip evaluates output k at window
+  // offset phase_ + k*decimation_, vectorising across outputs to hide the FMA
+  // latency chain that throttles the across-taps dot product. The skip left over
+  // past the block carries into the next call, so chunking can't shift the grid.
+  convolve_strip(taps, w + phase_, y, n, outputs, decimation_, carry + m - phase_);
+  phase_ = phase_ + outputs * decimation_ - m;
 
   // Carry the last size()-1 samples into the next call.
   if (carry != 0)
