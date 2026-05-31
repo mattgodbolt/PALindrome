@@ -559,6 +559,13 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
       gun_rgb[0] = luma_gun;
     }
 
+    // Beam blanking during horizontal retrace + back porch + burst: no deposit,
+    // so the demodulated burst can't paint a coloured bar down the left edge.
+    if (hbeam[i].h_phase < static_cast<float>(cfg_.h_blank)) {
+      ++sample_index_;
+      continue;
+    }
+
     auto x = static_cast<std::size_t>(static_cast<double>(hbeam[i].h_phase) * static_cast<double>(cfg_.width));
     if (x >= cfg_.width)
       x = cfg_.width - 1;

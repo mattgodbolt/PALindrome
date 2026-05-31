@@ -357,6 +357,11 @@ struct ScreenConfig {
   // luma. 1.0 puts tracked white at full scale; lower dims, higher clips into
   // white. The analog of the contrast pot in front of a set's IF AGC.
   double contrast = 1.0;
+  // Horizontal blanking: the beam is off for h_phase below this — the sync, back
+  // porch and colour burst. Without it the burst (a strong subcarrier) demodulates
+  // to a coloured bar at the left of the active region. The beam blanking of a
+  // real set during retrace.
+  double h_blank = 0.15;
 };
 
 // The picture tube. A join sink fed three aligned rails — the picture (luma +
