@@ -458,7 +458,7 @@ std::span<const ChromaSample> ChromaDecoder::process(
 
 Screen::Screen(const ScreenConfig &cfg) :
     cfg_{cfg}, channels_{cfg.colour ? std::size_t{3} : std::size_t{1}},
-    bright_(cfg.width * cfg.height * (cfg.colour ? 3 : 1), 0.0f), last_(cfg.width * cfg.height, 0) {
+    bright_(cfg.width * cfg.height * (cfg.colour ? 3 : 1), 0.0f) {
   if (cfg_.width == 0 || cfg_.height == 0)
     throw std::invalid_argument{"Screen: width and height must be positive"};
   if (!(cfg_.saturation >= 0.0))
@@ -486,6 +486,11 @@ Screen::Screen(const ScreenConfig &cfg) :
   // out to put tracked white at full scale.
   const double decay_per_frame = std::exp(log_decay_ * 2.0 * cfg_.sample_rate_hz / cfg_.field_hz);
   phosphor_gain_ = 1.0 / (1.0 - decay_per_frame);
+  // The phosphor fades by one field period's worth in a single whole-buffer
+  // multiply at each field boundary (not per sample): exp(log_decay_ * samples
+  // per field). Steady state for a pixel re-hit every frame (two fields) is then
+  // 1/(1 - field_decay_^2) == phosphor_gain_, so the readout scale is unchanged.
+  field_decay_ = static_cast<float>(std::exp(log_decay_ * cfg_.sample_rate_hz / cfg_.field_hz));
   // Yoke shear: the beam steps (field_hz / line_hz) of a field per line, i.e.
   // this many output rows — the amount to un-creep within each line.
   yoke_tilt_rows_ = static_cast<double>(cfg_.height) * cfg_.field_hz / cfg_.nominal_line_hz;
@@ -507,18 +512,6 @@ Screen::Screen(const ScreenConfig &cfg) :
     const double inv = sum > 0.0 ? 1.0 / sum : 0.0;
     for (std::size_t k = 0; k < gauss_stride_; ++k)
       row[k] *= inv;
-  }
-  // Phosphor decay tables: dt = lo + 256*hi, so exp(a*dt) = lo-table * hi-table.
-  // The hi-table runs until the factor underflows below any 8-bit contribution.
-  decay_lo_.resize(kDecayMask + 1);
-  for (std::size_t lo = 0; lo < decay_lo_.size(); ++lo)
-    decay_lo_[lo] = std::exp(log_decay_ * static_cast<double>(lo));
-  const double hi_step = static_cast<double>(kDecayMask + 1);
-  for (std::size_t hi = 0;; ++hi) {
-    const double v = std::exp(log_decay_ * hi_step * static_cast<double>(hi));
-    decay_hi_.push_back(v);
-    if (v < 1e-12)
-      break;
   }
   // Gun gamma table: drive^gamma sampled over [0, kGunDriveMax], read with linear
   // interpolation. Linear at gamma 1.0, so leave the table empty and skip the pow.
@@ -547,14 +540,6 @@ float Screen::gun(double drive) const {
   return gun_lut_[i] + f * (gun_lut_[i + 1] - gun_lut_[i]);
 }
 
-// exp(log_decay_ * dt) for integer dt, from the split tables. Beyond the
-// hi-table the factor has underflowed, so it reads as zero.
-float Screen::decay_for(std::size_t dt) const {
-  const std::size_t hi = dt >> kDecayShift;
-  if (hi >= decay_hi_.size())
-    return 0.0f;
-  return static_cast<float>(decay_lo_[dt & kDecayMask] * decay_hi_[hi]);
-}
 
 void Screen::prepare(std::size_t) {}
 
@@ -596,12 +581,17 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     std::span<const VSample> vbeam, const FieldCallback &on_field) {
   const std::size_t n = std::min({picture.size(), hbeam.size(), vbeam.size()});
   for (std::size_t i = 0; i < n; ++i) {
-    // A field boundary closes off a completed field: snapshot the phosphor as
-    // it stands now (before this sample's deposit), then carry on. Block-size
-    // independent — field_start is per-sample, so the snapshots land identically
-    // however the input is chunked.
-    if (on_field && vbeam[i].field_start)
-      on_field(snapshot());
+    // A field boundary closes off a completed field: the buffer IS the displayed
+    // image (no per-pixel fade), so snapshot it, then fade the whole phosphor by
+    // one field period before the next field accumulates on top. Block-size
+    // independent — field_start is per-sample, so this lands identically however
+    // the input is chunked.
+    if (vbeam[i].field_start) {
+      if (on_field)
+        on_field(snapshot());
+      for (float &b: bright_)
+        b *= field_decay_;
+    }
 
     // Gun drives: luma sets the Y term; the matrix adds the colour difference.
     // Each gun cuts off at zero, then takes its gamma. Grey = the luma gun alone.
@@ -617,10 +607,8 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // line-blanking pulse of a real set. This is why the burst — a big subcarrier
     // sitting in the back porch — never paints a coloured bar; it's blanked, not
     // gated on luma.
-    if (hbeam[i].h_phase < static_cast<float>(cfg_.h_blank)) {
-      ++sample_index_;
+    if (hbeam[i].h_phase < static_cast<float>(cfg_.h_blank))
       continue;
-    }
 
     // R/G/B guns: luma drive plus the colour difference, each cut off then gamma'd.
     float gun_rgb[3] = {luma_gun, 0.0f, 0.0f};
@@ -655,10 +643,9 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
       bin = kGaussBins - 1;
     const double *rweights = &gauss_lut_[bin * gauss_stride_];
 
-    // Splat into those rows × the two straddled columns; each pixel-channel keeps
-    // its own lazy phosphor decay (charge brought forward to now, then the fresh
-    // deposit). last_ is shared across the channels of a pixel — the three guns
-    // hit it at the same instant.
+    // Splat into those rows × the two straddled columns, ADDING charge (the
+    // whole-buffer fade at the field boundary handles decay). The beam hits all
+    // channels of a pixel at the same instant.
     for (std::size_t k = 0; k < gauss_stride_; ++k) {
       const std::ptrdiff_t row = base + static_cast<std::ptrdiff_t>(k);
       if (row < 0 || row >= static_cast<std::ptrdiff_t>(cfg_.height))
@@ -669,20 +656,17 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
         if (col < 0 || col >= static_cast<std::ptrdiff_t>(cfg_.width))
           continue;
         const auto pixel = static_cast<std::size_t>(row) * cfg_.width + static_cast<std::size_t>(col);
-        const auto decay = decay_for(sample_index_ - last_[pixel]);
         const auto w = static_cast<float>(rw * col_w[cc]);
         // channels_ is 1 or 3; spell both out so the guns stay in registers and
         // the RGB triple isn't a variable-trip loop.
         float *cell = &bright_[pixel * channels_];
-        cell[0] = cell[0] * decay + gun_rgb[0] * w;
+        cell[0] += gun_rgb[0] * w;
         if (channels_ == 3) {
-          cell[1] = cell[1] * decay + gun_rgb[1] * w;
-          cell[2] = cell[2] * decay + gun_rgb[2] * w;
+          cell[1] += gun_rgb[1] * w;
+          cell[2] += gun_rgb[2] * w;
         }
-        last_[pixel] = sample_index_;
       }
     }
-    ++sample_index_;
   }
 }
 
@@ -693,14 +677,11 @@ Screen::Frame Screen::snapshot() const {
   // no per-frame statistic, so the exposure is causal and doesn't breathe.
   const double white = white_ref_ * phosphor_gain_;
   const float scale = white > 0.0 ? static_cast<float>(255.0 * cfg_.contrast / white) : 0.0f;
+  // The buffer already holds the displayed charge (decay is applied per field,
+  // not per pixel), so readout is a straight scale-and-quantise.
   std::vector<std::uint8_t> pixels(bright_.size());
-  for (std::size_t pixel = 0; pixel < last_.size(); ++pixel) {
-    const auto decay = decay_for(sample_index_ - last_[pixel]);
-    for (std::size_t ch = 0; ch < channels_; ++ch) {
-      const auto idx = pixel * channels_ + ch;
-      pixels[idx] = static_cast<std::uint8_t>(std::clamp(bright_[idx] * decay * scale, 0.0f, 255.0f) + 0.5f);
-    }
-  }
+  for (std::size_t idx = 0; idx < bright_.size(); ++idx)
+    pixels[idx] = static_cast<std::uint8_t>(std::clamp(bright_[idx] * scale, 0.0f, 255.0f) + 0.5f);
   return Frame{.pixels = std::move(pixels), .width = cfg_.width, .height = cfg_.height, .channels = channels_};
 }
 
