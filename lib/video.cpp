@@ -465,8 +465,8 @@ Screen::Screen(const ScreenConfig &cfg) :
     throw std::invalid_argument{"Screen: saturation must be non-negative"};
   if (!(cfg_.sample_rate_hz > 0.0 && cfg_.field_hz > 0.0))
     throw std::invalid_argument{"Screen: sample_rate_hz and field_hz must be positive"};
-  // Upper bound keeps the decay table (sized ~persistence_fields * rate / field_hz)
-  // bounded; 64 fields is already far longer than any real phosphor.
+  // Upper bound keeps the per-field decay safely away from a degenerate 1.0
+  // (no fade); 64 fields is already far longer than any real phosphor.
   if (!(cfg_.persistence_fields > 0.0 && cfg_.persistence_fields <= 64.0))
     throw std::invalid_argument{"Screen: persistence_fields must be in (0, 64]"};
   if (!(cfg_.beam_sigma_rows >= 0.0))
@@ -476,7 +476,7 @@ Screen::Screen(const ScreenConfig &cfg) :
   // Decay per sample so that brightness falls by 1/e over persistence_fields
   // field periods: tau_samples = persistence * (sample_rate / field_hz).
   const double tau_samples = cfg_.persistence_fields * cfg_.sample_rate_hz / cfg_.field_hz;
-  log_decay_ = -1.0 / tau_samples;
+  const double log_decay = -1.0 / tau_samples;
   // AGC release: hold the tracked white for a few fields, so the white point is
   // steady against picture content (the slow time constant of a real IF AGC).
   constexpr double kAgcFields = 8.0;
@@ -484,13 +484,13 @@ Screen::Screen(const ScreenConfig &cfg) :
   // A pixel hit once per frame (two field periods, interlaced) accumulates its
   // deposit to a steady 1/(1 - decay_per_frame); white reads that, so divide it
   // out to put tracked white at full scale.
-  const double decay_per_frame = std::exp(log_decay_ * 2.0 * cfg_.sample_rate_hz / cfg_.field_hz);
+  const double decay_per_frame = std::exp(log_decay * 2.0 * cfg_.sample_rate_hz / cfg_.field_hz);
   phosphor_gain_ = 1.0 / (1.0 - decay_per_frame);
   // The phosphor fades by one field period's worth in a single whole-buffer
-  // multiply at each field boundary (not per sample): exp(log_decay_ * samples
+  // multiply at each field boundary (not per sample): exp(log_decay * samples
   // per field). Steady state for a pixel re-hit every frame (two fields) is then
   // 1/(1 - field_decay_^2) == phosphor_gain_, so the readout scale is unchanged.
-  field_decay_ = static_cast<float>(std::exp(log_decay_ * cfg_.sample_rate_hz / cfg_.field_hz));
+  field_decay_ = static_cast<float>(std::exp(log_decay * cfg_.sample_rate_hz / cfg_.field_hz));
   // Yoke shear: the beam steps (field_hz / line_hz) of a field per line, i.e.
   // this many output rows — the amount to un-creep within each line.
   yoke_tilt_rows_ = static_cast<double>(cfg_.height) * cfg_.field_hz / cfg_.nominal_line_hz;
@@ -539,7 +539,6 @@ float Screen::gun(double drive) const {
   const auto f = static_cast<float>(t - static_cast<double>(i));
   return gun_lut_[i] + f * (gun_lut_[i + 1] - gun_lut_[i]);
 }
-
 
 void Screen::prepare(std::size_t) {}
 

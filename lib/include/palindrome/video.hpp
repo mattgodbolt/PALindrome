@@ -409,7 +409,6 @@ private:
 
   ScreenConfig cfg_;
   std::size_t channels_; // 1 (grey) or 3 (RGB), from cfg_.colour
-  double log_decay_; // ln(per-sample phosphor decay factor)
   // IF-style AGC: a fast-attack, slow-release peak tracker on the luma gun drive,
   // advanced every sample. It sets the readout white point the way a real set's
   // IF AGC fixes the carrier-to-drive mapping — causal, no per-frame statistic.
