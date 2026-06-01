@@ -585,6 +585,16 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // one field period before the next field accumulates on top. Block-size
     // independent — field_start is per-sample, so this lands identically however
     // the input is chunked.
+    //
+    // The fade is per FIELD, not per frame, which leaves a latent interlace comb:
+    // the two fields paint alternate lines a field apart, so at readout one
+    // field's lines have faded once relative to the other (a 3:1 line-to-line
+    // ripple at persistence 0.9). It's invisible only because the beam splat
+    // (beam_sigma_rows) is wide enough to spread each line's charge across its
+    // neighbours, blending the fields. Shrink the beam past that and the comb
+    // shows. The fix is to fade once per FRAME (every two fields) so both fields
+    // paint before any decay — which needs the decay/snapshot aligned to a frame
+    // boundary, i.e. the interlace even/odd parity tracking still to be added.
     if (vbeam[i].field_start) {
       if (on_field)
         on_field(snapshot());
