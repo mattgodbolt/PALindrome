@@ -342,11 +342,13 @@ struct ScreenConfig {
   // time constant. ~1 field means roughly the last two fields survive — so an
   // interlaced frame builds up and older content (and the startup junk) fades.
   double persistence_fields = 1.2;
-  // Beam-spot size: each sample is splatted vertically with a Gaussian of this
-  // standard deviation, in output rows. It fills the gaps between scanlines (the
-  // focus) and is the hook a wider kernel turns into bloom later. 0 => a single
-  // pixel (no splat).
+  // Beam-spot size: each sample is splatted with a round 2-D Gaussian of this
+  // standard deviation. beam_sigma_rows is the vertical extent in output rows (it
+  // fills the gaps between scanlines — the focus); beam_sigma_cols is the
+  // horizontal extent in output columns and defaults to match (a round spot) when
+  // negative. 0 => a single pixel (no splat) on that axis.
   double beam_sigma_rows = 0.8;
+  double beam_sigma_cols = -1.0; // < 0 => match beam_sigma_rows (round spot)
   // Electron-gun gamma: beam current rises as drive^gamma. The source pre-distorts
   // its video (~1/2.2) expecting a CRT to undo it, so ~2.2-2.8 restores the
   // midtones/contrast; 1.0 is linear (no gamma). Readout normalisation makes the
@@ -442,17 +444,22 @@ private:
   // second term cancels the in-line vertical creep, so a scanline traces flat
   // instead of smearing into a diagonal. yoke_tilt_rows_ is the rows the beam
   // steps per line (from the nominal scan geometry, like a real fixed yoke).
-  // Each sample is then splatted vertically with a Gaussian spot centred on that
-  // sheared row, filling the gaps between scanlines.
+  // Each sample is then splatted with a round 2-D Gaussian spot centred on that
+  // sheared sub-pixel position, filling the gaps between scanlines (vertically)
+  // and reconstructing along the line (horizontally).
   double yoke_tilt_rows_ = 0.0; // vertical rows the beam advances per line
   std::size_t splat_radius_ = 0; // Gaussian half-width in rows
+  std::size_t splat_radius_x_ = 0; // Gaussian half-width in columns
 
-  // The splat shape depends only on the beam centre's sub-pixel row fraction, so
-  // the normalised Gaussian weights are tabulated per fraction bin (a [bin][row]
-  // table) instead of calling exp() per sample.
+  // The beam spot is a separable 2-D Gaussian: a vertical kernel over rows and a
+  // horizontal one over columns, each normalised to sum 1. Both depend only on
+  // the spot centre's sub-pixel fraction along that axis, so each is tabulated per
+  // fraction bin (a [bin][cell] table) instead of calling exp() per sample.
   static constexpr std::size_t kGaussBins = 4096;
-  std::size_t gauss_stride_ = 1; // 2*splat_radius_+1
-  std::vector<double> gauss_lut_; // kGaussBins * gauss_stride_, normalised
+  std::size_t gauss_stride_ = 1; // 2*splat_radius_+1 (rows)
+  std::size_t gauss_stride_x_ = 1; // 2*splat_radius_x_+1 (columns)
+  std::vector<double> gauss_lut_; // kGaussBins * gauss_stride_, normalised (vertical)
+  std::vector<double> gauss_lut_x_; // kGaussBins * gauss_stride_x_, normalised (horizontal)
 
   // The electron-gun curve drive^gamma is the last un-LUT'd per-sample
   // transcendental; tabulate it over the drive domain (built once for cfg_.gamma)
@@ -494,8 +501,9 @@ struct DecoderConfig {
   // Phosphor persistence, in field periods (see ScreenConfig). Higher evens out
   // the brightness between the two interlaced fields; lower sharpens motion.
   double persistence_fields = 1.2;
-  // Beam-spot vertical size in output rows (see ScreenConfig::beam_sigma_rows).
+  // Beam-spot size (see ScreenConfig::beam_sigma_rows/cols). cols < 0 => round.
   double beam_sigma_rows = 0.8;
+  double beam_sigma_cols = -1.0;
   double gamma = 1.0; // electron-gun gamma (see ScreenConfig::gamma)
   // Colour: decode chroma and render an RGB triad. Off => the grey rail (the
   // luma envelope straight to the screen, chroma untouched). saturation scales

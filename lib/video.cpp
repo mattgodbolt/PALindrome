@@ -456,6 +456,39 @@ std::span<const ChromaSample> ChromaDecoder::process(
 
 // === Screen ===
 
+namespace {
+// Half-width of the splat in pixels: cover the Gaussian out to 2.5 sigma. sigma 0
+// (a bare point) gives radius 0.
+[[nodiscard]] std::size_t splat_radius_for(double sigma) {
+  return sigma > 0.0 ? static_cast<std::size_t>(std::ceil(2.5 * sigma)) : 0;
+}
+
+// One axis of the beam-spot Gaussian, tabulated per sub-pixel-fraction bin: each
+// bin holds 2*radius+1 weights, normalised to sum 1, centred on that fractional
+// offset from the splat's base cell. sigma 0 (radius 0) degenerates to a single
+// unit weight (a bare point). The deposit multiplies a row weight by a column
+// weight for the separable 2-D spot.
+[[nodiscard]] std::vector<double> gaussian_splat_lut(double sigma, std::size_t radius, std::size_t bins) {
+  const std::size_t stride = 2 * radius + 1;
+  const double sigma2 = sigma * sigma;
+  std::vector<double> lut(bins * stride, 0.0);
+  for (std::size_t bin = 0; bin < bins; ++bin) {
+    const double frac = (static_cast<double>(bin) + 0.5) / static_cast<double>(bins);
+    double *w = &lut[bin * stride];
+    double sum = 0.0;
+    for (std::size_t k = 0; k < stride; ++k) {
+      const double d = static_cast<double>(k) - static_cast<double>(radius) + 0.5 - frac;
+      w[k] = sigma2 > 0.0 ? std::exp(-0.5 * d * d / sigma2) : 1.0;
+      sum += w[k];
+    }
+    const double inv = sum > 0.0 ? 1.0 / sum : 0.0;
+    for (std::size_t k = 0; k < stride; ++k)
+      w[k] *= inv;
+  }
+  return lut;
+}
+} // namespace
+
 Screen::Screen(const ScreenConfig &cfg) :
     cfg_{cfg}, channels_{cfg.colour ? std::size_t{3} : std::size_t{1}},
     bright_(cfg.width * cfg.height * (cfg.colour ? 3 : 1), 0.0f) {
@@ -494,25 +527,21 @@ Screen::Screen(const ScreenConfig &cfg) :
   // Yoke shear: the beam steps (field_hz / line_hz) of a field per line, i.e.
   // this many output rows — the amount to un-creep within each line.
   yoke_tilt_rows_ = static_cast<double>(cfg_.height) * cfg_.field_hz / cfg_.nominal_line_hz;
-  // Splat the beam spot out to 2.5 sigma. The spot centre sits at a sub-pixel row
-  // that shifts line to line, so tabulate the normalised weights per fraction bin.
-  splat_radius_ = cfg_.beam_sigma_rows > 0.0 ? static_cast<std::size_t>(std::ceil(2.5 * cfg_.beam_sigma_rows)) : 0;
+  // The beam spot is a round 2-D Gaussian, splatted out to 2.5 sigma on each axis
+  // as a separable pair of 1-D kernels (vertical over rows, horizontal over
+  // columns). The vertical fills the gaps between scanlines; the horizontal gives
+  // the beam a real width too, so a smooth spot reconstructs the line instead of a
+  // bare point splitting its charge across two columns (which leaves a faint
+  // sampling-beat stripe). The horizontal sigma defaults to the vertical, so the
+  // spot is round unless beam_sigma_cols is set. The weights depend only on the
+  // beam centre's sub-pixel fraction, so each axis tabulates per fraction bin.
+  const double sigma_cols = cfg_.beam_sigma_cols < 0.0 ? cfg_.beam_sigma_rows : cfg_.beam_sigma_cols;
+  splat_radius_ = splat_radius_for(cfg_.beam_sigma_rows);
+  splat_radius_x_ = splat_radius_for(sigma_cols);
   gauss_stride_ = 2 * splat_radius_ + 1;
-  gauss_lut_.assign(kGaussBins * gauss_stride_, 0.0);
-  const double sigma2 = cfg_.beam_sigma_rows * cfg_.beam_sigma_rows;
-  for (std::size_t bin = 0; bin < kGaussBins; ++bin) {
-    const double frac = (static_cast<double>(bin) + 0.5) / static_cast<double>(kGaussBins);
-    double *row = &gauss_lut_[bin * gauss_stride_];
-    double sum = 0.0;
-    for (std::size_t k = 0; k < gauss_stride_; ++k) {
-      const double d = static_cast<double>(k) - static_cast<double>(splat_radius_) + 0.5 - frac;
-      row[k] = sigma2 > 0.0 ? std::exp(-0.5 * d * d / sigma2) : 1.0;
-      sum += row[k];
-    }
-    const double inv = sum > 0.0 ? 1.0 / sum : 0.0;
-    for (std::size_t k = 0; k < gauss_stride_; ++k)
-      row[k] *= inv;
-  }
+  gauss_stride_x_ = 2 * splat_radius_x_ + 1;
+  gauss_lut_ = gaussian_splat_lut(cfg_.beam_sigma_rows, splat_radius_, kGaussBins);
+  gauss_lut_x_ = gaussian_splat_lut(sigma_cols, splat_radius_x_, kGaussBins);
   // Gun gamma table: drive^gamma sampled over [0, kGunDriveMax], read with linear
   // interpolation. Linear at gamma 1.0, so leave the table empty and skip the pow.
   if (cfg_.gamma != 1.0) {
@@ -630,14 +659,16 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
       gun_rgb[2] = gun(drive + kBu * u);
     }
 
-    // Sub-pixel horizontal position: the beam sweeps continuously, so spread the
-    // deposit across the two columns it straddles. Without this, each sample dumps
-    // its whole charge into one integer column and the ~1.4 samples per output
-    // pixel beat into vertical stripes.
+    // Horizontal beam position. The spot has a real width, so the deposit spreads
+    // over the columns under the Gaussian, centred on the sub-pixel position; the
+    // normalised weights depend only on xf's fractional part, so look up the bin.
     const double xf = static_cast<double>(hbeam[i].h_phase) * static_cast<double>(cfg_.width);
-    const auto x0 = static_cast<std::ptrdiff_t>(std::floor(xf));
-    const double fx = xf - static_cast<double>(x0);
-    const double col_w[2] = {1.0 - fx, fx};
+    const double xf_floor = std::floor(xf);
+    const auto base_col = static_cast<std::ptrdiff_t>(xf_floor) - static_cast<std::ptrdiff_t>(splat_radius_x_);
+    auto bin_x = static_cast<std::size_t>((xf - xf_floor) * static_cast<double>(kGaussBins));
+    if (bin_x >= kGaussBins)
+      bin_x = kGaussBins - 1;
+    const double *cweights = &gauss_lut_x_[bin_x * gauss_stride_x_];
 
     // Yoke shear: un-creep the vertical so the scanline is flat (see header).
     const auto yc = static_cast<double>(vbeam[i].v_phase) * static_cast<double>(cfg_.height) -
@@ -652,20 +683,24 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
       bin = kGaussBins - 1;
     const double *rweights = &gauss_lut_[bin * gauss_stride_];
 
-    // Splat into those rows × the two straddled columns, ADDING charge (the
-    // whole-buffer fade at the field boundary handles decay). The beam hits all
-    // channels of a pixel at the same instant.
+    // Splat the round spot (rows × columns), ADDING charge (the whole-buffer fade
+    // at the field boundary handles decay). The beam hits all channels of a pixel
+    // at the same instant. Row and column weights each sum to 1, so the separable
+    // product conserves the sample's total deposited charge.
+    // Clip the column span to the frame once (base_col and the stride don't change
+    // per row), so the inner loop is branchless over the ~49-cell spot.
+    const auto width = static_cast<std::ptrdiff_t>(cfg_.width);
+    const std::ptrdiff_t j_lo = std::max<std::ptrdiff_t>(0, -base_col);
+    const std::ptrdiff_t j_hi = std::min(static_cast<std::ptrdiff_t>(gauss_stride_x_), width - base_col);
     for (std::size_t k = 0; k < gauss_stride_; ++k) {
       const std::ptrdiff_t row = base + static_cast<std::ptrdiff_t>(k);
       if (row < 0 || row >= static_cast<std::ptrdiff_t>(cfg_.height))
         continue;
       const double rw = rweights[k];
-      for (std::size_t cc = 0; cc < 2; ++cc) {
-        const std::ptrdiff_t col = x0 + static_cast<std::ptrdiff_t>(cc);
-        if (col < 0 || col >= static_cast<std::ptrdiff_t>(cfg_.width))
-          continue;
-        const auto pixel = static_cast<std::size_t>(row) * cfg_.width + static_cast<std::size_t>(col);
-        const auto w = static_cast<float>(rw * col_w[cc]);
+      const auto row_base = static_cast<std::size_t>(row) * cfg_.width;
+      for (std::ptrdiff_t j = j_lo; j < j_hi; ++j) {
+        const auto pixel = row_base + static_cast<std::size_t>(base_col + j);
+        const auto w = static_cast<float>(rw * cweights[j]);
         // channels_ is 1 or 3; spell both out so the guns stay in registers and
         // the RGB triple isn't a variable-trip loop.
         float *cell = &bright_[pixel * channels_];
@@ -719,6 +754,7 @@ Decoder::Decoder(const DecoderConfig &cfg) :
         .sample_rate_hz = cfg.sample_rate_hz,
         .persistence_fields = cfg.persistence_fields,
         .beam_sigma_rows = cfg.beam_sigma_rows,
+        .beam_sigma_cols = cfg.beam_sigma_cols,
         .gamma = cfg.gamma,
         .colour = cfg.colour,
         .saturation = cfg.saturation,
