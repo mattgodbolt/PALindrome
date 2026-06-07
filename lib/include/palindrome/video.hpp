@@ -444,8 +444,9 @@ private:
   // second term cancels the in-line vertical creep, so a scanline traces flat
   // instead of smearing into a diagonal. yoke_tilt_rows_ is the rows the beam
   // steps per line (from the nominal scan geometry, like a real fixed yoke).
-  // Each sample is then splatted vertically with a Gaussian spot centred on that
-  // sheared row, filling the gaps between scanlines.
+  // Each sample is then splatted with a round 2-D Gaussian spot centred on that
+  // sheared sub-pixel position, filling the gaps between scanlines (vertically)
+  // and reconstructing along the line (horizontally).
   double yoke_tilt_rows_ = 0.0; // vertical rows the beam advances per line
   std::size_t splat_radius_ = 0; // Gaussian half-width in rows
   std::size_t splat_radius_x_ = 0; // Gaussian half-width in columns

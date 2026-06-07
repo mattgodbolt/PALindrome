@@ -687,16 +687,19 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // at the field boundary handles decay). The beam hits all channels of a pixel
     // at the same instant. Row and column weights each sum to 1, so the separable
     // product conserves the sample's total deposited charge.
+    // Clip the column span to the frame once (base_col and the stride don't change
+    // per row), so the inner loop is branchless over the ~49-cell spot.
+    const auto width = static_cast<std::ptrdiff_t>(cfg_.width);
+    const std::ptrdiff_t j_lo = std::max<std::ptrdiff_t>(0, -base_col);
+    const std::ptrdiff_t j_hi = std::min(static_cast<std::ptrdiff_t>(gauss_stride_x_), width - base_col);
     for (std::size_t k = 0; k < gauss_stride_; ++k) {
       const std::ptrdiff_t row = base + static_cast<std::ptrdiff_t>(k);
       if (row < 0 || row >= static_cast<std::ptrdiff_t>(cfg_.height))
         continue;
       const double rw = rweights[k];
-      for (std::size_t j = 0; j < gauss_stride_x_; ++j) {
-        const std::ptrdiff_t col = base_col + static_cast<std::ptrdiff_t>(j);
-        if (col < 0 || col >= static_cast<std::ptrdiff_t>(cfg_.width))
-          continue;
-        const auto pixel = static_cast<std::size_t>(row) * cfg_.width + static_cast<std::size_t>(col);
+      const auto row_base = static_cast<std::size_t>(row) * cfg_.width;
+      for (std::ptrdiff_t j = j_lo; j < j_hi; ++j) {
+        const auto pixel = row_base + static_cast<std::size_t>(base_col + j);
         const auto w = static_cast<float>(rw * cweights[j]);
         // channels_ is 1 or 3; spell both out so the guns stay in registers and
         // the RGB triple isn't a variable-trip loop.
