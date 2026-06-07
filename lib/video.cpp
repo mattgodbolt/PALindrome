@@ -295,6 +295,11 @@ ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
     throw std::invalid_argument{"ChromaDecoder: subcarrier_hz out of range"};
   if (!(cfg_.burst_gate_lo >= 0.0 && cfg_.burst_gate_lo < cfg_.burst_gate_hi && cfg_.burst_gate_hi < 1.0))
     throw std::invalid_argument{"ChromaDecoder: burst gate must be 0 <= lo < hi < 1"};
+  // Odd taps give linear phase and an integer group delay; the luma-notch length
+  // (bandpass + demod - 1) and the colour registration (group_delay_samples) both
+  // assume it, so luma and chroma stay co-registered.
+  if (cfg_.bandpass_taps % 2 == 0 || cfg_.demod_lp_taps % 2 == 0)
+    throw std::invalid_argument{"ChromaDecoder: bandpass_taps and demod_lp_taps must be odd"};
   nco_omega_ = cfg_.subcarrier_hz / cfg_.sample_rate_hz;
   nco_step_ = std::polar(1.0, kTwoPi * nco_omega_);
   // The comb delay is one line; size the ring for the longest line we expect.

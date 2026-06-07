@@ -274,12 +274,14 @@ public:
   [[nodiscard]] double burst_amplitude() const noexcept { return burst_amp_; }
   [[nodiscard]] double burst_swing_deg() const noexcept { return swing_deg_; }
 
-  // Group delay of the chroma/luma rails in samples (band-pass + demod low-pass;
-  // the luma notch is sized to match). The picture comes out this many samples
-  // behind the sync-locked timing rails, so the renderer shifts it back to
-  // register colour with mono — the job of a real set's luminance delay line.
+  // Group delay of the chroma/luma rails in samples. The luma notch is built with
+  // (bandpass_taps + demod_lp_taps - 1) taps, so its delay — and the cascaded
+  // band-pass + demod low-pass on the chroma side — is (taps - 1)/2. The picture
+  // comes out this many samples behind the sync-locked timing rails, so the
+  // renderer shifts it back to register colour with mono — the job of a real
+  // set's luminance delay line. (Taps are required odd, so this is exact.)
   [[nodiscard]] std::size_t group_delay_samples() const noexcept {
-    return (cfg_.bandpass_taps - 1) / 2 + (cfg_.demod_lp_taps - 1) / 2;
+    return (cfg_.bandpass_taps + cfg_.demod_lp_taps - 2) / 2;
   }
 
 private:
@@ -526,9 +528,11 @@ struct DecoderConfig {
   double saturation = 1.0;
   double contrast = 1.0; // readout white point (see ScreenConfig::contrast)
   double h_blank = 0.16; // retrace blanking end, h_phase (see ScreenConfig::h_blank)
-  // Chroma horizontal registration trim, in samples, added to the auto group-delay
-  // compensation. 0 lands colour on top of mono; non-zero deliberately mis-aligns
-  // it (a mistuned luminance delay line). Colour only.
+  // Colour-picture horizontal registration trim, in samples, added to the auto
+  // group-delay compensation. 0 lands the whole colour picture (luma + chroma
+  // together) on top of mono; non-zero slides it sideways off the mono image.
+  // (This moves the picture as a whole, not chroma relative to luma — it is not a
+  // Y/C-fringing knob.) Colour only.
   double cd_offset_samples = 0.0;
   ChromaDecoderConfig chroma{}; // sample_rate_hz filled in at construction
 };

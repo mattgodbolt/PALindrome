@@ -65,9 +65,9 @@ KNOBS = [
               "monochrome; too high clips the guns and washes out luma detail into flat colour. ~0.2."),
     dict(name="cd_offset", flag="--cd-offset", label="Colour registration (samples)",
          min=-40.0, max=40.0, step=1.0, default=0.0,
-         help="Horizontal trim of the colour picture, in samples. The chroma path's group delay is auto-compensated "
-              "so 0 lands colour exactly on the mono image; move it to deliberately mis-register colour (a mistuned "
-              "luminance delay line — colour slides off the picture)."),
+         help="Horizontal trim of the whole colour picture (luma + chroma together), in samples. The chroma path's "
+              "group delay is auto-compensated so 0 lands colour exactly on the mono image; move it to slide the "
+              "colour picture sideways off the mono image."),
     dict(name="contrast", flag="--contrast", label="Contrast",
          min=0.4, max=2.0, step=0.05, default=0.85,
          help="Readout white point as a fraction of the AGC-tracked peak luma (the contrast pot). 1.0 puts tracked "
