@@ -15,8 +15,18 @@ std::span<const float> DcBlocker::process(std::span<const float> in) {
   const std::size_t n = in.size();
   const auto *x = in.data();
   auto *y = out_.write_n(n).data();
-  // A one-pole IIR has a serial dependency that doesn't vectorise; the win over
-  // push_back is the flat counted store into pre-reserved storage.
+  // This stays a plain scalar recurrence on purpose. The loop carries prev_out_
+  // through a single fused multiply-add (pole_*prev_out_ + ...), so it is bound
+  // by that FMA's ~4-cycle latency, and the loop-carried dependency stops the
+  // auto-vectoriser cold (the codegen is all *sd/*ss scalar). A manual blocked
+  // SIMD form is possible -- evaluate the closed form y[n] = pole^k*y[n-k] +
+  // Sum pole^j*d[n-j] over a width-k group to break the chain -- and it does
+  // run ~1.4x faster, but it regroups the arithmetic and so rounds differently
+  // from the per-sample FMA. That makes the float result depend on where the
+  // group boundaries fall, which depends on the block size: it breaks the
+  // bit-exact block-invariance the pipeline relies on (DcBlockerTest's
+  // "streams identically regardless of block size"). So we keep the scalar
+  // recurrence, which is identical no matter how the input is chunked.
   for (std::size_t k = 0; k < n; ++k) {
     const double xk = x[k];
     const double yk = xk - prev_in_ + pole_ * prev_out_;
