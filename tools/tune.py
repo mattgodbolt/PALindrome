@@ -44,15 +44,15 @@ KNOBS = [
          help="A separate narrow low-pass on the copy of the signal used only for sync detection — keeps chroma and "
               "noise from chattering the sync slicer. Affects lock stability, not the picture itself."),
     dict(name="persistence", flag="--persistence", label="Phosphor persistence (fields)",
-         min=0.3, max=6.0, step=0.1, default=0.9,
+         min=0.3, max=6.0, step=0.1, default=1.6,
          help="How long the phosphor glows, in field periods (~20 ms each). Higher blends more fields together "
               "(smoother, averages noise, but smears motion); lower is sharper but flickers. ~1 ≈ roughly the last field."),
     dict(name="beam_sigma", flag="--beam-sigma", label="Beam sigma (rows)",
-         min=0.0, max=2.5, step=0.05, default=1.2,
+         min=0.0, max=2.5, step=0.05, default=0.8,
          help="Vertical size of the electron-beam spot, in output rows. Bigger fills the gaps between scanlines "
               "(softer); smaller gives crisp, visible scanlines (sharper but gappy). 0 = a single-pixel hit."),
     dict(name="beam_sigma_x", flag="--beam-sigma-x", label="Beam sigma (cols)",
-         min=0.0, max=2.5, step=0.05, default=1.2,
+         min=0.0, max=2.5, step=0.05, default=0.8,
          help="Horizontal size of the beam spot, in output columns. Smaller is sharper horizontally; too small "
               "and the sampling beat shows as faint vertical stripes. Match it to the row sigma for a round spot."),
     dict(name="gamma", flag="--gamma", label="Gun gamma",
