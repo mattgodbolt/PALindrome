@@ -1,5 +1,7 @@
 #include "palindrome/video.hpp"
 
+#include "palindrome/cmul.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -338,7 +340,7 @@ void ChromaDecoder::finalize_line() {
     return;
   const double phi = std::atan2(bs, bc);
 
-  // APC: a slow EMA of the burst phasor locks the reference onto the −U axis. The
+  // APC: a slow EMA of the burst phasor locks the reference onto the -U axis. The
   // ±45° swing alternates line to line, so it averages out and the EMA tracks the
   // steady LO-vs-subcarrier offset (and any slow source drift), like a real APC.
   apc_phasor_ = (1.0 - kApc) * apc_phasor_ + kApc * std::complex<double>{bc, bs};
@@ -363,8 +365,8 @@ void ChromaDecoder::finalize_line() {
   v_flip_ = (parity_ == polarity_) ? 1.0 : -1.0;
   swing_deg_ = std::abs(swing) * 180.0 / std::numbers::pi;
 
-  // De-rotate by π − psi_axis so the −U axis lands on the negative-real axis;
-  // U = −Re, V = Im (switch-corrected by v_flip_) then follow in process().
+  // De-rotate by π - psi_axis so the -U axis lands on the negative-real axis;
+  // U = -Re, V = Im (switch-corrected by v_flip_) then follow in process().
   const double psi = std::numbers::pi - psi_axis;
   psi_cos_ = std::cos(psi);
   psi_sin_ = std::sin(psi);
@@ -384,7 +386,7 @@ std::span<const ChromaSample> ChromaDecoder::process(
     const double c = static_cast<double>(chroma[k]);
     mu[k] = static_cast<float>(c * nco_phasor_.real());
     mv[k] = static_cast<float>(c * nco_phasor_.imag());
-    nco_phasor_ *= nco_step_;
+    nco_phasor_ = dsp::cmul(nco_phasor_, nco_step_);
     if (++since_renorm_ >= 1024) {
       nco_phasor_ /= std::abs(nco_phasor_);
       since_renorm_ = 0;
@@ -430,7 +432,7 @@ std::span<const ChromaSample> ChromaDecoder::process(
     in_gate_prev_ = in_gate;
     ++sample_index_;
 
-    // R(ψ): U = cosψ·rawU − sinψ·rawV; V_mod = sinψ·rawU + cosψ·rawV. V flips on
+    // R(ψ): U = cosψ·rawU - sinψ·rawV; V_mod = sinψ·rawU + cosψ·rawV. V flips on
     // PAL-style lines to recover transmitted V.
     const double scale = burst_amp_ > 1e-9 ? 1.0 / burst_amp_ : 0.0;
     float u = static_cast<float>((psi_cos_ * i - psi_sin_ * q) * scale);
@@ -470,22 +472,27 @@ namespace {
 // offset from the splat's base cell. sigma 0 (radius 0) degenerates to a single
 // unit weight (a bare point). The deposit multiplies a row weight by a column
 // weight for the separable 2-D spot.
-[[nodiscard]] std::vector<double> gaussian_splat_lut(double sigma, std::size_t radius, std::size_t bins) {
+// Build the per-fraction-bin splat kernels: one row per sub-pixel phase, the
+// cells across that row. Computed and normalised to unit sum in double for
+// accuracy, then stored as float — a normalised splat weight in [0, 1] has
+// precision to spare, and the deposit multiplies in float anyway.
+[[nodiscard]] std::vector<float> gaussian_splat_lut(double sigma, std::size_t radius, std::size_t bins) {
   const std::size_t stride = 2 * radius + 1;
   const double sigma2 = sigma * sigma;
-  std::vector<double> lut(bins * stride, 0.0);
+  std::vector<float> lut(bins * stride, 0.0f);
+  std::vector<double> kernel(stride); // scratch, normalised before narrowing to float
   for (std::size_t bin = 0; bin < bins; ++bin) {
     const double frac = (static_cast<double>(bin) + 0.5) / static_cast<double>(bins);
-    double *w = &lut[bin * stride];
     double sum = 0.0;
     for (std::size_t k = 0; k < stride; ++k) {
       const double d = static_cast<double>(k) - static_cast<double>(radius) + 0.5 - frac;
-      w[k] = sigma2 > 0.0 ? std::exp(-0.5 * d * d / sigma2) : 1.0;
-      sum += w[k];
+      kernel[k] = sigma2 > 0.0 ? std::exp(-0.5 * d * d / sigma2) : 1.0;
+      sum += kernel[k];
     }
     const double inv = sum > 0.0 ? 1.0 / sum : 0.0;
+    float *w = &lut[bin * stride];
     for (std::size_t k = 0; k < stride; ++k)
-      w[k] *= inv;
+      w[k] = static_cast<float>(kernel[k] * inv);
   }
   return lut;
 }
@@ -542,11 +549,11 @@ Screen::Screen(const ScreenConfig &cfg) :
   // spot is round unless beam_sigma_cols is set. The weights depend only on the
   // beam centre's sub-pixel fraction, so each axis tabulates per fraction bin.
   const double sigma_cols = cfg_.beam_sigma_cols < 0.0 ? cfg_.beam_sigma_rows : cfg_.beam_sigma_cols;
-  splat_radius_ = splat_radius_for(cfg_.beam_sigma_rows);
+  splat_radius_y_ = splat_radius_for(cfg_.beam_sigma_rows);
   splat_radius_x_ = splat_radius_for(sigma_cols);
-  gauss_stride_ = 2 * splat_radius_ + 1;
+  gauss_stride_y_ = 2 * splat_radius_y_ + 1;
   gauss_stride_x_ = 2 * splat_radius_x_ + 1;
-  gauss_lut_ = gaussian_splat_lut(cfg_.beam_sigma_rows, splat_radius_, kGaussBins);
+  gauss_lut_y_ = gaussian_splat_lut(cfg_.beam_sigma_rows, splat_radius_y_, kGaussBins);
   gauss_lut_x_ = gaussian_splat_lut(sigma_cols, splat_radius_x_, kGaussBins);
   // Gun gamma table: drive^gamma sampled over [0, kGunDriveMax], read with linear
   // interpolation. Linear at gamma 1.0, so leave the table empty and skip the pow.
@@ -603,8 +610,8 @@ float Screen::drive_of(float luma_f, float h_phase) {
 
 namespace {
 // BT.601 colour-difference -> RGB, in gun-drive space (luma drive is the Y term).
-// These match the TDA3561A demodulator ratios: (B−Y)/(R−Y) = kBu/kRv = 1.78, and
-// the (G−Y) axis within the datasheet's tolerance (see docs/TDA3561A.md).
+// These match the TDA3561A demodulator ratios: (B-Y)/(R-Y) = kBu/kRv = 1.78, and
+// the (G-Y) axis within the datasheet's tolerance (see docs/TDA3561A.md).
 constexpr double kRv = 1.140;
 constexpr double kGu = -0.395;
 constexpr double kGv = -0.581;
@@ -676,7 +683,7 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     auto bin_x = static_cast<std::size_t>((xf - xf_floor) * static_cast<double>(kGaussBins));
     if (bin_x >= kGaussBins)
       bin_x = kGaussBins - 1;
-    const double *cweights = &gauss_lut_x_[bin_x * gauss_stride_x_];
+    const auto *cweights = &gauss_lut_x_[bin_x * gauss_stride_x_];
 
     // Yoke shear: un-creep the vertical so the scanline is flat (see header).
     const auto yc = static_cast<double>(vbeam[i].v_phase) * static_cast<double>(cfg_.height) -
@@ -685,11 +692,11 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // Gaussian beam spot, centred on the sheared sub-pixel row. The normalised
     // weights depend only on yc's fractional part, so look up the matching bin.
     const double yc_floor = std::floor(yc);
-    const auto base = static_cast<std::ptrdiff_t>(yc_floor) - static_cast<std::ptrdiff_t>(splat_radius_);
+    const auto base = static_cast<std::ptrdiff_t>(yc_floor) - static_cast<std::ptrdiff_t>(splat_radius_y_);
     auto bin = static_cast<std::size_t>((yc - yc_floor) * static_cast<double>(kGaussBins));
     if (bin >= kGaussBins)
       bin = kGaussBins - 1;
-    const double *rweights = &gauss_lut_[bin * gauss_stride_];
+    const auto *rweights = &gauss_lut_y_[bin * gauss_stride_y_];
 
     // Splat the round spot (rows × columns), ADDING charge (the whole-buffer fade
     // at the field boundary handles decay). The beam hits all channels of a pixel
@@ -700,15 +707,15 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     const auto width = static_cast<std::ptrdiff_t>(cfg_.width);
     const std::ptrdiff_t j_lo = std::max<std::ptrdiff_t>(0, -base_col);
     const std::ptrdiff_t j_hi = std::min(static_cast<std::ptrdiff_t>(gauss_stride_x_), width - base_col);
-    for (std::size_t k = 0; k < gauss_stride_; ++k) {
+    for (std::size_t k = 0; k < gauss_stride_y_; ++k) {
       const std::ptrdiff_t row = base + static_cast<std::ptrdiff_t>(k);
       if (row < 0 || row >= static_cast<std::ptrdiff_t>(cfg_.height))
         continue;
-      const double rw = rweights[k];
+      const auto rw = rweights[k];
       const auto row_base = static_cast<std::size_t>(row) * cfg_.width;
       for (std::ptrdiff_t j = j_lo; j < j_hi; ++j) {
         const auto pixel = row_base + static_cast<std::size_t>(base_col + j);
-        const auto w = static_cast<float>(rw * cweights[j]);
+        const auto w = rw * cweights[j];
         // channels_ is 1 or 3; spell both out so the guns stay in registers and
         // the RGB triple isn't a variable-trip loop.
         float *cell = &bright_[pixel * channels_];

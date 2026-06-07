@@ -275,7 +275,7 @@ public:
 
   // Diagnostics: the crystal frequency (Hz), the smoothed burst amplitude (the
   // ACC level), and this line's burst swing in degrees (~45° once the colour is
-  // locked — the ±45° −U±V swinging burst).
+  // locked — the ±45° -U±V swinging burst).
   [[nodiscard]] double subcarrier_hz() const noexcept { return nco_omega_ * cfg_.sample_rate_hz; }
   [[nodiscard]] double burst_amplitude() const noexcept { return burst_amp_; }
   [[nodiscard]] double burst_swing_deg() const noexcept { return swing_deg_; }
@@ -311,11 +311,11 @@ private:
   double burst_amp_ = 0.0; // ACC level = √2·|apc_phasor_| (the swing-averaged burst)
   double burst_ref_ = 0.0; // slow-decay peak burst level for the colour-killer
   double psi_cos_ = 1.0, psi_sin_ = 0.0; // this line's rotation R(ψ)
-  double v_flip_ = 1.0; // +1 on NTSC-style lines, −1 on PAL-style (V inversion)
+  double v_flip_ = 1.0; // +1 on NTSC-style lines, -1 on PAL-style (V inversion)
 
   // Automatic phase control: a slow complex EMA of the back-porch burst locks the
-  // reference onto the −U axis. The burst swings ±45° about that axis line to line
-  // (the −U±V swinging burst), so the swing averages out of this loop, exactly as
+  // reference onto the -U axis. The burst swings ±45° about that axis line to line
+  // (the -U±V swinging burst), so the swing averages out of this loop, exactly as
   // a real set's APC averages it to lock its crystal phase. The rotation derives
   // from this axis (held in psi_cos_/sin_); its magnitude is the ACC (burst_amp_).
   std::complex<double> apc_phasor_{0.0, 0.0};
@@ -470,7 +470,7 @@ private:
   // and reconstructing along the line (horizontally).
   double yoke_tilt_rows_ = 0.0; // vertical rows the beam advances per line
   double picture_h_offset_ = 0.0; // h_phase shift to register the picture rail (see ScreenConfig)
-  std::size_t splat_radius_ = 0; // Gaussian half-width in rows
+  std::size_t splat_radius_y_ = 0; // Gaussian half-width in rows
   std::size_t splat_radius_x_ = 0; // Gaussian half-width in columns
 
   // The beam spot is a separable 2-D Gaussian: a vertical kernel over rows and a
@@ -478,10 +478,10 @@ private:
   // the spot centre's sub-pixel fraction along that axis, so each is tabulated per
   // fraction bin (a [bin][cell] table) instead of calling exp() per sample.
   static constexpr std::size_t kGaussBins = 4096;
-  std::size_t gauss_stride_ = 1; // 2*splat_radius_+1 (rows)
+  std::size_t gauss_stride_y_ = 1; // 2*splat_radius_y_+1 (rows)
   std::size_t gauss_stride_x_ = 1; // 2*splat_radius_x_+1 (columns)
-  std::vector<double> gauss_lut_; // kGaussBins * gauss_stride_, normalised (vertical)
-  std::vector<double> gauss_lut_x_; // kGaussBins * gauss_stride_x_, normalised (horizontal)
+  std::vector<float> gauss_lut_y_; // kGaussBins * gauss_stride_y_, normalised (vertical)
+  std::vector<float> gauss_lut_x_; // kGaussBins * gauss_stride_x_, normalised (horizontal)
 
   // The electron-gun curve drive^gamma is the last un-LUT'd per-sample
   // transcendental; tabulate it over the drive domain (built once for cfg_.gamma)

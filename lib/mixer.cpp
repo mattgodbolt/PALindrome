@@ -1,5 +1,7 @@
 #include "palindrome/mixer.hpp"
 
+#include "palindrome/cmul.hpp"
+
 #include <cmath>
 #include <numbers>
 
@@ -20,7 +22,7 @@ Mixer::Mixer(double carrier_hz, double sample_rate_hz) {
   for (std::size_t l = 0; l < kLanes; ++l) {
     rot_re_[l] = static_cast<float>(rot.real());
     rot_im_[l] = static_cast<float>(rot.imag());
-    rot *= step_;
+    rot = cmul(rot, step_);
   }
   step_block_ = rot; // step^kLanes, having stepped kLanes times above
 }
@@ -57,7 +59,7 @@ Mixer::Iq Mixer::process(std::span<const float> in) {
   std::size_t k = 0;
   for (; k + kLanes <= n; k += kLanes) {
     mix_group(x + k, ip + k, qp + k, rre, rim, static_cast<float>(base_.real()), static_cast<float>(base_.imag()));
-    base_ *= step_block_;
+    base_ = cmul(base_, step_block_);
     if (++groups_since_renorm_ >= renorm_groups) {
       base_ /= std::abs(base_);
       groups_since_renorm_ = 0;
@@ -73,7 +75,7 @@ Mixer::Iq Mixer::process(std::span<const float> in) {
   for (std::size_t l = 0; l < r; ++l) {
     ip[k + l] = x[k + l] * (br * rre[l] - bi * rim[l]);
     qp[k + l] = x[k + l] * (br * rim[l] + bi * rre[l]);
-    base_ *= step_;
+    base_ = cmul(base_, step_);
   }
 
   return {i_out_.view(), q_out_.view()};

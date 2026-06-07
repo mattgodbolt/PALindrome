@@ -1,6 +1,7 @@
 #include "palindrome/demod.hpp"
 
 #include "palindrome/biquad.hpp"
+#include "palindrome/cmul.hpp"
 #include "palindrome/dc_blocker.hpp"
 #include "palindrome/restrict_ptr.hpp"
 
@@ -96,7 +97,7 @@ std::span<const float> ComplexAmEnvelope::process(std::span<const std::complex<f
     const std::complex<float> m = std::complex<float>{static_cast<float>(hp.real()), static_cast<float>(hp.imag())} * p;
     mi[k] = m.real();
     mq[k] = m.imag();
-    phasor_ *= step_;
+    phasor_ = dsp::cmul(phasor_, step_);
     if (++since_renorm_ >= 1024) {
       phasor_ /= std::abs(phasor_); // keep |phasor_| == 1 against accumulated drift
       since_renorm_ = 0;
