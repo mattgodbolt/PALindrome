@@ -30,6 +30,12 @@
 // sample-aligned and the joins are plain zips.
 namespace palindrome::video {
 
+// PAL-B/G nominal timing (625 lines, 2:1 interlace at 50 fields/s). These are
+// fixed facts of the standard, not tuning knobs — every config that needs a
+// nominal line or field rate defaults from these.
+inline constexpr double kNominalLineHz = 15625.0; // 625 lines × 25 frames/s
+inline constexpr double kNominalFieldHz = 50.0;
+
 // === Sync separator ===
 
 // Output of the sync separator: just the sliced one-bit sync signal — true
@@ -87,7 +93,7 @@ struct BeamSample {
 
 struct HorizontalSweepConfig {
   double sample_rate_hz;
-  double nominal_line_hz = 15625.0;
+  double nominal_line_hz = kNominalLineHz;
   // Pulse-width window the AFC accepts, as fractions of a line. Line sync is
   // ~4.7 us (~0.073 line); equalising pulses ~2.35 us (~0.037); broad pulses
   // ~27 us (~0.43). The (0.05, 0.15) window passes line sync and rejects both
@@ -157,8 +163,8 @@ struct VSample {
 
 struct VerticalSyncConfig {
   double sample_rate_hz;
-  double nominal_field_hz = 50.0;
-  double nominal_line_hz = 15625.0; // sets the integrator time constant in lines
+  double nominal_field_hz = kNominalFieldHz;
+  double nominal_line_hz = kNominalLineHz; // sets the integrator time constant in lines
   // The detector low-passes the sync bit toward its duty cycle: ~7% on normal
   // lines (short sync), ~84% during the broad-pulse train. Slicing at vsync_level
   // detects the vertical interval. The time constant averages over roughly
@@ -345,8 +351,8 @@ struct ScreenConfig {
   std::size_t width;
   std::size_t height;
   double sample_rate_hz;
-  double field_hz = 50.0;
-  double nominal_line_hz = 15625.0; // sets the deflection-yoke shear (see below)
+  double field_hz = kNominalFieldHz;
+  double nominal_line_hz = kNominalLineHz; // sets the deflection-yoke shear (see below)
   // Phosphor persistence as a multiple of the field period. The beam deposits
   // brightness where it lands; each pixel then decays exponentially with this
   // time constant. ~1 field means roughly the last two fields survive — so an

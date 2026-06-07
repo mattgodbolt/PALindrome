@@ -52,7 +52,6 @@ std::span<const float> AmEnvelope::process(std::span<const float> in) {
   // here (the I/Q are bounded), and plain sqrt of the sum of squares vectorises
   // into an elementwise store.
   const std::size_t n = filtered_i.size();
-  out_.reserve(n);
   envelope_magnitude(filtered_i.data(), filtered_q.data(), out_.write_n(n).data(), n);
   return out_.view();
 }
@@ -107,7 +106,6 @@ std::span<const float> ComplexAmEnvelope::process(std::span<const std::complex<f
   const auto filtered_i = i_filter_.process(mi);
   const auto filtered_q = q_filter_.process(mq);
   const std::size_t m = filtered_i.size();
-  out_.reserve(m);
   envelope_magnitude(filtered_i.data(), filtered_q.data(), out_.write_n(m).data(), m);
   return out_.view();
 }

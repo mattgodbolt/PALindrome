@@ -112,7 +112,7 @@ int SyncCommand::run() const {
 
   const double rate = es.rate_hz;
   const double us_per_sample = 1e6 / rate;
-  const double nominal_line_samples = rate / 15625.0;
+  const double nominal_line_samples = rate / video::kNominalLineHz;
 
   video::SyncSeparator separator{video::SyncSeparatorConfig{.sample_rate_hz = rate}};
   separator.prepare(env.size());
@@ -225,7 +225,7 @@ int SyncCommand::run() const {
   const double field_hz = vsync.omega() * rate;
   std::println("  vertical flywheel: locked {} fields, {:.2f} Hz ({:.1f} lines/field, {:+.2f}% from 50 Hz)",
       vsync.detected_fields(), field_hz, (1.0 / vsync.omega()) / nominal_line_samples,
-      100.0 * (field_hz - 50.0) / 50.0);
+      100.0 * (field_hz - video::kNominalFieldHz) / video::kNominalFieldHz);
 
   // Now run the sweep and report the lock it settled on.
   video::HorizontalSweep sweep{sweep_cfg};
@@ -235,7 +235,7 @@ int SyncCommand::run() const {
   std::println(
       "\nsweep: accepted {} edges, rejected {}, locked to {:.2f} Hz ({:.2f} samples/line, {:+.2f}% from nominal)",
       sweep.accepted_edges(), sweep.rejected_edges(), locked_hz, rate / locked_hz,
-      100.0 * (locked_hz - 15625.0) / 15625.0);
+      100.0 * (locked_hz - video::kNominalLineHz) / video::kNominalLineHz);
   return 0;
 }
 

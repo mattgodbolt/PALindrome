@@ -196,10 +196,9 @@ std::span<const float> Fir::process(std::span<const float> in) {
     return {};
 
   // Lay the carried tail and this block out contiguously, so each output is a
-  // modulo-free sliding dot product over `window_`. (reserve is a no-op once
-  // prepare() has run; only an unbudgeted block grows it.)
+  // modulo-free sliding dot product over `window_`. prepare() must have budgeted
+  // for the largest block; write_n throws on anything bigger.
   const auto carry = history_.size();
-  window_.reserve(carry + m);
   const auto window = window_.write_n(carry + m);
   std::ranges::copy(history_, window.begin());
   std::ranges::copy(in, window.begin() + static_cast<std::ptrdiff_t>(carry));
@@ -208,7 +207,6 @@ std::span<const float> Fir::process(std::span<const float> in) {
   // the block, then stride by the decimation factor. `phase_` carries whatever
   // skip is left over into the next block, so chunking can't shift the grid.
   const std::size_t outputs = (m > phase_) ? (m - phase_ + decimation_ - 1) / decimation_ : 0;
-  out_.reserve(outputs);
   auto *y = out_.write_n(outputs).data();
   const auto *taps = taps_.data();
   const auto *w = window.data();

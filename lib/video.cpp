@@ -38,7 +38,6 @@ void SyncSeparator::prepare(std::size_t max_in) { out_.reserve(max_in); }
 
 std::span<const SyncSample> SyncSeparator::process(std::span<const float> envelope) {
   const std::size_t n = envelope.size();
-  out_.reserve(n);
   const auto dst = out_.write_n(n);
 
   // Seed peak/floor from the first sample we ever see, so the slice level is
@@ -102,7 +101,6 @@ void HorizontalSweep::prepare(std::size_t max_in) { out_.reserve(max_in); }
 
 std::span<const BeamSample> HorizontalSweep::process(std::span<const SyncSample> in) {
   const std::size_t n = in.size();
-  out_.reserve(n);
   const auto dst = out_.write_n(n);
 
   const double nominal_omega = cfg_.nominal_line_hz / cfg_.sample_rate_hz;
@@ -200,7 +198,6 @@ void VerticalSync::prepare(std::size_t max_in) { out_.reserve(max_in); }
 
 std::span<const VSample> VerticalSync::process(std::span<const SyncSample> in) {
   const std::size_t n = in.size();
-  out_.reserve(n);
   const auto dst = out_.write_n(n);
 
   const double nominal_omega = cfg_.nominal_field_hz / cfg_.sample_rate_hz;
@@ -303,7 +300,7 @@ ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
   nco_omega_ = cfg_.subcarrier_hz / cfg_.sample_rate_hz;
   nco_step_ = std::polar(1.0, kTwoPi * nco_omega_);
   // The comb delay is one line; size the ring for the longest line we expect.
-  const double nominal_line = cfg_.sample_rate_hz / 15625.0;
+  const double nominal_line = cfg_.sample_rate_hz / kNominalLineHz;
   line_len_ = static_cast<std::size_t>(std::lround(nominal_line));
   ring_cap_ = static_cast<std::size_t>(nominal_line * 1.5) + 2;
   u_ring_.assign(ring_cap_, 0.0f);

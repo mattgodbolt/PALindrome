@@ -64,6 +64,8 @@ std::vector<float> synth_colour_composite(std::size_t lines, std::size_t line_le
 std::vector<video::BeamSample> run_chunked(std::span<const float> env, std::size_t chunk) {
   video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate}};
   video::HorizontalSweep sweep{video::HorizontalSweepConfig{.sample_rate_hz = kRate}};
+  sep.prepare(chunk);
+  sweep.prepare(chunk);
   std::vector<video::BeamSample> out;
   for (std::size_t off = 0; off < env.size(); off += chunk) {
     const std::size_t n = std::min(chunk, env.size() - off);
@@ -97,16 +99,19 @@ TEST_CASE("Screen is block-invariant") {
 
   // Pre-compute the two timing rails once so the test isolates the Screen.
   video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate}};
+  sep.prepare(env.size());
   const std::span<const video::SyncSample> sync = sep.process(env);
   std::vector<video::SyncSample> sync_copy{sync.begin(), sync.end()};
 
   video::HorizontalSweep hsweep{video::HorizontalSweepConfig{.sample_rate_hz = kRate}};
+  hsweep.prepare(sync_copy.size());
   std::vector<video::BeamSample> hbeam;
   {
     const auto b = hsweep.process(sync_copy);
     hbeam.assign(b.begin(), b.end());
   }
   video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = kRate}};
+  vsync.prepare(sync_copy.size());
   std::vector<video::VSample> vbeam;
   {
     const auto v = vsync.process(sync_copy);
@@ -125,8 +130,9 @@ TEST_CASE("Screen is block-invariant") {
   const auto frame_whole = whole.snapshot();
 
   video::Screen chunked{cfg};
-  for (std::size_t off = 0; off < pic.size(); off += 257) {
-    const std::size_t n = std::min<std::size_t>(257, pic.size() - off);
+  constexpr std::size_t chunk = 257; // ragged blocks straddle line and field boundaries
+  for (std::size_t off = 0; off < pic.size(); off += chunk) {
+    const std::size_t n = std::min(chunk, pic.size() - off);
     chunked.process(std::span{pic}.subspan(off, n), std::span{hbeam}.subspan(off, n), std::span{vbeam}.subspan(off, n));
   }
   const auto frame_chunked = chunked.snapshot();
@@ -196,9 +202,11 @@ TEST_CASE("ChromaDecoder is block-invariant (the streaming guarantee)") {
 
   // Pre-compute the horizontal rail once; the chroma decoder joins it by index.
   video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate}};
+  sep.prepare(env.size());
   const auto sync = sep.process(env);
   std::vector<video::SyncSample> sync_copy{sync.begin(), sync.end()};
   video::HorizontalSweep hsweep{video::HorizontalSweepConfig{.sample_rate_hz = kRate}};
+  hsweep.prepare(sync_copy.size());
   std::vector<video::BeamSample> hbeam;
   {
     const auto b = hsweep.process(sync_copy);

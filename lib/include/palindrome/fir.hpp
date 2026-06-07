@@ -39,8 +39,8 @@ public:
   explicit Fir(std::vector<float> taps, std::size_t decimation = 1);
 
   // Budget internal storage for input blocks of up to `max_in` samples, so the
-  // streaming path never allocates. One-time setup; calling again only grows.
-  // process() also grows lazily, so this is an optimisation, not a requirement.
+  // streaming path never allocates. Required before process(): the hot path does
+  // not grow, so a block bigger than the budget throws (std::length_error).
   void prepare(std::size_t max_in);
 
   // Filter `in`, returning a view of one output sample per `decimation()` input

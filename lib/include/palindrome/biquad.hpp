@@ -16,8 +16,8 @@ public:
   //   y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
   Biquad(double b0, double b1, double b2, double a1, double a2);
 
-  // Budget internal storage for blocks of up to `max_in` samples (one-time;
-  // process() also grows lazily, so this is an optimisation, not a requirement).
+  // Budget internal storage for blocks of up to `max_in` samples. Required before
+  // process(): the hot path does not grow, so a bigger block throws.
   void prepare(std::size_t max_in);
 
   // Filter `in`, returning a view of one output sample per input sample. The

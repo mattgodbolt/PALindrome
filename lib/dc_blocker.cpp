@@ -13,7 +13,6 @@ void DcBlocker::prepare(std::size_t max_in) { out_.reserve(max_in); }
 
 std::span<const float> DcBlocker::process(std::span<const float> in) {
   const std::size_t n = in.size();
-  out_.reserve(n);
   const auto *x = in.data();
   auto *y = out_.write_n(n).data();
   // A one-pole IIR has a serial dependency that doesn't vectorise; the win over

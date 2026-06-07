@@ -44,6 +44,7 @@ TEST_CASE("AmEnvelope recovers the amplitude of an unmodulated carrier") {
   const auto x = am_signal(fs, carrier, 0.0, 0.0, amp, 5000);
 
   demod::AmEnvelope dut{fs, carrier, 10.0e3};
+  dut.prepare(x.size());
   const std::span<const float> out = dut.process(x);
 
   // After the filter settles, the envelope should sit at the carrier amplitude.
@@ -62,6 +63,7 @@ TEST_CASE("AmEnvelope recovers a modulating tone") {
 
   // Carrier well above cutoff so the one-pole rejects the 2*carrier image.
   demod::AmEnvelope dut{fs, carrier, 10.0e3};
+  dut.prepare(x.size());
   const std::span<const float> out = dut.process(x);
 
   // Over the settled tail the envelope should swing about `amp` with roughly
@@ -80,13 +82,15 @@ TEST_CASE("AmEnvelope streams identically regardless of block size") {
   const auto x = am_signal(fs, carrier, 1.0e3, 0.4, 0.7, 4096);
 
   demod::AmEnvelope whole_dut{fs, carrier, 15.0e3};
+  whole_dut.prepare(x.size());
   const std::span<const float> whole = whole_dut.process(x);
 
   std::vector<float> chunked;
   demod::AmEnvelope dut{fs, carrier, 15.0e3};
-  for (std::size_t off = 0; off < x.size(); off += 97) { // deliberately ragged blocks
-    const std::span<const float> piece =
-        dut.process(std::span{x}.subspan(off, std::min<std::size_t>(97, x.size() - off)));
+  constexpr std::size_t chunk = 97; // deliberately ragged blocks
+  dut.prepare(chunk);
+  for (std::size_t off = 0; off < x.size(); off += chunk) {
+    const std::span<const float> piece = dut.process(std::span{x}.subspan(off, std::min(chunk, x.size() - off)));
     chunked.insert(chunked.end(), piece.begin(), piece.end());
   }
 

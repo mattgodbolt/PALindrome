@@ -41,8 +41,8 @@ public:
   AmEnvelope(double sample_rate_hz, double carrier_hz, double cutoff_hz, std::size_t num_taps = kDefaultVisionTaps,
       dsp::Window window = dsp::Window::Hamming, std::size_t decimation = 1);
 
-  // Budget internal storage for blocks of up to `max_in` samples (one-time;
-  // process() also grows lazily, so this is an optimisation, not a requirement).
+  // Budget internal storage for blocks of up to `max_in` samples. Required before
+  // process(): the hot path does not grow, so a bigger block throws.
   void prepare(std::size_t max_in);
 
   // Demodulate `in`, returning a view of one output sample per `decimation()`
