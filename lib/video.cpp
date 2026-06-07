@@ -527,6 +527,10 @@ Screen::Screen(const ScreenConfig &cfg) :
   // Yoke shear: the beam steps (field_hz / line_hz) of a field per line, i.e.
   // this many output rows — the amount to un-creep within each line.
   yoke_tilt_rows_ = static_cast<double>(cfg_.height) * cfg_.field_hz / cfg_.nominal_line_hz;
+  // The picture rail lags the timing rails by picture_lag_samples; one sample is
+  // nominal_line_hz / sample_rate of a line in h_phase, so shift the picture back
+  // by that fraction to register it with the sweep.
+  picture_h_offset_ = cfg_.picture_lag_samples * cfg_.nominal_line_hz / cfg_.sample_rate_hz;
   // The beam spot is a round 2-D Gaussian, splatted out to 2.5 sigma on each axis
   // as a separable pair of 1-D kernels (vertical over rows, horizontal over
   // columns). The vertical fills the gaps between scanlines; the horizontal gives
@@ -662,7 +666,9 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // Horizontal beam position. The spot has a real width, so the deposit spreads
     // over the columns under the Gaussian, centred on the sub-pixel position; the
     // normalised weights depend only on xf's fractional part, so look up the bin.
-    const double xf = static_cast<double>(hbeam[i].h_phase) * static_cast<double>(cfg_.width);
+    // picture_h_offset_ shifts the picture back onto the sweep to register colour
+    // with mono (sync timing — blanking, yoke — still uses the raw h_phase).
+    const double xf = (static_cast<double>(hbeam[i].h_phase) - picture_h_offset_) * static_cast<double>(cfg_.width);
     const double xf_floor = std::floor(xf);
     const auto base_col = static_cast<std::ptrdiff_t>(xf_floor) - static_cast<std::ptrdiff_t>(splat_radius_x_);
     auto bin_x = static_cast<std::size_t>((xf - xf_floor) * static_cast<double>(kGaussBins));
@@ -759,7 +765,11 @@ Decoder::Decoder(const DecoderConfig &cfg) :
         .colour = cfg.colour,
         .saturation = cfg.saturation,
         .contrast = cfg.contrast,
-        .h_blank = cfg.h_blank}} {}
+        .h_blank = cfg.h_blank,
+        // Register the picture: in colour it lags by the chroma group delay, plus
+        // the user's trim. Mono is the raw envelope (no lag).
+        .picture_lag_samples =
+            cfg.colour ? static_cast<double>(chroma_.group_delay_samples()) + cfg.cd_offset_samples : 0.0}} {}
 
 void Decoder::prepare(std::size_t max_in) {
   sync_lp_.prepare(max_in);

@@ -274,6 +274,14 @@ public:
   [[nodiscard]] double burst_amplitude() const noexcept { return burst_amp_; }
   [[nodiscard]] double burst_swing_deg() const noexcept { return swing_deg_; }
 
+  // Group delay of the chroma/luma rails in samples (band-pass + demod low-pass;
+  // the luma notch is sized to match). The picture comes out this many samples
+  // behind the sync-locked timing rails, so the renderer shifts it back to
+  // register colour with mono — the job of a real set's luminance delay line.
+  [[nodiscard]] std::size_t group_delay_samples() const noexcept {
+    return (cfg_.bandpass_taps - 1) / 2 + (cfg_.demod_lp_taps - 1) / 2;
+  }
+
 private:
   void finalize_line(); // per-line burst measurement + class assignment at gate close
 
@@ -368,6 +376,11 @@ struct ScreenConfig {
   // keeps the flyback (and the burst) off the screen. h_phase = 0 is the sync
   // leading edge; active video starts after the back porch.
   double h_blank = 0.16;
+  // How many samples the picture rail lags the sync-locked timing rails (the
+  // chroma path's group delay, in colour). The screen shifts the picture back by
+  // this so colour registers with mono instead of sliding right — the luminance
+  // delay line, in reverse. 0 in mono (the picture is the raw envelope).
+  double picture_lag_samples = 0.0;
 };
 
 // The picture tube. A join sink fed three aligned rails — the picture (luma +
@@ -448,6 +461,7 @@ private:
   // sheared sub-pixel position, filling the gaps between scanlines (vertically)
   // and reconstructing along the line (horizontally).
   double yoke_tilt_rows_ = 0.0; // vertical rows the beam advances per line
+  double picture_h_offset_ = 0.0; // h_phase shift to register the picture rail (see ScreenConfig)
   std::size_t splat_radius_ = 0; // Gaussian half-width in rows
   std::size_t splat_radius_x_ = 0; // Gaussian half-width in columns
 
@@ -512,6 +526,10 @@ struct DecoderConfig {
   double saturation = 1.0;
   double contrast = 1.0; // readout white point (see ScreenConfig::contrast)
   double h_blank = 0.16; // retrace blanking end, h_phase (see ScreenConfig::h_blank)
+  // Chroma horizontal registration trim, in samples, added to the auto group-delay
+  // compensation. 0 lands colour on top of mono; non-zero deliberately mis-aligns
+  // it (a mistuned luminance delay line). Colour only.
+  double cd_offset_samples = 0.0;
   ChromaDecoderConfig chroma{}; // sample_rate_hz filled in at construction
 };
 
