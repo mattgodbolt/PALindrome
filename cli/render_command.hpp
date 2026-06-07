@@ -35,7 +35,6 @@ private:
   // Colour decode (PAL-D chroma channel). Off => a grey render.
   bool colour_{false};
   double saturation_{0.17}; // chroma gain (fraction of white reference)
-  double cd_offset_{0.0}; // colour horizontal registration trim, in samples
   double contrast_{0.85}; // readout white point (AGC-relative)
   double h_blank_{0.16}; // retrace blanking end, h_phase
   double subcarrier_{0.0}; // subcarrier crystal Hz; 0 => textbook 4.43361875 MHz
