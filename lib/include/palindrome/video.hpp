@@ -427,8 +427,11 @@ private:
   // the read instant from when it was last hit). That's physically what a CRT does
   // at any single moment — what a fast-shutter camera captures — but it shows the
   // beam-sweep band a human never sees, and it costs a second random-access array
-  // plus a per-deposit exp(). It lived here before this change; reach for git if
-  // that photographic look is ever wanted.
+  // plus a per-deposit exp(). To bring that "camera snapshot" look back (likely as
+  // a ScreenConfig mode selecting the deposit + snapshot path), the whole removed
+  // implementation — last_, sample_index_, the split decay LUTs, decay_for, and
+  // the fade-to-now in snapshot() — sits in the commit before "fade the phosphor
+  // per field, not per sample" (git log -- lib/video.cpp; show its parent).
   std::vector<float> bright_; // per-pixel-per-channel accumulated phosphor charge
   float field_decay_ = 1.0f; // whole-buffer multiply applied once per field
 
