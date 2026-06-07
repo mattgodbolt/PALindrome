@@ -378,10 +378,11 @@ struct ScreenConfig {
   // keeps the flyback (and the burst) off the screen. h_phase = 0 is the sync
   // leading edge; active video starts after the back porch.
   double h_blank = 0.16;
-  // How many samples the picture rail lags the sync-locked timing rails (the
-  // chroma path's group delay, in colour). The screen shifts the picture back by
-  // this so colour registers with mono instead of sliding right — the luminance
-  // delay line, in reverse. 0 in mono (the picture is the raw envelope).
+  // How many samples the picture rail lags the sync-locked timing rails: the
+  // chroma path's group delay plus the user's cd-offset trim (so it can be
+  // negative). The screen shifts the picture back by this so colour registers
+  // with mono instead of sliding right — the luminance delay line, in reverse.
+  // 0 in mono (the picture is the raw envelope, no lag and no trim).
   double picture_lag_samples = 0.0;
 };
 

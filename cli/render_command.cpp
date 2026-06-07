@@ -56,7 +56,8 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(colour_)["--colour"]["--color"]("Decode PAL colour (RGB)"))
           .add_argument(lyra::opt(saturation_, "x")["--saturation"]("Colour: chroma gain into the gun matrix"))
           .add_argument(lyra::opt(cd_offset_, "samples")["--cd-offset"](
-              "Colour: horizontal registration trim in samples (0 = aligned with mono; non-zero mis-registers)"))
+              "Colour: horizontal registration trim in samples (0 = aligned with mono; non-zero mis-registers). "
+              "Requires --colour; ignored in mono."))
           .add_argument(lyra::opt(contrast_, "x")["--contrast"]("Readout white point (AGC-relative; the contrast pot)"))
           .add_argument(lyra::opt(h_blank_, "x")["--h-blank"]("Retrace blanking end (h_phase; ~0.21 at 10 MS/s)"))
           .add_argument(
