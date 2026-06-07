@@ -383,9 +383,13 @@ std::span<const ChromaSample> ChromaDecoder::process(
   const auto mu = mix_u_.write_n(n);
   const auto mv = mix_v_.write_n(n);
   for (std::size_t k = 0; k < n; ++k) {
-    const double c = static_cast<double>(chroma[k]);
-    mu[k] = static_cast<float>(c * nco_phasor_.real());
-    mv[k] = static_cast<float>(c * nco_phasor_.imag());
+    // Snapshot the phasor down to float for the per-sample mix; it still advances
+    // in double (drift), but the product only needs float (see the precision rule
+    // in CLAUDE.md), as the AirSpy ComplexAmEnvelope mix already does.
+    const auto re = static_cast<float>(nco_phasor_.real());
+    const auto im = static_cast<float>(nco_phasor_.imag());
+    mu[k] = chroma[k] * re;
+    mv[k] = chroma[k] * im;
     nco_phasor_ = dsp::cmul(nco_phasor_, nco_step_);
     if (++since_renorm_ >= 1024) {
       nco_phasor_ /= std::abs(nco_phasor_);
