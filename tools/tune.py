@@ -51,6 +51,10 @@ KNOBS = [
          min=0.0, max=2.5, step=0.05, default=1.2,
          help="Vertical size of the electron-beam spot, in output rows. Bigger fills the gaps between scanlines "
               "(softer); smaller gives crisp, visible scanlines (sharper but gappy). 0 = a single-pixel hit."),
+    dict(name="beam_sigma_x", flag="--beam-sigma-x", label="Beam sigma (cols)",
+         min=0.0, max=2.5, step=0.05, default=1.2,
+         help="Horizontal size of the beam spot, in output columns. Smaller is sharper horizontally; too small "
+              "and the sampling beat shows as faint vertical stripes. Match it to the row sigma for a round spot."),
     dict(name="gamma", flag="--gamma", label="Gun gamma",
          min=1.0, max=3.0, step=0.05, default=1.5,
          help="Electron-gun brightness curve: light ∝ drive^gamma. The source pre-distorts its video expecting a CRT "

@@ -30,6 +30,7 @@ private:
   std::size_t height_{576};
   double persistence_{0.9}; // phosphor persistence in field periods
   double beam_sigma_{1.2}; // beam-spot vertical size in output rows
+  double beam_sigma_x_{-1.0}; // beam-spot horizontal size in cols; <0 = match (round)
   double gamma_{1.5}; // electron-gun gamma
   // Colour decode (PAL-D chroma channel). Off => a grey render.
   bool colour_{false};
