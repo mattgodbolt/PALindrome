@@ -23,11 +23,13 @@
 // Each filter stage is a streaming block (prepare / process(span)->span) with
 // state carried across calls, so output is independent of how the input is
 // chunked — which is what lets a driver pump fixed-size blocks through the whole
-// graph with bounded memory (the target being live RF, not finite files). The
-// screen is the join SINK: the picture rail plus the two timing rails in, a
-// phosphor framebuffer out. Because the branches don't decimate (decimation
-// happens upstream in the vision chain, before the fan-out), all rails stay
-// sample-aligned and the joins are plain zips.
+// graph with bounded memory (the target being live RF, not finite files).
+// prepare() must be called with the largest block size before process(): the
+// streaming path never allocates, so a block exceeding that budget throws
+// std::length_error rather than growing. The screen is the join SINK: the
+// picture rail plus the two timing rails in, a phosphor framebuffer out. Because
+// the branches don't decimate (decimation happens upstream in the vision chain,
+// before the fan-out), all rails stay sample-aligned and the joins are plain zips.
 namespace palindrome::video {
 
 // PAL-B/G nominal timing (625 lines, 2:1 interlace at 50 fields/s). These are
