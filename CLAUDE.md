@@ -16,6 +16,29 @@
   (`-Wswitch -Werror`) until it's handled; end with `std::unreachable()`.
 - Comments explain "why", not "what".
 
+### Precision: `float` for the signal, `double` for accumulators
+
+Converting between `float` and `double` isn't free — it costs a `cvt` per value
+on (or near) a hot loop's critical path, and a `double` in a body that could be
+wide-`float` halves the SIMD width. So the split is deliberate, not per-variable
+guesswork:
+
+- **`double`** is for **state that accumulates across samples**: phase/frequency
+  integrators (the sweeps' PI loops) and slow-release leaky integrators (the sync
+  separator's peak/floor trackers), where the per-sample update is tiny relative
+  to the running value, so rounding compounds or stair-steps over thousands to
+  millions of samples.
+- **`float`** is for **everything that flows through**: samples, FIR taps, LUT
+  weights, the framebuffer, and per-sample arithmetic.
+- **At the boundary, snapshot the control value *down* to `float` at the point of
+  use — never promote the data *up* to `double`.** The control's precision was
+  already spent in its own recurrence; the product only needs `float`. (The
+  `ComplexAmEnvelope` and chroma NCO mixes snapshot their double phasor to float
+  per sample; the phasor still *advances* in double.)
+
+The decision is then non-cognitive: *does this value accumulate over many
+samples?* → `double`; otherwise `float`, and snapshot any `double` it touches.
+
 ## Invariants
 
 - **Block-invariance.** Every streaming stage's output must be independent of how
