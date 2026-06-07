@@ -409,7 +409,6 @@ private:
 
   ScreenConfig cfg_;
   std::size_t channels_; // 1 (grey) or 3 (RGB), from cfg_.colour
-  double log_decay_; // ln(per-sample phosphor decay factor)
   // IF-style AGC: a fast-attack, slow-release peak tracker on the luma gun drive,
   // advanced every sample. It sets the readout white point the way a real set's
   // IF AGC fixes the carrier-to-drive mapping — causal, no per-frame statistic.
@@ -417,9 +416,24 @@ private:
   double white_drive_ = 0.0; // tracked peak luma drive (chroma reference, pre-gamma)
   double agc_release_; // per-sample release factor (multi-field time constant)
   double phosphor_gain_; // steady-state accumulation of a per-frame re-deposit
-  std::vector<float> bright_; // per-pixel-per-channel phosphor charge at last_[]
-  std::vector<std::size_t> last_; // sample_index_ of each pixel's last deposit
-  std::size_t sample_index_ = 0;
+  // Phosphor framebuffer. The beam ADDS charge (no per-sample decay); the whole
+  // buffer is faded by field_decay_ once per field, at the field boundary. This
+  // is what a viewer's eye integrates — a field paints as one instant, so there's
+  // no top-to-bottom brightness ramp from the beam's sweep down the screen, and
+  // it's a single streaming multiply (cache- and GPU-friendly) instead of a
+  // per-pixel lazy decay keyed on a last-touched timestamp.
+  //
+  // The alternative is a continuous per-sample decay (each pixel faded forward to
+  // the read instant from when it was last hit). That's physically what a CRT does
+  // at any single moment — what a fast-shutter camera captures — but it shows the
+  // beam-sweep band a human never sees, and it costs a second random-access array
+  // plus a per-deposit exp(). To bring that "camera snapshot" look back (likely as
+  // a ScreenConfig mode selecting the deposit + snapshot path), the whole removed
+  // implementation — last_, sample_index_, the split decay LUTs, decay_for, and
+  // the fade-to-now in snapshot() — sits in the commit before "fade the phosphor
+  // per field, not per sample" (git log -- lib/video.cpp; show its parent).
+  std::vector<float> bright_; // per-pixel-per-channel accumulated phosphor charge
+  float field_decay_ = 1.0f; // whole-buffer multiply applied once per field
 
   // Deflection-yoke model + vertical beam splat. A real TV's yoke is rotated a
   // hair so each line traces straight across X even though the beam creeps
@@ -435,18 +449,10 @@ private:
 
   // The splat shape depends only on the beam centre's sub-pixel row fraction, so
   // the normalised Gaussian weights are tabulated per fraction bin (a [bin][row]
-  // table) instead of calling exp() per sample. Phosphor decay exp(log_decay_*dt)
-  // over the integer sample gap dt is split as decay_lo_[dt&mask] *
-  // decay_hi_[dt>>shift] — exp(a*lo)*exp(a*256*hi) reproduces exp(a*dt) to a
-  // rounding, so the deposit loop carries no transcendentals.
+  // table) instead of calling exp() per sample.
   static constexpr std::size_t kGaussBins = 4096;
   std::size_t gauss_stride_ = 1; // 2*splat_radius_+1
   std::vector<double> gauss_lut_; // kGaussBins * gauss_stride_, normalised
-  static constexpr std::size_t kDecayShift = 8;
-  static constexpr std::size_t kDecayMask = (std::size_t{1} << kDecayShift) - 1;
-  std::vector<double> decay_lo_; // exp(log_decay_ * lo), lo in [0,256)
-  std::vector<double> decay_hi_; // exp(log_decay_ * 256 * hi), to underflow
-  [[nodiscard]] float decay_for(std::size_t dt) const;
 
   // The electron-gun curve drive^gamma is the last un-LUT'd per-sample
   // transcendental; tabulate it over the drive domain (built once for cfg_.gamma)

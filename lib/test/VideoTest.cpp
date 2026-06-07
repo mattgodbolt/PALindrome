@@ -1,7 +1,10 @@
 #include "palindrome/video.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <numbers>
 #include <span>
 #include <vector>
@@ -131,6 +134,61 @@ TEST_CASE("Screen is block-invariant") {
   REQUIRE(frame_whole.pixels.size() == frame_chunked.pixels.size());
   for (std::size_t i = 0; i < frame_whole.pixels.size(); ++i)
     CHECK(frame_whole.pixels[i] == frame_chunked.pixels[i]);
+}
+
+TEST_CASE("Screen snapshots a field before fading it, exactly once per field_start") {
+  // persistence 2 fields => a per-field fade of exp(-1/persistence); gamma 1 keeps
+  // the gun linear so the deposit is simple to reason about.
+  const double persistence = 2.0;
+  const video::ScreenConfig cfg{.width = 8,
+      .height = 8,
+      .sample_rate_hz = kRate,
+      .persistence_fields = persistence,
+      .beam_sigma_rows = 0.0,
+      .gamma = 1.0};
+  const float field_decay = static_cast<float>(std::exp(-1.0 / persistence));
+
+  video::Screen screen{cfg};
+
+  // Field 0: a back-porch sample seeds the black reference, then active white
+  // samples paint a few pixels. The gun stays driven at a constant level the whole
+  // time, so the AGC white reference is pinned and the readout scale is identical
+  // across the snapshots below — any change in pixel value is purely the fade.
+  std::vector<video::ChromaSample> pic;
+  std::vector<video::BeamSample> hbeam;
+  std::vector<video::VSample> vbeam;
+  const auto add = [&](float h_phase, float v_phase, float luma, bool field_start) {
+    pic.push_back(video::ChromaSample{.luma = luma});
+    hbeam.push_back(video::BeamSample{.h_phase = h_phase});
+    vbeam.push_back(video::VSample{.v_phase = v_phase, .field_start = field_start});
+  };
+  add(0.10f, 0.0f, 1.0f, true); // back porch: seed black_ = 1.0 (field 0 start)
+  for (const float vp: {0.25f, 0.5f, 0.75f})
+    add(0.5f, vp, 0.0f, false); // active white: deposit gun drive 1.0 into a pixel
+  screen.process(pic, hbeam, vbeam);
+
+  const auto deposited = screen.snapshot(); // the un-faded charge
+  REQUIRE(std::ranges::any_of(deposited.pixels, [](auto p) { return p > 0; }));
+
+  // One field_start, beam blanked (h_phase below h_blank) but the gun still driven
+  // so white stays pinned. It must snapshot BEFORE applying a single fade.
+  video::Screen::Frame at_boundary;
+  const std::array boundary_pic{video::ChromaSample{.luma = 0.0f}};
+  const std::array boundary_hbeam{video::BeamSample{.h_phase = 0.0f}};
+  const std::array boundary_vbeam{video::VSample{.v_phase = 0.0f, .field_start = true}};
+  screen.process(boundary_pic, boundary_hbeam, boundary_vbeam, [&](const video::Screen::Frame &f) { at_boundary = f; });
+
+  // Snapshot-before-fade: the boundary frame equals the pre-fade charge exactly.
+  REQUIRE(at_boundary.pixels.size() == deposited.pixels.size());
+  for (std::size_t i = 0; i < deposited.pixels.size(); ++i)
+    CHECK(at_boundary.pixels[i] == deposited.pixels[i]);
+
+  // Exactly one fade applied at the boundary: the buffer is now deposit*field_decay.
+  const auto faded = screen.snapshot();
+  for (std::size_t i = 0; i < deposited.pixels.size(); ++i) {
+    const auto expected = static_cast<int>(std::lround(static_cast<double>(deposited.pixels[i]) * field_decay));
+    CHECK(std::abs(static_cast<int>(faded.pixels[i]) - expected) <= 1);
+  }
 }
 
 TEST_CASE("ChromaDecoder is block-invariant (the streaming guarantee)") {
