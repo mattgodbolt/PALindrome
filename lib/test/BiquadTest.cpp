@@ -39,6 +39,7 @@ TEST_CASE("notch rejects bad parameters") {
 TEST_CASE("notch passes DC at unity gain") {
   auto dut = dsp::notch(1000.0, 100.0, 10.0);
   const std::vector<float> dc(500, 1.0f);
+  dut.prepare(dc.size());
   const std::span<const float> out = dut.process(dc);
   CHECK_THAT(out.back(), WithinAbs(1.0, 1e-4));
 }
@@ -48,10 +49,13 @@ TEST_CASE("notch annihilates a tone at its centre and passes others") {
   constexpr std::size_t n = 8000;
 
   auto centre_dut = dsp::notch(fs, 100.0, 10.0);
+  centre_dut.prepare(n);
   const std::span<const float> at_centre = centre_dut.process(tone(fs, 100.0, n));
   auto below_dut = dsp::notch(fs, 100.0, 10.0);
+  below_dut.prepare(n);
   const std::span<const float> below = below_dut.process(tone(fs, 20.0, n));
   auto above_dut = dsp::notch(fs, 100.0, 10.0);
+  above_dut.prepare(n);
   const std::span<const float> above = above_dut.process(tone(fs, 300.0, n));
 
   // Skip the settling transient, measure the steady state.
@@ -66,8 +70,10 @@ TEST_CASE("higher Q gives a narrower notch") {
   // A tone a little off-centre is rejected more by a wide (low-Q) notch than a
   // narrow (high-Q) one.
   auto wide_dut = dsp::notch(fs, 100.0, 2.0);
+  wide_dut.prepare(n);
   const std::span<const float> wide = wide_dut.process(tone(fs, 115.0, n));
   auto narrow_dut = dsp::notch(fs, 100.0, 30.0);
+  narrow_dut.prepare(n);
   const std::span<const float> narrow = narrow_dut.process(tone(fs, 115.0, n));
   CHECK(rms(wide.subspan(2000)) < rms(narrow.subspan(2000)));
 }
@@ -77,13 +83,15 @@ TEST_CASE("Biquad streams identically regardless of block size") {
   const auto x = tone(fs, 60.0, 2000);
 
   auto whole_dut = dsp::notch(fs, 100.0, 10.0);
+  whole_dut.prepare(x.size());
   const std::span<const float> whole = whole_dut.process(x);
 
   std::vector<float> chunked;
   auto dut = dsp::notch(fs, 100.0, 10.0);
-  for (std::size_t off = 0; off < x.size(); off += 83) { // ragged blocks
-    const std::span<const float> piece =
-        dut.process(std::span{x}.subspan(off, std::min<std::size_t>(83, x.size() - off)));
+  constexpr std::size_t chunk = 83; // ragged blocks
+  dut.prepare(chunk);
+  for (std::size_t off = 0; off < x.size(); off += chunk) {
+    const std::span<const float> piece = dut.process(std::span{x}.subspan(off, std::min(chunk, x.size() - off)));
     chunked.insert(chunked.end(), piece.begin(), piece.end());
   }
 

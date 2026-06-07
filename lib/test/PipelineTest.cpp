@@ -40,6 +40,8 @@ TEST_CASE("a Chain reproduces the same stages run by hand") {
   // By hand: DC blocker then a decimating low-pass FIR.
   dsp::DcBlocker dc;
   dsp::Fir fir{dsp::lowpass_kernel(31, fs, 100.0), 2};
+  dc.prepare(x.size());
+  fir.prepare(x.size()); // DcBlocker is 1:1, so its output is x.size() wide
   std::vector<float> expected;
   {
     const std::span<const float> a = dc.process(x);
@@ -73,10 +75,11 @@ TEST_CASE("a Chain streams identically regardless of block size") {
   Chain chunked;
   chunked.add(dsp::notch(fs, 100.0, 5.0));
   chunked.add(dsp::Fir{dsp::lowpass_kernel(31, fs, 100.0), 3});
-  chunked.prepare(64);
+  constexpr std::size_t chunk = 64;
+  chunked.prepare(chunk);
   std::vector<float> got;
-  for (std::size_t off = 0; off < x.size(); off += 64) {
-    const auto block = std::span{x}.subspan(off, std::min<std::size_t>(64, x.size() - off));
+  for (std::size_t off = 0; off < x.size(); off += chunk) {
+    const auto block = std::span{x}.subspan(off, std::min(chunk, x.size() - off));
     const std::span<const float> piece = chunked.process(block);
     got.insert(got.end(), piece.begin(), piece.end());
   }

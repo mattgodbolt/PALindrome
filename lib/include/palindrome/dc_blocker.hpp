@@ -20,8 +20,8 @@ public:
   // corner. Throws std::invalid_argument if R is outside (0, 1).
   explicit DcBlocker(double pole = 0.9999);
 
-  // Budget internal storage for blocks of up to `max_in` samples (one-time;
-  // process() also grows lazily, so this is an optimisation, not a requirement).
+  // Budget internal storage for blocks of up to `max_in` samples. Required before
+  // process(): the hot path does not grow, so a bigger block throws.
   void prepare(std::size_t max_in);
 
   // Filter `in`, returning a view of one output sample per input sample. The

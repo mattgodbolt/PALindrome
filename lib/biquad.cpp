@@ -16,7 +16,6 @@ void Biquad::prepare(std::size_t max_in) { out_.reserve(max_in); }
 
 std::span<const float> Biquad::process(std::span<const float> in) {
   const std::size_t n = in.size();
-  out_.reserve(n);
   const auto *x = in.data();
   auto *y = out_.write_n(n).data();
   // Transposed direct-form II: the state recurrence is serial (no vectorising),

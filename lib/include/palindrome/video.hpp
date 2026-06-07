@@ -23,12 +23,20 @@
 // Each filter stage is a streaming block (prepare / process(span)->span) with
 // state carried across calls, so output is independent of how the input is
 // chunked — which is what lets a driver pump fixed-size blocks through the whole
-// graph with bounded memory (the target being live RF, not finite files). The
-// screen is the join SINK: the picture rail plus the two timing rails in, a
-// phosphor framebuffer out. Because the branches don't decimate (decimation
-// happens upstream in the vision chain, before the fan-out), all rails stay
-// sample-aligned and the joins are plain zips.
+// graph with bounded memory (the target being live RF, not finite files).
+// prepare() must be called with the largest block size before process(): the
+// streaming path never allocates, so a block exceeding that budget throws
+// std::length_error rather than growing. The screen is the join SINK: the
+// picture rail plus the two timing rails in, a phosphor framebuffer out. Because
+// the branches don't decimate (decimation happens upstream in the vision chain,
+// before the fan-out), all rails stay sample-aligned and the joins are plain zips.
 namespace palindrome::video {
+
+// PAL-B/G nominal timing (625 lines, 2:1 interlace at 50 fields/s). These are
+// fixed facts of the standard, not tuning knobs — every config that needs a
+// nominal line or field rate defaults from these.
+inline constexpr double kNominalLineHz = 15625.0; // 625 lines × 25 frames/s
+inline constexpr double kNominalFieldHz = 50.0;
 
 // === Sync separator ===
 
@@ -87,7 +95,7 @@ struct BeamSample {
 
 struct HorizontalSweepConfig {
   double sample_rate_hz;
-  double nominal_line_hz = 15625.0;
+  double nominal_line_hz = kNominalLineHz;
   // Pulse-width window the AFC accepts, as fractions of a line. Line sync is
   // ~4.7 us (~0.073 line); equalising pulses ~2.35 us (~0.037); broad pulses
   // ~27 us (~0.43). The (0.05, 0.15) window passes line sync and rejects both
@@ -157,8 +165,8 @@ struct VSample {
 
 struct VerticalSyncConfig {
   double sample_rate_hz;
-  double nominal_field_hz = 50.0;
-  double nominal_line_hz = 15625.0; // sets the integrator time constant in lines
+  double nominal_field_hz = kNominalFieldHz;
+  double nominal_line_hz = kNominalLineHz; // sets the integrator time constant in lines
   // The detector low-passes the sync bit toward its duty cycle: ~7% on normal
   // lines (short sync), ~84% during the broad-pulse train. Slicing at vsync_level
   // detects the vertical interval. The time constant averages over roughly
@@ -269,7 +277,7 @@ public:
 
   // Diagnostics: the crystal frequency (Hz), the smoothed burst amplitude (the
   // ACC level), and this line's burst swing in degrees (~45° once the colour is
-  // locked — the ±45° −U±V swinging burst).
+  // locked — the ±45° -U±V swinging burst).
   [[nodiscard]] double subcarrier_hz() const noexcept { return nco_omega_ * cfg_.sample_rate_hz; }
   [[nodiscard]] double burst_amplitude() const noexcept { return burst_amp_; }
   [[nodiscard]] double burst_swing_deg() const noexcept { return swing_deg_; }
@@ -305,11 +313,11 @@ private:
   double burst_amp_ = 0.0; // ACC level = √2·|apc_phasor_| (the swing-averaged burst)
   double burst_ref_ = 0.0; // slow-decay peak burst level for the colour-killer
   double psi_cos_ = 1.0, psi_sin_ = 0.0; // this line's rotation R(ψ)
-  double v_flip_ = 1.0; // +1 on NTSC-style lines, −1 on PAL-style (V inversion)
+  double v_flip_ = 1.0; // +1 on NTSC-style lines, -1 on PAL-style (V inversion)
 
   // Automatic phase control: a slow complex EMA of the back-porch burst locks the
-  // reference onto the −U axis. The burst swings ±45° about that axis line to line
-  // (the −U±V swinging burst), so the swing averages out of this loop, exactly as
+  // reference onto the -U axis. The burst swings ±45° about that axis line to line
+  // (the -U±V swinging burst), so the swing averages out of this loop, exactly as
   // a real set's APC averages it to lock its crystal phase. The rotation derives
   // from this axis (held in psi_cos_/sin_); its magnitude is the ACC (burst_amp_).
   std::complex<double> apc_phasor_{0.0, 0.0};
@@ -345,8 +353,8 @@ struct ScreenConfig {
   std::size_t width;
   std::size_t height;
   double sample_rate_hz;
-  double field_hz = 50.0;
-  double nominal_line_hz = 15625.0; // sets the deflection-yoke shear (see below)
+  double field_hz = kNominalFieldHz;
+  double nominal_line_hz = kNominalLineHz; // sets the deflection-yoke shear (see below)
   // Phosphor persistence as a multiple of the field period. The beam deposits
   // brightness where it lands; each pixel then decays exponentially with this
   // time constant. ~1 field means roughly the last two fields survive — so an
@@ -464,7 +472,7 @@ private:
   // and reconstructing along the line (horizontally).
   double yoke_tilt_rows_ = 0.0; // vertical rows the beam advances per line
   double picture_h_offset_ = 0.0; // h_phase shift to register the picture rail (see ScreenConfig)
-  std::size_t splat_radius_ = 0; // Gaussian half-width in rows
+  std::size_t splat_radius_y_ = 0; // Gaussian half-width in rows
   std::size_t splat_radius_x_ = 0; // Gaussian half-width in columns
 
   // The beam spot is a separable 2-D Gaussian: a vertical kernel over rows and a
@@ -472,10 +480,10 @@ private:
   // the spot centre's sub-pixel fraction along that axis, so each is tabulated per
   // fraction bin (a [bin][cell] table) instead of calling exp() per sample.
   static constexpr std::size_t kGaussBins = 4096;
-  std::size_t gauss_stride_ = 1; // 2*splat_radius_+1 (rows)
+  std::size_t gauss_stride_y_ = 1; // 2*splat_radius_y_+1 (rows)
   std::size_t gauss_stride_x_ = 1; // 2*splat_radius_x_+1 (columns)
-  std::vector<double> gauss_lut_; // kGaussBins * gauss_stride_, normalised (vertical)
-  std::vector<double> gauss_lut_x_; // kGaussBins * gauss_stride_x_, normalised (horizontal)
+  std::vector<float> gauss_lut_y_; // kGaussBins * gauss_stride_y_, normalised (vertical)
+  std::vector<float> gauss_lut_x_; // kGaussBins * gauss_stride_x_, normalised (horizontal)
 
   // The electron-gun curve drive^gamma is the last un-LUT'd per-sample
   // transcendental; tabulate it over the drive domain (built once for cfg_.gamma)

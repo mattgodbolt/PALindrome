@@ -38,8 +38,9 @@ public:
   // Mix carrier_hz down to DC for input sampled at sample_rate_hz.
   Mixer(double carrier_hz, double sample_rate_hz);
 
-  // Budget internal storage for blocks of up to `max_in` samples (one-time;
-  // process() also grows lazily, so this is an optimisation, not a requirement).
+  // Budget internal storage for blocks of up to `max_in` samples. Required
+  // before process(): the hot path does not grow, so a block bigger than the
+  // budget throws (std::length_error) rather than reallocating.
   void prepare(std::size_t max_in);
 
   // Down-convert `in`, returning one (I, Q) pair per input sample.

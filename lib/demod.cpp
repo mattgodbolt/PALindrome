@@ -1,6 +1,7 @@
 #include "palindrome/demod.hpp"
 
 #include "palindrome/biquad.hpp"
+#include "palindrome/cmul.hpp"
 #include "palindrome/dc_blocker.hpp"
 #include "palindrome/restrict_ptr.hpp"
 
@@ -52,7 +53,6 @@ std::span<const float> AmEnvelope::process(std::span<const float> in) {
   // here (the I/Q are bounded), and plain sqrt of the sum of squares vectorises
   // into an elementwise store.
   const std::size_t n = filtered_i.size();
-  out_.reserve(n);
   envelope_magnitude(filtered_i.data(), filtered_q.data(), out_.write_n(n).data(), n);
   return out_.view();
 }
@@ -97,7 +97,7 @@ std::span<const float> ComplexAmEnvelope::process(std::span<const std::complex<f
     const std::complex<float> m = std::complex<float>{static_cast<float>(hp.real()), static_cast<float>(hp.imag())} * p;
     mi[k] = m.real();
     mq[k] = m.imag();
-    phasor_ *= step_;
+    phasor_ = dsp::cmul(phasor_, step_);
     if (++since_renorm_ >= 1024) {
       phasor_ /= std::abs(phasor_); // keep |phasor_| == 1 against accumulated drift
       since_renorm_ = 0;
@@ -107,7 +107,6 @@ std::span<const float> ComplexAmEnvelope::process(std::span<const std::complex<f
   const auto filtered_i = i_filter_.process(mi);
   const auto filtered_q = q_filter_.process(mq);
   const std::size_t m = filtered_i.size();
-  out_.reserve(m);
   envelope_magnitude(filtered_i.data(), filtered_q.data(), out_.write_n(m).data(), m);
   return out_.view();
 }

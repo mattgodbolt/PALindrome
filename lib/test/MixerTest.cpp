@@ -49,6 +49,7 @@ TEST_CASE("Mixer matches a scalar reference down-converter") {
   reference_mix(x, fs, carrier, ri, rq);
 
   dsp::Mixer mix{carrier, fs};
+  mix.prepare(x.size());
   const auto [i, q] = mix.process(x);
 
   REQUIRE(i.size() == ri.size());
@@ -73,6 +74,7 @@ TEST_CASE("Mixer shifts the carrier to DC") {
     x[n] = static_cast<float>(std::cos(two_pi * carrier * static_cast<double>(n) / fs));
 
   dsp::Mixer mix{carrier, fs};
+  mix.prepare(x.size());
   const auto [i, q] = mix.process(x);
 
   double mean_i = 0.0, mean_q = 0.0;
@@ -91,12 +93,15 @@ TEST_CASE("Mixer streams to within float rounding regardless of block size") {
   const auto x = tone(fs, 4.0e6, 4000);
 
   dsp::Mixer whole_mix{carrier, fs};
+  whole_mix.prepare(x.size());
   const auto [whole_i, whole_q] = whole_mix.process(x);
 
   std::vector<float> chunk_i, chunk_q;
   dsp::Mixer dut{carrier, fs};
-  for (std::size_t off = 0; off < x.size(); off += 91) { // ragged blocks straddle the group
-    const auto [pi, pq] = dut.process(std::span{x}.subspan(off, std::min<std::size_t>(91, x.size() - off)));
+  constexpr std::size_t chunk = 91; // ragged blocks straddle the group boundary
+  dut.prepare(chunk);
+  for (std::size_t off = 0; off < x.size(); off += chunk) {
+    const auto [pi, pq] = dut.process(std::span{x}.subspan(off, std::min(chunk, x.size() - off)));
     chunk_i.insert(chunk_i.end(), pi.begin(), pi.end());
     chunk_q.insert(chunk_q.end(), pq.begin(), pq.end());
   }

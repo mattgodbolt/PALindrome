@@ -226,8 +226,8 @@ int RenderCommand::run() const {
   std::println("{} ({}x{}); envelope @ {:g} MS/s after /{} decimation, carrier {:.4f} MHz; "
                "horizontal locked {} edges @ {:.1f} Hz ({:+.2f}%); vertical locked {} fields @ {:.2f} Hz ({:+.2f}%)",
       what, width_, height_, envelope_rate / 1e6, decimate, loaded.vision_carrier_hz / 1e6, decoder.accepted_edges(),
-      line_hz, 100.0 * (line_hz - 15625.0) / 15625.0, decoder.detected_fields(), field_hz,
-      100.0 * (field_hz - 50.0) / 50.0);
+      line_hz, 100.0 * (line_hz - video::kNominalLineHz) / video::kNominalLineHz, decoder.detected_fields(), field_hz,
+      100.0 * (field_hz - video::kNominalFieldHz) / video::kNominalFieldHz);
   return 0;
 }
 
