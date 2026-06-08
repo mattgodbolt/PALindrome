@@ -15,6 +15,12 @@
 - **`switch` over an enum with no `default`**, so adding a value fails to compile
   (`-Wswitch -Werror`) until it's handled; end with `std::unreachable()`.
 - Comments explain "why", not "what".
+- **Parsimonious includes (IWYU).** Include exactly what a file names, directly:
+  no more (don't pull a header for a symbol you don't use, and don't lean on a
+  transitive include — if you name `std::span`, include `<span>` yourself), and no
+  less. A `.cpp` includes its own header first, then what it adds. Splitting a file
+  is the moment to prune: each piece should carry only the includes its own code
+  needs, not the union the monolith did.
 
 ### Precision: `float` for the signal, `double` for accumulators
 

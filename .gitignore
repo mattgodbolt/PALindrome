@@ -21,3 +21,6 @@ perf.data*
 # Python bytecode cache (tools/)
 __pycache__/
 *.pyc
+
+# Claude Code local state (agent worktrees, etc.) — never tracked
+.claude/

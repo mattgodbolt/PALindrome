@@ -12,7 +12,8 @@ ensure_lodepng()
 add_library(palindrome)
 add_library(palindrome::palindrome ALIAS palindrome)
 
-target_sources(palindrome PRIVATE sigmf.cpp demod.cpp fir.cpp mixer.cpp biquad.cpp dc_blocker.cpp wav.cpp image.cpp video.cpp)
+target_sources(palindrome PRIVATE sigmf.cpp demod.cpp fir.cpp mixer.cpp biquad.cpp dc_blocker.cpp wav.cpp image.cpp
+        gaussian.cpp sync_separator.cpp horizontal_sweep.cpp vertical_sync.cpp chroma_decoder.cpp screen.cpp decoder.cpp)
 
 target_sources(palindrome
         PUBLIC
@@ -21,6 +22,9 @@ target_sources(palindrome
         BASE_DIRS include
         FILES
         include/palindrome/buffer.hpp
+        include/palindrome/cmul.hpp
+        include/palindrome/phase.hpp
+        include/palindrome/gaussian.hpp
         include/palindrome/pipeline.hpp
         include/palindrome/pipeline_run.hpp
         include/palindrome/restrict_ptr.hpp
@@ -32,6 +36,12 @@ target_sources(palindrome
         include/palindrome/dc_blocker.hpp
         include/palindrome/wav.hpp
         include/palindrome/image.hpp
-        include/palindrome/video.hpp)
+        include/palindrome/video_types.hpp
+        include/palindrome/sync_separator.hpp
+        include/palindrome/horizontal_sweep.hpp
+        include/palindrome/vertical_sync.hpp
+        include/palindrome/chroma_decoder.hpp
+        include/palindrome/screen.hpp
+        include/palindrome/decoder.hpp)
 
 target_link_libraries(palindrome PUBLIC opt::cxx_std nlohmann_json::nlohmann_json STDEXEC::stdexec PRIVATE opt::pedantic opt::arch lodepng::lodepng)

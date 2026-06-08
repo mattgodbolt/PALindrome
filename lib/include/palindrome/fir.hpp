@@ -27,6 +27,13 @@ enum class Window { Hamming, Blackman };
 [[nodiscard]] std::vector<float> bandpass_kernel(
     std::size_t num_taps, double sample_rate_hz, double low_hz, double high_hz, Window window = Window::Hamming);
 
+// A band-stop (notch) kernel: the all-pass impulse minus a band-pass, so a signal
+// keeps its full bandwidth except the notched band (e.g. a chroma trap on luma,
+// rather than a soft low-pass). Same length and group delay as the band-pass it
+// is built from; num_taps must be odd so the unit impulse lands on the centre tap.
+[[nodiscard]] std::vector<float> notch_kernel(
+    std::size_t num_taps, double sample_rate_hz, double low_hz, double high_hz, Window window = Window::Hamming);
+
 class Fir {
 public:
   // A decimating FIR: with `decimation` D it keeps one of every D output

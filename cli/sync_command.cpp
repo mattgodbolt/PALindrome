@@ -2,7 +2,9 @@
 
 #include "cli_util.hpp"
 #include "palindrome/demod.hpp"
-#include "palindrome/video.hpp"
+#include "palindrome/horizontal_sweep.hpp"
+#include "palindrome/sync_separator.hpp"
+#include "palindrome/vertical_sync.hpp"
 
 #include <algorithm>
 #include <cmath>
