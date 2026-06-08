@@ -126,4 +126,8 @@ TEST_CASE("Hilbert is block-invariant (bit-exact across chunkings)") {
   }
 }
 
-TEST_CASE("Hilbert rejects an even tap count") { CHECK_THROWS_AS(demod::Hilbert{64}, std::invalid_argument); }
+TEST_CASE("Hilbert rejects tap counts that aren't 3 (mod 4)") {
+  CHECK_THROWS_AS(demod::Hilbert{64}, std::invalid_argument); // even
+  CHECK_THROWS_AS(demod::Hilbert{65}, std::invalid_argument); // odd but 1 (mod 4): non-zero taps land on odd indices
+  CHECK_NOTHROW(demod::Hilbert{127}); // 3 (mod 4): non-zero taps on even indices
+}

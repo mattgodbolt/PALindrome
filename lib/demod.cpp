@@ -13,21 +13,28 @@
 namespace palindrome::demod {
 
 namespace {
-// Validate a Hilbert tap count before any work is done with it: odd (so the
-// group delay (n-1)/2 is integer and the I-plane delay matches the FIR exactly)
-// and non-zero. Returns it for use in a member initialiser.
-std::size_t require_odd_hilbert_taps(std::size_t num_taps) {
-  if (num_taps == 0 || num_taps % 2 == 0)
-    throw std::invalid_argument{"Hilbert: num_taps must be odd and non-zero (for an integer group delay)"};
+// Validate a Hilbert tap count before any work is done with it, and return it for
+// use in a member initialiser. Must be ≡ 3 (mod 4): that makes it odd (so the
+// group delay (n-1)/2 is an integer the I-plane delay can match) AND puts the
+// centre tap on an odd index, so the Type III kernel's non-zero taps — those at
+// an ODD offset from the centre — land on EVEN array indices, which the polyphase
+// even/odd split below assumes. The natural Hilbert lengths (2^k - 1: 31, 63, 127,
+// ...) all satisfy this; e.g. 65 would not, and is rejected rather than silently
+// picking the zero taps.
+std::size_t require_hilbert_taps(std::size_t num_taps) {
+  if (num_taps % 4 != 3)
+    throw std::invalid_argument{"Hilbert: num_taps must be ≡ 3 (mod 4) — odd, with the kernel's non-zero taps on even "
+                                "indices (e.g. 31, 63, 127)"};
   return num_taps;
 }
 
-// The even-offset taps of the Hilbert kernel — the only non-zero ones (a Type III
-// kernel zeroes every even offset from the centre). Each polyphase FIR runs this
-// over one input parity; the dropped taps were exact zeros, so the result is
-// bit-identical to convolving the full kernel.
+// The non-zero taps of the Hilbert kernel. For a num_taps ≡ 3 (mod 4) kernel the
+// non-zero taps (odd offset from the centre) sit at the even array indices, so
+// each polyphase FIR runs full[0], full[2], ... over one input parity; the dropped
+// taps were exact zeros, so the result is bit-identical to convolving the full
+// kernel.
 std::vector<float> even_hilbert_taps(std::size_t num_taps, dsp::Window window) {
-  const auto full = dsp::hilbert_kernel(require_odd_hilbert_taps(num_taps), window);
+  const auto full = dsp::hilbert_kernel(require_hilbert_taps(num_taps), window);
   std::vector<float> even((full.size() + 1) / 2);
   for (std::size_t m = 0; m < even.size(); ++m)
     even[m] = full[2 * m];
