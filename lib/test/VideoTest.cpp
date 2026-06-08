@@ -1,4 +1,8 @@
-#include "palindrome/video.hpp"
+#include "palindrome/chroma_decoder.hpp"
+#include "palindrome/horizontal_sweep.hpp"
+#include "palindrome/screen.hpp"
+#include "palindrome/sync_separator.hpp"
+#include "palindrome/vertical_sync.hpp"
 
 #include <algorithm>
 #include <array>

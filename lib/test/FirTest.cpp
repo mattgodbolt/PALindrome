@@ -215,6 +215,29 @@ TEST_CASE("process throws on a block bigger than prepare budgeted") {
   CHECK_THROWS_AS(tight.process(x), std::length_error);
 }
 
+TEST_CASE("notch_kernel passes DC and out-of-band tones, nulls the stop band") {
+  constexpr double fs = 1000.0;
+  constexpr std::size_t n = 4000;
+  // A 101-tap notch around 100 Hz: the complement of a band-pass, so it passes
+  // everything except that band.
+  const auto taps = dsp::notch_kernel(101, fs, 80.0, 120.0);
+
+  dsp::Fir dc_fir{taps};
+  dc_fir.prepare(200);
+  const std::vector<float> dc(200, 1.0f);
+  CHECK_THAT(dc_fir.process(dc).back(), WithinAbs(1.0, 2e-3)); // ~unity DC gain (windowing leaks a little)
+
+  dsp::Fir stop_fir{taps};
+  stop_fir.prepare(n);
+  const std::span<const float> in_band = stop_fir.process(tone(fs, 100.0, n));
+  dsp::Fir pass_fir{taps};
+  pass_fir.prepare(n);
+  const std::span<const float> out_band = pass_fir.process(tone(fs, 300.0, n));
+
+  CHECK(rms(in_band.subspan(200)) < 0.05); // nulled in the notch
+  CHECK_THAT(rms(out_band.subspan(200)), WithinRel(1.0 / std::sqrt(2.0), 0.05)); // passed
+}
+
 TEST_CASE("Fir rejects bad construction") {
   CHECK_THROWS_AS(dsp::Fir{std::vector<float>{}}, std::invalid_argument);
   CHECK_THROWS_AS((dsp::Fir{dsp::lowpass_kernel(5, 1000.0, 100.0), 0}), std::invalid_argument);

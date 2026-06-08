@@ -1,10 +1,10 @@
 #include "render_command.hpp"
 
 #include "cli_util.hpp"
+#include "palindrome/decoder.hpp"
 #include "palindrome/demod.hpp"
 #include "palindrome/image.hpp"
 #include "palindrome/pipeline_run.hpp"
-#include "palindrome/video.hpp"
 
 #include <algorithm>
 #include <complex>

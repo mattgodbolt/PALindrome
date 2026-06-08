@@ -173,6 +173,15 @@ std::vector<float> bandpass_kernel(
   return taps;
 }
 
+std::vector<float> notch_kernel(
+    std::size_t num_taps, double sample_rate_hz, double low_hz, double high_hz, Window window) {
+  auto k = bandpass_kernel(num_taps, sample_rate_hz, low_hz, high_hz, window);
+  for (auto &t: k)
+    t = -t;
+  k[(num_taps - 1) / 2] += 1.0f; // + unit impulse at the centre tap
+  return k;
+}
+
 Fir::Fir(std::vector<float> taps, std::size_t decimation) : taps_{std::move(taps)}, decimation_{decimation} {
   if (taps_.empty())
     throw std::invalid_argument("FIR needs at least one tap");
