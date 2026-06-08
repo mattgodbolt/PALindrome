@@ -95,9 +95,18 @@ public:
   [[nodiscard]] std::size_t group_delay_samples() const noexcept { return delay_; }
 
 private:
-  dsp::Fir q_filter_; // antisymmetric Hilbert kernel -> quadrature plane
+  // Polyphase quadrature: a Type III Hilbert kernel's even-offset taps are all
+  // zero, so Q[n] depends only on the same-parity input samples. Split the input
+  // into its even- and odd-index streams and run each (half-rate) through the
+  // half-length even-tap kernel — the same multiply-adds as the full kernel minus
+  // the structural zeros, in the same order, so bit-identical at ~half the work.
+  dsp::Fir q_even_; // even-tap kernel over the even-index input samples
+  dsp::Fir q_odd_; // ... and over the odd-index samples
+  Buffer<float> even_in_; // scratch: the deinterleaved even-index input half
+  Buffer<float> odd_in_; // scratch: the deinterleaved odd-index input half
   std::vector<float> i_history_; // last `delay_` inputs, carried for the matched in-phase delay
   std::size_t delay_; // (num_taps - 1) / 2: the FIR group delay the I plane matches
+  std::size_t samples_seen_ = 0; // global input count, for each block's even/odd parity
   Buffer<std::complex<float>> out_; // owned analytic output, reused across calls
 };
 
