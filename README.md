@@ -276,3 +276,12 @@ all, so Clang has no path. The magnitude's `sqrt` would stay scalar (or
 `std::experimental::simd`) until `simd.math` lands. Also needs GCC 16+ in the
 build, which Ubuntu 25.10 / the toolchain PPA don't package — a Compiler
 Explorer tarball is the likely route.
+
+**Direction for future DSP perf: reach for `std::simd`, not more intrinsics.**
+`std::simd` is the target; the hand-AVX2 above is a stop-gap to *delete*, so don't
+extend it for modest wins. When the toolchain (GCC 16+) lands, the natural sweep,
+easiest first: the **`demod::Hilbert` deinterleave/interleave glue** (pure data
+movement — shuffle/permute, no `simd.math`, so it ports immediately), then
+`convolve_strip`, then `envelope_magnitude` (its `sqrt` waits on `simd.math`). The
+Hilbert glue (~⅓ of that already-fast stage) was prototyped as hand-AVX2 and
+deliberately *not* landed for exactly this reason — it's a `std::simd` job.

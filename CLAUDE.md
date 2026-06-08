@@ -15,6 +15,9 @@
 - **`switch` over an enum with no `default`**, so adding a value fails to compile
   (`-Wswitch -Werror`) until it's handled; end with `std::unreachable()`.
 - Comments explain "why", not "what".
+- **One declaration per line.** Never two variables or members on the same line —
+  split every comma-declaration (not `Buffer<float> a, b;`, not `double x{}, y{};`),
+  so each gets its own line and its own comment.
 - **Parsimonious includes (IWYU).** Include exactly what a file names, directly:
   no more (don't pull a header for a symbol you don't use, and don't lean on a
   transitive include — if you name `std::span`, include `<span>` yourself), and no
@@ -46,6 +49,14 @@ The decision is then non-cognitive: *does this value accumulate over many
 samples?* → `double`; otherwise `float`, and snapshot any `double` it touches.
 
 ## Invariants
+
+- **Stage APIs stay uniform.** Every stage is `process(span) -> span` with state
+  carried across calls, and that interface is already infinite-input-tolerant.
+  Don't specialise it for input-shape concerns — "small input", "infinite input",
+  "settling/warmup", buffer sizing, decimation, looping. Those are the *driver's*
+  job (whoever calls `process(...)` in a loop and decides how many samples to feed
+  and which frames to emit), not a per-stage knob. Adding one breaks the symmetry
+  that makes the chain a chain; there is no "change the shape of one part's API".
 
 - **Block-invariance.** A streaming stage's output must not *meaningfully* depend
   on how the input is chunked into blocks — the target is live RF, not finite
