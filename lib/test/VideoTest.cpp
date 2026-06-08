@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <numbers>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -248,4 +249,12 @@ TEST_CASE("ChromaDecoder is block-invariant (the streaming guarantee)") {
       }
     }
   }
+}
+
+TEST_CASE("ChromaDecoder rejects an out-of-range ref_tc_lines") {
+  const auto cfg = [](double tc) { return video::ChromaDecoderConfig{.sample_rate_hz = kRate, .ref_tc_lines = tc}; };
+  CHECK_THROWS_AS(video::ChromaDecoder{cfg(1.0)}, std::invalid_argument); // below the floor
+  CHECK_THROWS_AS(video::ChromaDecoder{cfg(150.0)}, std::invalid_argument); // above the ceiling
+  CHECK_THROWS_AS(video::ChromaDecoder{cfg(std::nan(""))}, std::invalid_argument); // NaN fails the range test
+  CHECK_NOTHROW(video::ChromaDecoder{cfg(10.0)}); // the default, in range
 }

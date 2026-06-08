@@ -214,7 +214,8 @@ class Tuner:
         for k in KNOBS:
             v = query.get(k["name"], [k["default"]])[0]
             if k.get("choices"):  # the slider value is the index into choices
-                cmd += [k["flag"], k["choices"][int(float(v))]]
+                idx = max(0, min(len(k["choices"]) - 1, int(float(v))))  # clamp a hand-edited URL
+                cmd += [k["flag"], k["choices"][idx]]
             elif k.get("boolean"):
                 if float(v) >= 0.5:  # a bare flag, no value
                     cmd.append(k["flag"])
