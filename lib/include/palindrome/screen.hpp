@@ -152,7 +152,11 @@ private:
   static constexpr std::size_t kGunBins = 8192;
   static constexpr double kGunDriveMax = 8.0;
   std::vector<float> gun_lut_; // pow(drive, gamma) over [0, kGunDriveMax]; empty when gamma == 1
+  // gun() is the hot per-sample gamma lookup, force-inlined into the deposit (it's
+  // called four times per active sample); the rare over-table bloom takes the cold
+  // pow() path in gun_bloom(), kept out of line so it doesn't bloat the hot path.
   [[nodiscard]] float gun(double drive) const;
+  [[nodiscard]] float gun_bloom(double drive) const;
 
   // Levels, simulated rather than clamped. black_ tracks the back-porch blanking
   // shelf (DC restoration — a real TV's keyed-clamp circuit), which sets the

@@ -77,16 +77,24 @@ Screen::Screen(const ScreenConfig &cfg) :
   }
 }
 
+// Phosphor bloom on an overdriven gun (drive above the table). Out of line and
+// cold so the pow() never bloats gun()'s force-inlined hot path.
+[[gnu::cold, gnu::noinline]] float Screen::gun_bloom(double drive) const {
+  return static_cast<float>(std::pow(drive, cfg_.gamma));
+}
+
 // One electron gun: drive^gamma, the beam-current curve. 0 stays 0 (cutoff). The
 // curve is tabulated over [0, kGunDriveMax] (built for cfg_.gamma); above the
-// table — phosphor bloom on overdriven guns — fall back to pow().
-float Screen::gun(double drive) const {
+// table, phosphor bloom takes the cold pow() path. Force-inlined: it's four calls
+// per active sample on the deposit's critical path, so the call overhead and the
+// double spill across it matter more than the code size.
+[[gnu::always_inline]] inline float Screen::gun(double drive) const {
   if (!(drive > 0.0)) // <= 0 and NaN cut off
     return 0.0f;
   if (gun_lut_.empty()) // gamma == 1.0
     return static_cast<float>(drive);
-  if (!(drive < kGunDriveMax)) // bloom (and NaN) take the pow path, not the table
-    return static_cast<float>(std::pow(drive, cfg_.gamma));
+  if (!(drive < kGunDriveMax)) // over the table: phosphor bloom takes the cold pow path
+    return gun_bloom(drive);
   const double t = drive * (static_cast<double>(kGunBins) / kGunDriveMax);
   const auto i = static_cast<std::size_t>(t);
   const auto f = static_cast<float>(t - static_cast<double>(i));
