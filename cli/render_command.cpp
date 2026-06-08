@@ -59,6 +59,10 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(h_blank_, "x")["--h-blank"]("Retrace blanking end (h_phase; ~0.21 at 10 MS/s)"))
           .add_argument(
               lyra::opt(subcarrier_, "hz")["--subcarrier"]("Colour: subcarrier crystal Hz (default 4.43361875 MHz)"))
+          .add_argument(lyra::opt(uv_bandwidth_, "hz")["--uv-bandwidth"](
+              "Colour: post-demod U/V low-pass corner Hz (0 = decoder default)"))
+          .add_argument(lyra::opt(band_lo_, "hz")["--band-lo"]("Colour: chroma band-pass low edge Hz"))
+          .add_argument(lyra::opt(band_hi_, "hz")["--band-hi"]("Colour: chroma band-pass high edge Hz"))
           .add_argument(
               lyra::opt(burst_gate_lo_, "x")["--burst-lo"]("Colour: burst gate start (h_phase; ~0.16 at 10 MS/s)"))
           .add_argument(lyra::opt(burst_gate_hi_, "x")["--burst-hi"]("Colour: burst gate end (h_phase)"))
@@ -74,8 +78,6 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(v_minfield_, "x")["--v-min-field"]("Vertical hold: min field fraction"))
           .add_argument(lyra::opt(frame_stride_, "n")["--frame-stride"](
               "Write a PNG every Nth field boundary (<stem>_NNNN.png); 0 = one image"))
-          .add_argument(lyra::opt(no_sound_trap_)["--no-sound-trap"]("Disable the sound-carrier notch"))
-          .add_argument(lyra::opt(sound_q_, "q")["--sound-q"]("Sound-trap notch Q"))
           .add_argument(lyra::opt(no_sync_)["--no-sync"]("Debug: naive-fold the envelope, bypassing sync"))
           .add_argument(
               lyra::opt(no_threads_)["--no-threads"]("Decode serially (default is a threaded stage pipeline)"))
@@ -99,8 +101,7 @@ int RenderCommand::run() const {
 
   const auto envelope_rate = loaded.sample_rate_hz / static_cast<double>(decimate);
 
-  const EnvelopeOptions opts{
-      .cutoff_hz = cutoff_, .decimation = decimate, .no_sound_trap = no_sound_trap_, .sound_q = sound_q_};
+  const EnvelopeOptions opts{.cutoff_hz = cutoff_, .decimation = decimate};
 
   if (no_sync_) {
     // Debug: fold the raw envelope into the frame (sample i -> x = i % width,
@@ -147,6 +148,12 @@ int RenderCommand::run() const {
   dc.h_blank = h_blank_;
   if (subcarrier_ > 0.0) // else the crystal default (textbook fsc)
     dc.chroma.subcarrier_hz = subcarrier_;
+  if (uv_bandwidth_ > 0.0)
+    dc.chroma.uv_bandwidth_hz = uv_bandwidth_;
+  if (band_lo_ > 0.0)
+    dc.chroma.band_lo_hz = band_lo_;
+  if (band_hi_ > 0.0)
+    dc.chroma.band_hi_hz = band_hi_;
   dc.chroma.burst_gate_lo = burst_gate_lo_;
   dc.chroma.burst_gate_hi = burst_gate_hi_;
   dc.chroma.delay_line = !no_delay_line_;

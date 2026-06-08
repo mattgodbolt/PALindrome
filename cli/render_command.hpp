@@ -38,11 +38,11 @@ private:
   double contrast_{0.85}; // readout white point (AGC-relative)
   double h_blank_{0.16}; // retrace blanking end, h_phase
   double subcarrier_{0.0}; // subcarrier crystal Hz; 0 => textbook 4.43361875 MHz
+  double uv_bandwidth_{0.0}; // post-demod U/V low-pass corner Hz; 0 => decoder default
+  double band_lo_{0.0}, band_hi_{0.0}; // chroma band-pass edges Hz; 0 => decoder default
   double burst_gate_lo_{0.11}, burst_gate_hi_{0.14}; // burst gate, h_phase window
   bool no_delay_line_{false}; // disable the PAL-D line-pair comb
   std::size_t frame_stride_{0}; // 0 => one image; N => a PNG every Nth field boundary
-  bool no_sound_trap_{false};
-  double sound_q_{10.0};
   bool no_sync_{false}; // debug: naive-fold the envelope, bypassing the sync graph
   bool no_threads_{false}; // decode serially instead of the default stage pipeline
   // Sync/sweep hold knobs — the rest of the decoder, surfaced for the tuner.

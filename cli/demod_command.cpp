@@ -1,7 +1,6 @@
 #include "demod_command.hpp"
 
 #include "cli_util.hpp"
-#include "palindrome/demod.hpp"
 #include "palindrome/wav.hpp"
 
 #include <algorithm>
@@ -10,10 +9,10 @@
 #include <filesystem>
 #include <format>
 #include <iostream>
-#include <optional>
 #include <print>
 #include <ranges>
-#include <string>
+#include <span>
+#include <vector>
 
 namespace palindrome::cli {
 
@@ -25,31 +24,19 @@ void DemodCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 output sample per N inputs"))
           .add_argument(lyra::opt(slowdown_, "factor")["--slowdown"]("Stamp WAV rate as output/factor"))
-          .add_argument(lyra::opt(no_sound_trap_)["--no-sound-trap"]("Disable the sound-carrier notch"))
-          .add_argument(lyra::opt(sound_q_, "q")["--sound-q"]("Sound-trap notch Q"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to demodulate (e.g. corpus/alex_kidd)")));
 }
 
 int DemodCommand::run() const {
   const auto loaded = load_recording(recording_, carrier_);
-  if (loaded.complex_baseband) {
-    std::println(std::cerr, "demod: complex-baseband (AirSpy) input isn't supported here yet — use render");
-    return 1;
-  }
 
-  demod::VisionChainConfig cfg{
-      .sample_rate_hz = loaded.sample_rate_hz,
-      .vision_carrier_hz = loaded.vision_carrier_hz,
-      .sound_trap_hz = no_sound_trap_ ? std::optional<double>{} : loaded.meta.field<double>("rx888:sound_if_hz"),
-      .sound_q = sound_q_,
-      .cutoff_hz = cutoff_,
-      .decimation = decimate_,
-  };
-  auto vision = demod::build_vision_chain(cfg);
-  for (const auto &w: vision.warnings)
+  // The same composite envelope render/sync see, accumulated for the WAV dump.
+  const EnvelopeOptions opts{.cutoff_hz = cutoff_, .decimation = decimate_};
+  std::vector<float> out;
+  const auto es =
+      stream_envelope(loaded, opts, [&](std::span<const float> e) { out.insert(out.end(), e.begin(), e.end()); });
+  for (const auto &w: es.warnings)
     std::println(std::cerr, "demod: warning: {}", w);
-
-  auto out = stream_int16le_through_chain(loaded.data_path, vision.chain);
   if (out.empty()) {
     std::println(std::cerr, "demod: no samples read from {}", loaded.data_path.string());
     return 1;
@@ -63,19 +50,13 @@ int DemodCommand::run() const {
   auto output = output_;
   if (output.empty())
     output = std::format("{}.wav", loaded.meta_path.stem().string());
-  // Real output rate is the input rate after decimation; the slowdown then maps
-  // that to the stamped WAV rate, so the Audacity timeline is invariant to N.
-  const auto output_rate = loaded.sample_rate_hz / static_cast<double>(decimate_);
-  const auto wav_rate = static_cast<std::uint32_t>(output_rate / slowdown_);
+  // The slowdown maps the envelope rate to the stamped WAV rate, so the Audacity
+  // timeline is invariant to the decimation N.
+  const auto wav_rate = static_cast<std::uint32_t>(es.rate_hz / slowdown_);
   wav::write_mono_float(output, out, wav_rate);
 
-  std::string traps_desc = vision.trap_notes.empty() ? "no traps" : "traps: ";
-  for (std::size_t t = 0; t < vision.trap_notes.size(); ++t)
-    traps_desc += (t ? ", " : "") + vision.trap_notes[t];
-  std::println(
-      "wrote {} ({} samples @ {} Hz = real/{:g} after /{} decimation); carrier {:.4f} MHz, cutoff {:g} MHz; {}",
-      output.string(), out.size(), wav_rate, slowdown_, decimate_, loaded.vision_carrier_hz / 1e6, cutoff_ / 1e6,
-      traps_desc);
+  std::println("wrote {} ({} samples @ {} Hz = real/{:g} after /{} decimation); carrier {:.4f} MHz, cutoff {:g} MHz",
+      output.string(), out.size(), wav_rate, slowdown_, decimate_, loaded.vision_carrier_hz / 1e6, cutoff_ / 1e6);
   return 0;
 }
 

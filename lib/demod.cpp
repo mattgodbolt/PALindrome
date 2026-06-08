@@ -1,16 +1,27 @@
 #include "palindrome/demod.hpp"
 
-#include "palindrome/biquad.hpp"
 #include "palindrome/cmul.hpp"
-#include "palindrome/dc_blocker.hpp"
 #include "palindrome/restrict_ptr.hpp"
 
+#include <algorithm>
 #include <cmath>
-#include <format>
+#include <complex>
+#include <cstddef>
+#include <span>
+#include <stdexcept>
 
 namespace palindrome::demod {
 
 namespace {
+// Validate a Hilbert tap count before any work is done with it: odd (so the
+// group delay (n-1)/2 is integer and the I-plane delay matches the FIR exactly)
+// and non-zero. Returns it for use in a member initialiser.
+std::size_t require_odd_hilbert_taps(std::size_t num_taps) {
+  if (num_taps == 0 || num_taps % 2 == 0)
+    throw std::invalid_argument{"Hilbert: num_taps must be odd and non-zero (for an integer group delay)"};
+  return num_taps;
+}
+
 // AM envelope: 2 * sqrt(i^2 + q^2), elementwise. The restrict_ptr params rule out
 // aliasing (in the signature, not a comment); dropping the errno and trapping
 // guards on sqrt (scoped to this function) lets
@@ -28,34 +39,6 @@ void envelope_magnitude(
     out[k] = 2.0f * __builtin_sqrtf(i[k] * i[k] + q[k] * q[k]);
 }
 } // namespace
-
-AmEnvelope::AmEnvelope(double sample_rate_hz, double carrier_hz, double cutoff_hz, std::size_t num_taps,
-    dsp::Window window, std::size_t decimation) :
-    mixer_{carrier_hz, sample_rate_hz},
-    i_filter_{dsp::lowpass_kernel(num_taps, sample_rate_hz, cutoff_hz, window), decimation},
-    q_filter_{dsp::lowpass_kernel(num_taps, sample_rate_hz, cutoff_hz, window), decimation} {}
-
-void AmEnvelope::prepare(std::size_t max_in) {
-  mixer_.prepare(max_in);
-  i_filter_.prepare(max_in);
-  q_filter_.prepare(max_in);
-  out_.reserve(i_filter_.max_output_for(max_in));
-}
-
-std::span<const float> AmEnvelope::process(std::span<const float> in) {
-  // Down-convert to baseband I/Q, then low-pass each plane.
-  const auto mixed = mixer_.process(in);
-  const auto filtered_i = i_filter_.process(mixed.i);
-  const auto filtered_q = q_filter_.process(mixed.q);
-
-  // A real carrier of amplitude A lands as a baseband component of magnitude
-  // A/2, so scale by 2 to recover A. std::hypot's overflow guarding is needless
-  // here (the I/Q are bounded), and plain sqrt of the sum of squares vectorises
-  // into an elementwise store.
-  const std::size_t n = filtered_i.size();
-  envelope_magnitude(filtered_i.data(), filtered_q.data(), out_.write_n(n).data(), n);
-  return out_.view();
-}
 
 namespace {
 constexpr double kTwoPi = 6.283185307179586476925286766559;
@@ -111,25 +94,44 @@ std::span<const float> ComplexAmEnvelope::process(std::span<const std::complex<f
   return out_.view();
 }
 
-VisionChain build_vision_chain(const VisionChainConfig &cfg) {
-  VisionChain v;
-  if (cfg.sound_trap_hz) {
-    v.chain.add(dsp::notch(cfg.sample_rate_hz, *cfg.sound_trap_hz, cfg.sound_q));
-    v.trap_notes.push_back(std::format("sound {:.3f} MHz (Q {:g})", *cfg.sound_trap_hz / 1e6, cfg.sound_q));
+Hilbert::Hilbert(std::size_t num_taps, dsp::Window window) :
+    q_filter_{dsp::hilbert_kernel(require_odd_hilbert_taps(num_taps), window)}, delay_{(num_taps - 1) / 2} {
+  i_history_.assign(delay_, 0.0f);
+}
+
+void Hilbert::prepare(std::size_t max_in) {
+  q_filter_.prepare(max_in);
+  out_.reserve(max_in);
+}
+
+std::span<const std::complex<float>> Hilbert::process(std::span<const float> in) {
+  const std::size_t n = in.size();
+  // Quadrature plane: the Hilbert transform, delayed by the FIR group delay.
+  const auto q = q_filter_.process(in);
+  const auto out = out_.write_n(n);
+
+  // In-phase plane: the input delayed by the same group delay so I and Q align.
+  // The first `delay_` outputs read the tail carried from the previous block;
+  // the rest read this block. Reads happen before the history is rewritten below.
+  for (std::size_t k = 0; k < n; ++k) {
+    const float i = k < delay_ ? i_history_[k] : in[k - delay_];
+    out[k] = std::complex<float>{i, q[k]};
   }
-  // A constant ADC offset would mix down onto the carrier and beat into the envelope.
-  v.chain.add(dsp::DcBlocker{});
-  v.chain.add(
-      AmEnvelope{cfg.sample_rate_hz, cfg.vision_carrier_hz, cfg.cutoff_hz, cfg.num_taps, cfg.window, cfg.decimation});
 
-  // Decimation folds anything above the decimated Nyquist back into band; the
-  // low-pass must clear it. Warn rather than fail — it's a quality call.
-  if (const auto decimated_nyquist = cfg.sample_rate_hz / (2.0 * static_cast<double>(cfg.decimation));
-      cfg.cutoff_hz >= decimated_nyquist)
-    v.warnings.push_back(std::format("cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing",
-        cfg.cutoff_hz / 1e6, decimated_nyquist / 1e6));
-
-  return v;
+  // Carry the last `delay_` inputs for the next block. If this block is shorter
+  // than the delay, slide the existing history left by n (shift_left, not an
+  // overlapping copy) and append the block — so the result is independent of how
+  // the stream is chunked.
+  if (delay_ > 0) {
+    const auto m = static_cast<std::ptrdiff_t>(n);
+    if (n >= delay_)
+      std::copy(in.end() - static_cast<std::ptrdiff_t>(delay_), in.end(), i_history_.begin());
+    else {
+      std::shift_left(i_history_.begin(), i_history_.end(), m);
+      std::copy(in.begin(), in.end(), i_history_.end() - m);
+    }
+  }
+  return out_.view();
 }
 
 } // namespace palindrome::demod

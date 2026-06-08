@@ -1,12 +1,12 @@
 {
   "global": {
-    "core:datatype": "ci16_le",
-    "core:sample_rate": 10000000,
+    "core:datatype": "ri16_le",
+    "core:sample_rate": 20000000,
     "core:version": "1.2.0",
-    "core:description": "PAL composite-video IQ master (complex baseband). Sega Master System II, Wonder Boy III, UK PAL",
+    "core:description": "PAL composite-video IF master (real, 20 MS/s). Sega Master System II, Wonder Boy III, UK PAL",
     "core:author": "Matt Godbolt <matt@godbolt.org>",
     "core:recorder": "airspy_rx + tools/capture_airspy.py",
-    "core:hw": "AirSpy R2 (10 MSPS), direct RF feed",
+    "core:hw": "AirSpy R2 (raw 20 MS/s real, -t 3), direct RF feed",
     "core:extensions": [
       {
         "name": "airspy",
@@ -14,28 +14,28 @@
         "optional": true
       }
     ],
-    "airspy:command": "/usr/bin/airspy_rx -r corpus/wb3_airspy.sigmf-data.ci16 -f 591.200000 -a 10000000 -t 2 -g 9 -n 12500000",
+    "airspy:command": "/usr/bin/airspy_rx -r corpus/wb3_airspy.sigmf-data.i16 -f 589.200000 -a 10000000 -t 3 -g 9 -n 25000000",
     "airspy:gain": 9,
+    "airspy:tune_hz": 589200000,
     "airspy:adc_clip_pct": 0.0,
-    "airspy:vision_offset_hz": -3052,
-    "airspy:chroma_offset_hz": 4423370,
-    "airspy:vision_hz": 591196948,
-    "airspy:chroma_hz": 595623370,
+    "airspy:vision_if_hz": 3101807,
+    "airspy:chroma_if_hz": 7542725,
+    "airspy:sound_if_hz": 9089966,
     "airspy:carrier_detection": "detected"
   },
   "captures": [
     {
       "core:sample_start": 0,
-      "core:frequency": 591200000,
-      "core:datetime": "2026-05-30T19:33:15.103354Z"
+      "core:frequency": 589200000,
+      "core:datetime": "2026-06-08T14:17:24.836688Z"
     }
   ],
   "annotations": [
     {
       "core:sample_start": 0,
-      "core:sample_count": 10000000,
-      "core:label": "PAL composite at baseband (25 frames)",
-      "core:description": "complex baseband around core:frequency; carriers in airspy:* are offsets from core:frequency (not absolute IF bins)"
+      "core:sample_count": 20000000,
+      "core:label": "PAL composite at real IF (25 frames)",
+      "core:description": "real-sampled IF; airspy:* carriers are absolute IF frequencies"
     }
   ]
 }

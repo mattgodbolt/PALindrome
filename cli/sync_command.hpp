@@ -24,8 +24,6 @@ private:
   double carrier_{0.0};
   double cutoff_{5.0e6};
   std::size_t decimate_{2};
-  bool no_sound_trap_{false};
-  double sound_q_{10.0};
 };
 
 } // namespace palindrome::cli

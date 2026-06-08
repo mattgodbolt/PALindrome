@@ -1,25 +1,20 @@
-#include "palindrome/biquad.hpp"
-#include "palindrome/dc_blocker.hpp"
 #include "palindrome/demod.hpp"
-#include "palindrome/fir.hpp"
 
 #include <cstddef>
 #include <random>
-#include <span>
 #include <vector>
 
 #include <catch2/benchmark/catch_benchmark.hpp>
 #include <catch2/catch_test_macros.hpp>
 
-namespace dsp = palindrome::dsp;
 namespace demod = palindrome::demod;
 
 namespace {
-// Representative PAL capture parameters (see the corpus .sigmf-meta files).
-constexpr double fs = 32.0e6;
-constexpr double carrier = 3.5688e6;
-constexpr double cutoff = 5.0e6;
-constexpr double sound_if = 9.569e6;
+// Representative AirSpy raw-real capture parameters (see corpus/wb3_airspy.sigmf-meta):
+// real IF at 20 MS/s, vision ~3.1 MHz, chroma-passing cutoff.
+constexpr double fs = 20.0e6;
+constexpr double carrier = 3.1e6;
+constexpr double cutoff = 4.8e6;
 // Matches the CLI's read size; each benchmarked call processes this many samples,
 // so mean-time / block gives throughput (block / mean = samples per second).
 constexpr std::size_t block = std::size_t{1} << 16;
@@ -38,31 +33,30 @@ std::vector<float> noise(std::size_t n) {
 TEST_CASE("demod throughput (64k-sample blocks)") {
   const auto input = noise(block);
 
-  BENCHMARK("AmEnvelope::process (mix + FIR x2 + magnitude)") {
-    static demod::AmEnvelope env = [] {
-      demod::AmEnvelope e{fs, carrier, cutoff};
-      e.prepare(block);
-      return e;
+  // The analytic front end on its own: a Hilbert FIR (half its taps zero) + the
+  // matched in-phase delay. Compare against the full path below to see its share.
+  BENCHMARK("Hilbert::process (analytic FIR + matched delay)") {
+    static demod::Hilbert hilbert = [] {
+      demod::Hilbert h;
+      h.prepare(block);
+      return h;
     }();
-    return env.process(input).size();
+    return hilbert.process(input).size();
   };
 
-  BENCHMARK("full pre-detection + envelope (sound trap, DC block, envelope)") {
-    static dsp::Biquad trap = [] {
-      dsp::Biquad b = dsp::notch(fs, sound_if, 10.0);
-      b.prepare(block);
-      return b;
+  // The whole real-IF envelope: Hilbert -> ComplexAmEnvelope (DC block, mix to DC,
+  // FIR low-pass x2, magnitude). This is what stream_envelope runs per block.
+  BENCHMARK("real envelope path (Hilbert -> ComplexAmEnvelope)") {
+    static demod::Hilbert hilbert = [] {
+      demod::Hilbert h;
+      h.prepare(block);
+      return h;
     }();
-    static dsp::DcBlocker dc = [] {
-      dsp::DcBlocker d;
-      d.prepare(block);
-      return d;
-    }();
-    static demod::AmEnvelope env = [] {
-      demod::AmEnvelope e{fs, carrier, cutoff};
+    static demod::ComplexAmEnvelope env = [] {
+      demod::ComplexAmEnvelope e{fs, carrier, cutoff};
       e.prepare(block);
       return e;
     }();
-    return env.process(dc.process(trap.process(input))).size();
+    return env.process(hilbert.process(input)).size();
   };
 }

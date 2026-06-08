@@ -182,6 +182,30 @@ std::vector<float> notch_kernel(
   return k;
 }
 
+std::vector<float> hilbert_kernel(std::size_t num_taps, Window window) {
+  if (num_taps == 0)
+    throw std::invalid_argument("num_taps must be non-zero");
+
+  const auto m = static_cast<double>(num_taps - 1);
+  const double centre = m / 2.0;
+
+  // Type III ideal Hilbert impulse response, windowed: 2/(pi*k) for odd k, 0 for
+  // even k (k = i - centre). sin^2(pi*k/2) is the odd-k selector (0 on even k, 1
+  // on odd), and makes the centre tap (k == 0) exactly zero. Antisymmetric about
+  // the centre, so there is no DC-gain to normalise — a Hilbert kernel has none.
+  std::vector<float> taps(num_taps);
+  for (std::size_t i = 0; i < num_taps; ++i) {
+    const auto k = static_cast<double>(i) - centre;
+    double h = 0.0;
+    if (k != 0.0) {
+      const double s = std::sin(pi * k / 2.0);
+      h = (2.0 / (pi * k)) * s * s;
+    }
+    taps[i] = static_cast<float>(h * window_value(window, static_cast<double>(i), m));
+  }
+  return taps;
+}
+
 Fir::Fir(std::vector<float> taps, std::size_t decimation) : taps_{std::move(taps)}, decimation_{decimation} {
   if (taps_.empty())
     throw std::invalid_argument("FIR needs at least one tap");

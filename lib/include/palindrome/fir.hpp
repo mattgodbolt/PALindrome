@@ -34,6 +34,16 @@ enum class Window { Hamming, Blackman };
 [[nodiscard]] std::vector<float> notch_kernel(
     std::size_t num_taps, double sample_rate_hz, double low_hz, double high_hz, Window window = Window::Hamming);
 
+// A Type III FIR Hilbert transformer (90° phase shift): an antisymmetric kernel
+// with zeros at DC and Nyquist. The ideal impulse response is 2/(pi*k) for odd k
+// and 0 for even k (k = tap - centre), windowed. Convolving a real signal with it
+// yields the signal's quadrature; pairing that with the input delayed by the
+// kernel's group delay (num_taps-1)/2 forms the analytic (one-sided, +frequency)
+// signal — see demod::Hilbert. Rate-independent (a 90° shift at every frequency),
+// so it takes no sample rate. num_taps should be odd for an integer group delay.
+// Throws std::invalid_argument if num_taps is 0.
+[[nodiscard]] std::vector<float> hilbert_kernel(std::size_t num_taps, Window window = Window::Hamming);
+
 class Fir {
 public:
   // A decimating FIR: with `decimation` D it keeps one of every D output
