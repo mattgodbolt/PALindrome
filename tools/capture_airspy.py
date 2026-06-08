@@ -82,8 +82,12 @@ def run_capture(binary, iq_rate, tune_hz, gain, count, out_path):
            "-g", str(gain),               # linearity simplified-gain preset
            "-n", str(count)]
     print("running:", " ".join(cmd), file=sys.stderr)
+    # airspy_rx -n self-stops after count/(2*iq_rate) seconds; allow that plus
+    # startup/USB-drain headroom, so a long (minute+) capture doesn't trip the
+    # timeout. Floor at 30 s for short clips.
+    timeout_s = max(30.0, count / (2.0 * iq_rate) * 1.5 + 15.0)
     try:
-        proc = subprocess.run(cmd, timeout=60)
+        proc = subprocess.run(cmd, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         sys.exit("airspy_rx timed out — is the device wedged / the rate too high?")
     if proc.returncode != 0:
