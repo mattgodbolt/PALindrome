@@ -119,15 +119,15 @@ std::span<const std::complex<float>> Hilbert::process(std::span<const float> in)
   }
 
   // Carry the last `delay_` inputs for the next block. If this block is shorter
-  // than the delay, slide the existing history down by n and append the block —
-  // so the result is independent of how the stream is chunked.
+  // than the delay, slide the existing history left by n (shift_left, not an
+  // overlapping copy) and append the block — so the result is independent of how
+  // the stream is chunked.
   if (delay_ > 0) {
-    const auto d = static_cast<std::ptrdiff_t>(delay_);
+    const auto m = static_cast<std::ptrdiff_t>(n);
     if (n >= delay_)
-      std::copy(in.end() - d, in.end(), i_history_.begin());
+      std::copy(in.end() - static_cast<std::ptrdiff_t>(delay_), in.end(), i_history_.begin());
     else {
-      const auto m = static_cast<std::ptrdiff_t>(n);
-      std::copy(i_history_.begin() + m, i_history_.end(), i_history_.begin());
+      std::shift_left(i_history_.begin(), i_history_.end(), m);
       std::copy(in.begin(), in.end(), i_history_.end() - m);
     }
   }

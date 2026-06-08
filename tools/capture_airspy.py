@@ -45,15 +45,15 @@ FSC = 4.43361875e6  # PAL colour subcarrier; chroma sits this far above vision.
 SOUND_OFFSET = 6.0e6  # PAL-I sound carrier, vision + 6 MHz.
 
 # The AirSpy R2's raw ADC runs at 2x the requested complex rate; -a 10e6 -> 20 MS/s
-# real. Its low-IF puts the tuned frequency at fs/4 (5 MHz) and is spectrally
-# inverting, so a carrier `d` above the tune lands at IF = fs/4 - d. To place the
-# vision carrier at ~3 MHz IF (off DC so its mirror clears the chroma low-pass;
-# chroma then ~7.4 MHz, sound ~9, all below the 10 MHz Nyquist) we tune
-# fs/4 - target ~= 2 MHz *below* it. Approximate — the exact carriers are
-# auto-detected from the captured spectrum and written to the metadata.
+# real. Its low-IF puts the tuned frequency at fs/4 and is spectrally inverting, so
+# a carrier `d` above the tune lands at IF = fs/4 - d. To place the vision carrier
+# at ~3 MHz IF (off DC so its mirror clears the chroma low-pass; chroma then
+# ~7.4 MHz, sound ~9, all below the 10 MHz real Nyquist at the 10 MS/s setting) we
+# tune fs/4 - target below it. Derived from fs (not hard-coded) so a different
+# --sample-rate stays correct; the exact carriers are auto-detected from the
+# captured spectrum and written to the metadata.
 REAL_RATE_FACTOR = 2
 VISION_IF_TARGET = 3.0e6
-TUNE_BELOW_VISION = 5.0e6 - VISION_IF_TARGET  # fs/4 - target ~= 2.0 MHz
 
 
 def resolve(path, *, what, candidates):
@@ -166,7 +166,14 @@ def main():
 
     iq_rate = args.sample_rate
     fs = iq_rate * REAL_RATE_FACTOR  # real ADC rate actually written
-    tune_hz = args.frequency - int(TUNE_BELOW_VISION)
+    if_center = fs / 4               # the AirSpy low-IF maps the tune frequency here
+    # The whole PAL channel must fit below the real Nyquist with vision at the
+    # target IF: vision needs IF headroom up to fs/4, and sound (vision + 6 MHz)
+    # must stay below fs/2. Only the 10 MS/s setting (20 MS/s real) satisfies this.
+    if VISION_IF_TARGET >= if_center or VISION_IF_TARGET + SOUND_OFFSET >= fs / 2:
+        sys.exit(f"--sample-rate {iq_rate}: real Nyquist {fs/2/1e6:g} MHz can't hold the PAL "
+                 f"channel (vision {VISION_IF_TARGET/1e6:g} + sound {SOUND_OFFSET/1e6:g} MHz); use 10000000")
+    tune_hz = args.frequency - int(if_center - VISION_IF_TARGET)
     os.makedirs(args.outdir, exist_ok=True)
     data_path = os.path.join(args.outdir, f"{args.name}.sigmf-data")
     meta_path = os.path.join(args.outdir, f"{args.name}.sigmf-meta")
