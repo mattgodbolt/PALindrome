@@ -76,9 +76,18 @@ KNOBS = [
          min=0.08, max=0.28, step=0.005, default=0.14,
          help="Where the burst window closes (must be > start). A ~0.03–0.04 window past the start captures the "
               "~10-cycle burst."),
-    dict(name="no_delay_line", flag="--no-delay-line", boolean=True, label="Disable 1H comb", default=0,
-         help="Turn off the PAL-D line-pair (1H delay-line) comb on U/V. On (comb enabled) cancels differential "
-              "phase error between line pairs; off shows the raw per-line chroma (noisier, more cross-colour)."),
+    dict(name="comb_mode", flag="--comb-mode", choices=["off", "post", "delay-line"], default=1,
+         label="1H comb placement",
+         help="Where the line-pair comb sits. off = PAL-S, no comb (phase errors show as Hanover bars). post = "
+              "demodulate then average baseband U/V (the DSP-era default, robust to an off-nominal line rate). "
+              "delay-line = period PAL-D, comb the modulated chroma before demod (structural Hanover suppression — "
+              "pair with a slow Ref Tc to see it earn its keep over post)."),
+    dict(name="ref_tc", flag="--ref-tc", label="APC ref Tc (lines)",
+         min=2, max=100, step=1, default=10,
+         help="How slowly the colour reference (crystal phase) locks onto the burst. 10 = the modern fast default; a "
+              "real set's APC was slower. High values stop the reference chasing per-line drift, which is what lets "
+              "delay-line's structural sum/difference suppress Hanover bars (a fast loop hides the difference). [2,100]: "
+              "below 2 the loop tracks the ±45° swing, above 100 it can't pull in an off-nominal source."),
     dict(name="h_blank", flag="--h-blank", label="Retrace blanking (h_phase)",
          min=0.10, max=0.28, step=0.005, default=0.16,
          help="How far into the line the beam stays blanked (sync + back porch + burst). Must clear the burst, or it "
@@ -142,8 +151,9 @@ for(const k of KNOBS){vals[k.name]=k.def;
  const r=document.createElement('div');r.className='knob';r.title=k.help;
  const l=document.createElement('label');l.textContent=k.label;
  const i=document.createElement('input');i.type='range';i.min=k.min;i.max=k.max;i.step=k.step;i.value=k.def;
- const o=document.createElement('output');o.textContent=(+k.def).toPrecision(4);
- i.addEventListener('input',()=>o.textContent=(+i.value).toPrecision(4));
+ const fmt=v=>k.choices?k.choices[+v]:(+v).toPrecision(4);
+ const o=document.createElement('output');o.textContent=fmt(k.def);
+ i.addEventListener('input',()=>o.textContent=fmt(i.value));
  i.addEventListener('change',()=>{vals[k.name]=i.value;render();});
  r.append(l,i,o);kd.append(r);}
 let count=0,gen=0,playing=null;
@@ -169,13 +179,22 @@ render();
 
 
 def knobs_json():
-    # A boolean knob renders as a 0/1 slider (a 2-position toggle); value knobs
-    # carry their own range.
+    # A boolean knob renders as a 0/1 slider (a 2-position toggle); a choices knob
+    # as an N-position slider (the value is the index); value knobs carry their
+    # own range.
     out = []
     for k in KNOBS:
-        lo, hi, step = (0, 1, 1) if k.get("boolean") else (k["min"], k["max"], k["step"])
-        out.append({"name": k["name"], "label": k["label"], "min": lo, "max": hi,
-                    "step": step, "def": k["default"], "help": k["help"]})
+        if k.get("choices"):
+            lo, hi, step = 0, len(k["choices"]) - 1, 1
+        elif k.get("boolean"):
+            lo, hi, step = 0, 1, 1
+        else:
+            lo, hi, step = k["min"], k["max"], k["step"]
+        entry = {"name": k["name"], "label": k["label"], "min": lo, "max": hi,
+                 "step": step, "def": k["default"], "help": k["help"]}
+        if k.get("choices"):
+            entry["choices"] = k["choices"]
+        out.append(entry)
     return json.dumps(out)
 
 
@@ -194,7 +213,10 @@ class Tuner:
                "--frame-stride", "1", "-o", os.path.join(self.tmp, "f.png")]
         for k in KNOBS:
             v = query.get(k["name"], [k["default"]])[0]
-            if k.get("boolean"):
+            if k.get("choices"):  # the slider value is the index into choices
+                idx = max(0, min(len(k["choices"]) - 1, int(float(v))))  # clamp a hand-edited URL
+                cmd += [k["flag"], k["choices"][idx]]
+            elif k.get("boolean"):
                 if float(v) >= 0.5:  # a bare flag, no value
                     cmd.append(k["flag"])
             else:

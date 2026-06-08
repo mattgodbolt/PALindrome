@@ -44,6 +44,7 @@ private:
   double burst_gate_lo_{0.11}, burst_gate_hi_{0.14}; // burst gate, h_phase window
   bool no_delay_line_{false}; // deprecated alias for --comb-mode off
   std::string comb_mode_; // "off" | "post" | "delay-line"; empty => decoder default (post)
+  double ref_tc_{10.0}; // APC reference time constant in lines (EMA rate = 1/ref_tc)
   std::size_t frame_stride_{0}; // 0 => one image; N => a PNG every Nth field boundary
   bool no_sync_{false}; // debug: naive-fold the envelope, bypassing the sync graph
   bool no_threads_{false}; // decode serially instead of the default stage pipeline

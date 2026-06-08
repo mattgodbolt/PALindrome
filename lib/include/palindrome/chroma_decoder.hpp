@@ -51,6 +51,14 @@ struct ChromaDecoderConfig {
   double burst_gate_lo = 0.11;
   double burst_gate_hi = 0.14;
   CombMode comb_mode = CombMode::post; // where the 1H comb sits (see CombMode)
+  // APC reference time constant, in lines: how slowly the crystal phase locks onto
+  // the burst (kApc = 1/ref_tc_lines for the per-line EMA). 10 is the modern fast
+  // default. A real set's APC was slower; pushing this up makes the reference stop
+  // chasing per-line drift, which is what lets the delay_line comb's structural
+  // sum/difference earn its keep (Hanover-bar suppression a fast loop hides). Out
+  // of [2, 100]: below ~2 the loop tracks the ±45° swing itself, not the axis;
+  // above ~100 it can't pull in an off-nominal source's per-line phase ramp.
+  double ref_tc_lines = 10.0;
 };
 
 // The colour channel, a PAL-D delay-line decoder. Off the same composite envelope
@@ -121,6 +129,7 @@ private:
   // Revision), docs/ETD_Info_Sheet_21W_PAL_Coding_Revision.pdf; the parity_/ident_
   // bistable below is its "Short-Tc" Steer, the half-line V-switch sense.
   std::complex<double> apc_phasor_{0.0, 0.0};
+  double apc_rate_; // EMA coefficient = 1 / cfg_.ref_tc_lines (set in the ctor)
 
   // PAL-switch bistable + ident. parity_ toggles every line (the V-switch); the
   // V-inversion is the intrinsic 2-fold ambiguity. The ident leaky-integrates
