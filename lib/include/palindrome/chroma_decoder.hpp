@@ -117,6 +117,9 @@ private:
   // (the -U±V swinging burst), so the swing averages out of this loop, exactly as
   // a real set's APC averages it to lock its crystal phase. The rotation derives
   // from this axis (held in psi_cos_/sin_); its magnitude is the ACC (burst_amp_).
+  // This is the "Long-Tc" reference path of BBC ETD info sheet 21W (PAL Coding
+  // Revision), docs/ETD_Info_Sheet_21W_PAL_Coding_Revision.pdf; the parity_/ident_
+  // bistable below is its "Short-Tc" Steer, the half-line V-switch sense.
   std::complex<double> apc_phasor_{0.0, 0.0};
 
   // PAL-switch bistable + ident. parity_ toggles every line (the V-switch); the
