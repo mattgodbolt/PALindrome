@@ -22,7 +22,7 @@ namespace palindrome::video {
 //   post       — demodulate first (per-line burst de-rotation), then average the
 //                recovered baseband U/V across a line pair. A DSP-era convenience
 //                (late-80s/90s digital line stores and beyond); robust to an
-//                off-nominal source line rate that the fixed delay_line geometry is
+//                off-nominal source line rate that the fixed delay-line geometry is
 //                not. This is the default.
 enum class CombMode { off, post, delay_line };
 
