@@ -153,9 +153,16 @@ and `--contrast` the white point; `--burst-lo`/`--burst-hi` place the burst gate
 and `--h-blank` the retrace blanking, as h_phase windows (the defaults suit both
 the RX888 and the AirSpy raw 20 MS/s capture — a bare `--colour` decodes either).
 `--uv-bandwidth` and `--band-lo`/`--band-hi` size the post-demod U/V low-pass and
-the chroma band-pass. `--no-delay-line` drops the 1H comb. The subcarrier is a
-fixed 4.43361875 MHz crystal (override with `--subcarrier`); the per-line burst
-rotation tracks the source's offset from it, exactly as a real set's APC does.
+the chroma band-pass. `--comb-mode` chooses where the 1H line-pair comb sits,
+spanning the eras of PAL hardware: `off` (a "PAL-S" simple set, no delay line),
+`delay-line` (the period-correct PAL-D comb on the modulated chroma — sum→U,
+difference→V — before demodulation, as the TDA3561A's external glass delay line
+does), or `post` (the default: demodulate first, then average the recovered
+baseband U/V — a DSP-era convenience, robust to an off-nominal source line rate
+that the fixed delay-line geometry is not). `--no-delay-line` is an alias for
+`--comb-mode off`. The subcarrier is a fixed 4.43361875 MHz crystal (override with
+`--subcarrier`); the per-line burst rotation tracks the source's offset from it,
+exactly as a real set's APC does.
 
 ### `demod` — composite envelope to WAV (inspection)
 

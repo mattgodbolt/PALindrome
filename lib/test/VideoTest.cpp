@@ -217,32 +217,35 @@ TEST_CASE("ChromaDecoder is block-invariant (the streaming guarantee)") {
     hbeam.assign(b.begin(), b.end());
   }
 
-  const video::ChromaDecoderConfig cfg{.sample_rate_hz = kRate};
+  // Every comb mode must be block-invariant — the NCO phasor, FIR state, burst
+  // gate, comb ring and parity all carry across calls in each.
+  for (const auto mode: {video::CombMode::post, video::CombMode::delay_line, video::CombMode::off}) {
+    const video::ChromaDecoderConfig cfg{.sample_rate_hz = kRate, .comb_mode = mode};
 
-  video::ChromaDecoder whole{cfg};
-  whole.prepare(env.size());
-  std::vector<video::ChromaSample> ref;
-  {
-    const auto out = whole.process(env, hbeam);
-    ref.assign(out.begin(), out.end());
-  }
-
-  // The same signal in awkward block sizes must reproduce it sample-for-sample —
-  // the NCO phasor, FIR state, burst gate, comb ring and parity all carry across.
-  for (const std::size_t chunk: {std::size_t{1}, std::size_t{7}, std::size_t{333}, std::size_t{4096}}) {
-    video::ChromaDecoder chunked{cfg};
-    chunked.prepare(chunk);
-    std::vector<video::ChromaSample> got;
-    for (std::size_t off = 0; off < env.size(); off += chunk) {
-      const std::size_t n = std::min(chunk, env.size() - off);
-      const auto out = chunked.process(std::span{env}.subspan(off, n), std::span{hbeam}.subspan(off, n));
-      got.insert(got.end(), out.begin(), out.end());
+    video::ChromaDecoder whole{cfg};
+    whole.prepare(env.size());
+    std::vector<video::ChromaSample> ref;
+    {
+      const auto out = whole.process(env, hbeam);
+      ref.assign(out.begin(), out.end());
     }
-    REQUIRE(got.size() == ref.size());
-    for (std::size_t i = 0; i < ref.size(); ++i) {
-      CHECK(got[i].luma == ref[i].luma);
-      CHECK(got[i].u == ref[i].u);
-      CHECK(got[i].v == ref[i].v);
+
+    // The same signal in awkward block sizes must reproduce it sample-for-sample.
+    for (const std::size_t chunk: {std::size_t{1}, std::size_t{7}, std::size_t{333}, std::size_t{4096}}) {
+      video::ChromaDecoder chunked{cfg};
+      chunked.prepare(chunk);
+      std::vector<video::ChromaSample> got;
+      for (std::size_t off = 0; off < env.size(); off += chunk) {
+        const std::size_t n = std::min(chunk, env.size() - off);
+        const auto out = chunked.process(std::span{env}.subspan(off, n), std::span{hbeam}.subspan(off, n));
+        got.insert(got.end(), out.begin(), out.end());
+      }
+      REQUIRE(got.size() == ref.size());
+      for (std::size_t i = 0; i < ref.size(); ++i) {
+        CHECK(got[i].luma == ref[i].luma);
+        CHECK(got[i].u == ref[i].u);
+        CHECK(got[i].v == ref[i].v);
+      }
     }
   }
 }
