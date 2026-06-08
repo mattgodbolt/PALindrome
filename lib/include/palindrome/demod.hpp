@@ -73,9 +73,10 @@ private:
 // the low-pass, which only works when the carrier sits high enough that the image
 // (at -2*carrier after the mix) clears the chroma cutoff: RX888 vision at 3.56 MHz
 // and the AirSpy raw capture's ~3 MHz both do. Making the signal analytic deletes
-// that image outright, so the carrier placement isn't load-bearing. The FIR +
-// matched delay are sample-order recurrences, so this stage is bit-exact
-// block-invariant.
+// that image outright, so the carrier placement isn't load-bearing. The
+// quadrature FIR runs as a polyphase even/odd pair (the kernel's even-offset taps
+// are zero), parity-routed by a global sample count; that and the matched delay
+// are sample-order recurrences, so this stage is bit-exact block-invariant.
 class Hilbert {
 public:
   // num_taps: Hilbert FIR length; odd gives an integer group delay (num_taps-1)/2.
