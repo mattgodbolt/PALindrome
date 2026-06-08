@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <string>
 
 #include <lyra/lyra.hpp>
 
@@ -41,7 +42,8 @@ private:
   double uv_bandwidth_{0.0}; // post-demod U/V low-pass corner Hz; 0 => decoder default
   double band_lo_{0.0}, band_hi_{0.0}; // chroma band-pass edges Hz; 0 => decoder default
   double burst_gate_lo_{0.11}, burst_gate_hi_{0.14}; // burst gate, h_phase window
-  bool no_delay_line_{false}; // disable the PAL-D line-pair comb
+  bool no_delay_line_{false}; // deprecated alias for --comb-mode off
+  std::string comb_mode_; // "off" | "post" | "delay-line"; empty => decoder default (post)
   std::size_t frame_stride_{0}; // 0 => one image; N => a PNG every Nth field boundary
   bool no_sync_{false}; // debug: naive-fold the envelope, bypassing the sync graph
   bool no_threads_{false}; // decode serially instead of the default stage pipeline

@@ -66,7 +66,9 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(
               lyra::opt(burst_gate_lo_, "x")["--burst-lo"]("Colour: burst gate start (h_phase; ~0.16 at 10 MS/s)"))
           .add_argument(lyra::opt(burst_gate_hi_, "x")["--burst-hi"]("Colour: burst gate end (h_phase)"))
-          .add_argument(lyra::opt(no_delay_line_)["--no-delay-line"]("Colour: disable the PAL-D line-pair comb"))
+          .add_argument(lyra::opt(comb_mode_, "mode")["--comb-mode"](
+              "Colour: 1H comb placement — off (PAL-S) | delay-line (period PAL-D, pre-demod) | post (default)"))
+          .add_argument(lyra::opt(no_delay_line_)["--no-delay-line"]("Colour: alias for --comb-mode off"))
           .add_argument(lyra::opt(sync_level_, "x")["--sync-level"]("Sync-separator slice level"))
           .add_argument(lyra::opt(h_kp_, "x")["--h-kp"]("Horizontal hold: AFC kp"))
           .add_argument(lyra::opt(h_ki_, "x")["--h-ki"]("Horizontal hold: AFC ki"))
@@ -156,7 +158,20 @@ int RenderCommand::run() const {
     dc.chroma.band_hi_hz = band_hi_;
   dc.chroma.burst_gate_lo = burst_gate_lo_;
   dc.chroma.burst_gate_hi = burst_gate_hi_;
-  dc.chroma.delay_line = !no_delay_line_;
+  if (no_delay_line_) // deprecated alias, overridden by an explicit --comb-mode
+    dc.chroma.comb_mode = video::CombMode::off;
+  if (!comb_mode_.empty()) {
+    if (comb_mode_ == "off")
+      dc.chroma.comb_mode = video::CombMode::off;
+    else if (comb_mode_ == "post")
+      dc.chroma.comb_mode = video::CombMode::post;
+    else if (comb_mode_ == "delay-line")
+      dc.chroma.comb_mode = video::CombMode::delay_line;
+    else {
+      std::println(std::cerr, "render: --comb-mode must be off, post, or delay-line");
+      return 1;
+    }
+  }
   dc.sep.sync_level = sync_level_;
   dc.hsweep.pll_kp = h_kp_;
   dc.hsweep.pll_ki = h_ki_;

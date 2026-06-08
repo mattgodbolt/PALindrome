@@ -11,6 +11,21 @@
 
 namespace palindrome::video {
 
+// Where the 1H line-pair comb sits, spanning the eras of PAL colour hardware:
+//   off        — no comb (a "PAL-S" simple set: phase errors show as Hanover bars,
+//                the eye averages adjacent lines). The cheapest 1970s/early-80s sets.
+//   delay_line — the period-correct PAL-D comb: a 1H delay line on the *modulated*
+//                chroma, summed (-> U, V cancels) and differenced (-> V, U cancels)
+//                BEFORE demodulation, exactly as the TDA3561A's external glass delay
+//                line feeds its (R-Y)/(B-Y) demodulators (see docs/TDA3561A.md). The
+//                classic 1980s set.
+//   post       — demodulate first (per-line burst de-rotation), then average the
+//                recovered baseband U/V across a line pair. A DSP-era convenience
+//                (late-80s/90s digital line stores and beyond); robust to an
+//                off-nominal source line rate that the fixed delay_line geometry is
+//                not. This is the default.
+enum class CombMode { off, post, delay_line };
+
 struct ChromaDecoderConfig {
   double sample_rate_hz;
   // The subcarrier crystal: a fixed 4.43361875 MHz reference, exactly as a real
@@ -35,7 +50,7 @@ struct ChromaDecoderConfig {
   // 10 MS/s capture wants a slightly later window (~0.16) than a 16 MS/s one.
   double burst_gate_lo = 0.11;
   double burst_gate_hi = 0.14;
-  bool delay_line = true; // PAL-D line-pair (1H) comb on U/V
+  CombMode comb_mode = CombMode::post; // where the 1H comb sits (see CombMode)
 };
 
 // The colour channel, a PAL-D delay-line decoder. Off the same composite envelope
@@ -119,7 +134,8 @@ private:
   std::size_t last_line_start_ = 0;
   std::size_t line_len_; // samples in the last line (comb delay)
 
-  // The delay line: a ring of the final U/V, one line deep, for the comb.
+  // The delay line: a ring one line deep of the comb's input — the final U/V for
+  // CombMode::post, the raw demod quadratures for CombMode::delay_line.
   std::vector<float> u_ring_, v_ring_;
   std::size_t ring_cap_;
   std::size_t ring_pos_ = 0; // running write position into the comb ring

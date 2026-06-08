@@ -180,26 +180,55 @@ std::span<const ChromaSample> ChromaDecoder::process(
     in_gate_prev_ = in_gate;
     ++sample_index_;
 
-    // R(ψ): U = cosψ·rawU - sinψ·rawV; V_mod = sinψ·rawU + cosψ·rawV. V flips on
-    // PAL-style lines to recover transmitted V.
+    // The comb's read index, one line back. ring_pos_ is kept wrapped in
+    // [0, ring_cap_) so it's a conditional subtract, not a per-sample modulo;
+    // line_len_ < ring_cap_, so the read offset wraps at most once.
+    const std::size_t wi = ring_pos_;
+    const std::size_t ri = wi >= line_len_ ? wi - line_len_ : wi + ring_cap_ - line_len_;
     const double scale = burst_amp_ > 1e-9 ? 1.0 / burst_amp_ : 0.0;
-    float u = static_cast<float>((psi_cos_ * i - psi_sin_ * q) * scale);
-    float v = static_cast<float>((psi_sin_ * i + psi_cos_ * q) * v_flip_ * scale);
 
-    if (cfg_.delay_line) {
-      // ring_pos_ is kept wrapped in [0, ring_cap_) so the comb's read index is a
-      // conditional subtract, not a (non-power-of-two) modulo per sample. line_len_
-      // < ring_cap_, so the read offset wraps at most once.
-      const std::size_t wi = ring_pos_;
-      const std::size_t ri = wi >= line_len_ ? wi - line_len_ : wi + ring_cap_ - line_len_;
-      const float u_avg = 0.5f * (u + u_ring_[ri]);
-      const float v_avg = 0.5f * (v + v_ring_[ri]);
-      u_ring_[wi] = u;
-      v_ring_[wi] = v;
-      u = u_avg;
-      v = v_avg;
+    float u;
+    float v;
+    if (cfg_.comb_mode == CombMode::delay_line) {
+      // Period-correct PAL-D: the 1H comb sits on the chroma BEFORE the per-line
+      // de-rotation (a delay line on the modulated chroma; the continuous NCO
+      // demod has already cancelled the inter-line carrier advance, so adjacent
+      // lines' raw quadratures are aligned to within the slow crystal-vs-source
+      // drift). U comes from the SUM (the opposite-switch V cancels) and V from
+      // the DIFFERENCE (U cancels), each on its own demod axis — the TDA3561A's
+      // two delay-line demodulators. Unlike `post`, the delayed line is NOT
+      // individually phase-corrected, so a source off the nominal line rate
+      // leaves the authentic residual. The ring holds the raw quadratures.
+      const double id = u_ring_[ri];
+      const double qd = v_ring_[ri];
+      u_ring_[wi] = static_cast<float>(i);
+      v_ring_[wi] = static_cast<float>(q);
       if (++ring_pos_ == ring_cap_)
         ring_pos_ = 0;
+      const double su = i + id; // sum: U-bearing (V cancels)
+      const double sq = q + qd;
+      const double du = i - id; // difference: V-bearing (U cancels)
+      const double dq = q - qd;
+      u = static_cast<float>(0.5 * (psi_cos_ * su - psi_sin_ * sq) * scale);
+      v = static_cast<float>(0.5 * (psi_sin_ * du + psi_cos_ * dq) * v_flip_ * scale);
+    }
+    else {
+      // R(ψ): U = cosψ·rawU - sinψ·rawV; V_mod = sinψ·rawU + cosψ·rawV. V flips on
+      // PAL-style lines to recover transmitted V.
+      u = static_cast<float>((psi_cos_ * i - psi_sin_ * q) * scale);
+      v = static_cast<float>((psi_sin_ * i + psi_cos_ * q) * v_flip_ * scale);
+      if (cfg_.comb_mode == CombMode::post) {
+        // DSP-era convenience: average the recovered baseband U/V across a line
+        // pair (both lines already de-rotated and V-un-flipped, so a straight mean).
+        const float u_avg = 0.5f * (u + u_ring_[ri]);
+        const float v_avg = 0.5f * (v + v_ring_[ri]);
+        u_ring_[wi] = u;
+        v_ring_[wi] = v;
+        u = u_avg;
+        v = v_avg;
+        if (++ring_pos_ == ring_cap_)
+          ring_pos_ = 0;
+      }
     }
     out[k] = ChromaSample{.luma = luma[k], .u = u, .v = v};
   }
