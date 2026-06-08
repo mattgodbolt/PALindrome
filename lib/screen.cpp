@@ -93,7 +93,7 @@ Screen::Screen(const ScreenConfig &cfg) :
     return 0.0f;
   if (gun_lut_.empty()) // gamma == 1.0
     return static_cast<float>(drive);
-  if (!(drive < kGunDriveMax)) // bloom (and NaN) take the cold pow path, not the table
+  if (!(drive < kGunDriveMax)) // over the table: phosphor bloom takes the cold pow path
     return gun_bloom(drive);
   const double t = drive * (static_cast<double>(kGunBins) / kGunDriveMax);
   const auto i = static_cast<std::size_t>(t);
