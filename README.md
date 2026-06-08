@@ -8,9 +8,9 @@ PALindrome ingests a lossless RF/IQ master of a real PAL source (captured off a
 console via an SDR) and decodes it the way a 1980s television would — as an
 analog machine, not a DSP textbook. The current state:
 
-- **Capture** from an RX888 (real-sampled IF) or an AirSpy R2 (complex
-  baseband), saved as SigMF masters under `corpus/`. Both decode through the
-  same pipeline.
+- **Capture** from an RX888 or an AirSpy R2 — both real-sampled IF (the AirSpy
+  in its raw 20 MS/s mode), saved as SigMF masters under `corpus/`. Both decode
+  through the same pipeline.
 - **`demod`** — AM-demodulates the vision carrier to a WAV for inspection.
 - **`render`** — a **working sync-locked decode, in colour** (`--colour`) or
   monochrome: a streaming video graph that separates sync, locks horizontal and
@@ -35,10 +35,9 @@ The picture is a clean, recognisable image — true blacks, straight geometry,
 filled scanlines — and **in colour** (`render --colour`): a PAL-D chroma channel
 recovers U/V off the burst and drives an RGB phosphor triad. Levels are period-
 correct (an IF-AGC white reference, ACC chroma referenced to the luma, retrace
-blanking), and the RGB matrix matches the TDA3561A datasheet. The burst gate is
-calibrated per SDR (the AirSpy's narrow 10 MS/s puts the 4.43 MHz chroma near
-Nyquist, where its front-end group delay shifts the burst ~2 µs vs the RX888's
-wide 32 MS/s — a real capture characteristic, not a decoder gap). See the roadmap.
+blanking), and the RGB matrix matches the TDA3561A datasheet. Both SDRs decode
+colour with the same default burst gate — the AirSpy's old per-SDR skew was a
+10 MS/s near-Nyquist artifact, gone now it captures the channel at 20 MS/s.
 
 ## Capturing reference clips
 
@@ -68,14 +67,19 @@ Defaults: 32 MSps, 12 frames, tuned ~0.5 MHz below the vision carrier with
 front-end-heavy gain. Flags: `--sample-rate`, `--frequency`, `--vhf-lna`,
 `--vhf-vga`, `--frames`, `--outdir`.
 
-### AirSpy R2 (complex baseband)
+### AirSpy R2 (raw real, 20 MS/s)
 
-`tools/capture_airspy.py` drives `airspy_rx` (stock firmware, no FX3 juggling).
-Complex `ci16_le` IQ centred on the tune frequency, Nyquist ±fs/2. At 10 MSps the
-span holds vision + chroma but **not** the +6 MHz sound, so the default tunes on
-the vision carrier (vision + chroma, no sound). Carriers are **offsets from
-`core:frequency`** in the `airspy:*` metadata — the opposite convention to the
-RX888 corpus.
+`tools/capture_airspy.py` drives `airspy_rx` (stock firmware, no FX3 juggling) in
+its **raw real** mode (`-t 3`): the chip's untouched ADC stream, real-sampled at
+**20 MS/s** — twice the 10 MS/s of the firmware's complex-baseband mode, and
+before its decimation filter. The extra rate is what makes PAL **colour**
+decodable: at 10 MS/s the 4.43 MHz subcarrier sits at 0.886·Nyquist (its upper
+sideband clips, the 2·fSC demod image folds into the chroma); at 20 MS/s it's
+comfortably mid-band. Real samples carry a mirror of the carrier at minus-its-
+frequency, so we tune the vision carrier to ~3 MHz IF (chroma ~7.4, sound ~9 —
+the whole channel fits below the 10 MHz Nyquist) where the mirror clears the
+chroma low-pass, and the decoder forms the analytic signal to delete it. Same
+real-IF convention as the RX888: carriers are absolute IF bins in `airspy:*`.
 
 ```
 python3 tools/capture_airspy.py wb3 \
@@ -84,16 +88,16 @@ python3 tools/inspect_capture.py corpus/wb3   # QC before decoding
 ```
 
 Needs `airspy_rx` (from `airspy-tools`) on `$PATH` and `python3` + `numpy` (+
-`scipy`/`pillow` for `inspect_capture.py`). Defaults: 10 MSps, **gain 9**, 25
-frames (1 s). Flags: `--frequency`, `--gain`, `--frames`, `--sample-rate`.
+`scipy`/`pillow` for `inspect_capture.py`). Defaults: 20 MS/s real, **gain 9**,
+25 frames (1 s). Flags: `--frequency` (the source's vision carrier; we tune
+~2 MHz below it), `--gain`, `--frames`, `--sample-rate`.
 
 **Gain 9, not higher.** Counter-intuitively, a front-end-heavy gain (≥13)
-overdrives the AirSpy's ADC into an intermodulation product: a coherent,
-video-bearing *ghost* of the vision carrier ~fs/70 (~143 kHz) away, ~17 dB down.
-It beats into the AM envelope as drifting vertical bars and renders the decode
-unrecognisable — all while the ADC clip percentage reads 0%. `inspect_capture.py`
-flags it; `g9` clears it with the best line-comb SNR. The decode itself works:
-`render`/`demod`/`sync` read `ci16` and down-mix the carrier offset directly.
+overdrives the AirSpy into an intermodulation product: a coherent, video-bearing
+*ghost* of the vision carrier ~fs/70 away, ~17 dB down. It beats into the AM
+envelope as drifting vertical bars and renders the decode unrecognisable — all
+while the ADC clip percentage reads 0%. `inspect_capture.py` flags it; `g9`
+clears it with the best line-comb SNR.
 
 ## Decoding
 
@@ -105,10 +109,10 @@ analog set:
 
 ```mermaid
 flowchart TD
-    SIGMF["corpus sigmf-data<br/>real IF (RX888) /<br/>complex baseband (AirSpy)"] --> VIS
+    SIGMF["corpus sigmf-data<br/>real IF: RX888 32 MS/s /<br/>AirSpy raw 20 MS/s"] --> VIS
 
-    subgraph vis["vision chain (Chain&lt;float&gt;)"]
-      VIS["sound trap → DC block →<br/>mix carrier to baseband → FIR LP →<br/>AM envelope (× decimation)"]
+    subgraph vis["vision chain"]
+      VIS["analytic (Hilbert) →<br/>mix carrier to baseband → FIR LP →<br/>AM envelope (× decimation)"]
     end
 
     VIS -->|envelope| SEP["SyncSeparator<br/>AGC + slice → 1-bit sync"]
@@ -135,7 +139,7 @@ bit-identical to the serial path; `--no-threads` forces serial decode.
 
 Flags: `--width`, `--height`, `--decimate` (`0` = auto: the largest decimation
 that keeps the 4.43 MHz subcarrier below ~0.7·Nyquist — RX888 32 MS/s → /2,
-AirSpy 10 MS/s → /1; pass a number to override), `--carrier`, `--cutoff`,
+AirSpy 20 MS/s → /1; pass a number to override), `--carrier`, `--cutoff`,
 `--sync-cutoff` (the narrow low-pass on the sync-detection branch), and the CRT
 knobs `--persistence` (phosphor decay, in field periods), `--beam-sigma`
 (beam-spot vertical size, in rows), `--gamma` (electron-gun curve), and
@@ -146,11 +150,11 @@ research tool that throws most of them away.
 For colour, add `--colour`: it decodes the chroma and writes an RGB PNG.
 `--saturation` is the chroma gain (a fraction of the luma white — the colour pot)
 and `--contrast` the white point; `--burst-lo`/`--burst-hi` place the burst gate
-and `--h-blank` the retrace blanking, as h_phase windows (the defaults suit
-~16 MS/s; a 10 MS/s AirSpy capture wants `--burst-lo 0.16 --burst-hi 0.20
---h-blank 0.21 --cutoff 4.8e6` so the subcarrier survives the front end —
-decimation auto-picks /1 for it). `--no-delay-line` drops the 1H comb. The subcarrier is a fixed
-4.43361875 MHz crystal (override with `--subcarrier`); the per-line burst
+and `--h-blank` the retrace blanking, as h_phase windows (the defaults suit both
+the RX888 and the AirSpy raw 20 MS/s capture — a bare `--colour` decodes either).
+`--uv-bandwidth` and `--band-lo`/`--band-hi` size the post-demod U/V low-pass and
+the chroma band-pass. `--no-delay-line` drops the 1H comb. The subcarrier is a
+fixed 4.43361875 MHz crystal (override with `--subcarrier`); the per-line burst
 rotation tracks the source's offset from it, exactly as a real set's APC does.
 
 ### `demod` — composite envelope to WAV (inspection)
@@ -192,23 +196,15 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
   with a self-resolving V-switch (bistable + ident), the 1H delay-line comb, ACC
   chroma referenced to the luma white, an IF-AGC white reference, retrace
   blanking, and the RGB phosphor matrix — a faithful PAL-D path matching the
-  TDA3561A datasheet (`docs/TDA3561A.md`). The burst gate is calibrated per SDR
-  (`--burst-lo/-hi --h-blank`), and the reason is worth recording: a *uniform*
-  front-end delay would cancel (it shifts the sync reference and the burst
-  together), but the AirSpy R2's is *dispersive* — different frequencies are
-  delayed by different amounts, so the 4.43 MHz burst lands ~2 µs later than the
-  low-frequency sync edge and their spacing shifts. Both these RF captures went
-  through a tuner (the RX888 mk2 used its R828D VHF path, `--vhf-*`, not its
-  direct-sampling HF path), so it isn't tuner-vs-direct — it's bandwidth: the
-  RX888's wide 32 MS/s keeps the chroma at ~0.5·Nyquist where the response is
-  flat, while the AirSpy's narrow 10 MS/s puts it at 0.885·Nyquist, in the
-  anti-alias roll-off where group delay climbs (and the upper sideband clips).
-  Real PAL TVs add group-delay equalisers in the IF for exactly this reason. The
-  skew is in the AirSpy *capture* (it survives full decoder bypass on the raw IQ),
-  so one computed gate can't cover both radios; it's a real capture characteristic,
-  not a missing feature. (Direct-sampling the composite baseband — feeding video
-  straight to the ADC, no tuner — would sidestep this, but we haven't captured
-  that way yet.)
+  TDA3561A datasheet (`docs/TDA3561A.md`). Both SDRs decode with the same default
+  burst gate. The AirSpy used to need a hand-tuned gate because at 10 MS/s the
+  4.43 MHz chroma sat at 0.886·Nyquist — its upper sideband clipped and the
+  front-end group delay there was *dispersive*, shifting the burst ~2 µs vs the
+  sync edge. Capturing the raw ADC at 20 MS/s (vision ~3 MHz, chroma mid-band)
+  removed both: the chroma SNR matches the RX888's and the skew is gone. The one
+  wrinkle of real samples — the carrier's negative-frequency mirror — is deleted
+  by forming the analytic signal (`demod::Hilbert`) before the envelope, so a
+  single demodulator serves both radios.
 - **Optimisation.** ✅ The hot paths are profiled and tuned — LUTs for the
   screen's per-sample `exp`, an across-output FIR microkernel, fast PNG encode,
   auto-decimation. Parked next: a fast gun-gamma `pow` (the last per-sample

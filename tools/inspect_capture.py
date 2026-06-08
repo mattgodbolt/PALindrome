@@ -41,12 +41,12 @@ def load(stem):
     fs = float(g["core:sample_rate"])
     dt = g["core:datatype"]
     raw = np.fromfile(data_path, dtype="<i2").astype(np.float64)
-    if dt.startswith("c"):  # complex: interleaved I,Q
+    if dt.startswith("c"):  # complex: interleaved I,Q (legacy)
         x = raw[0::2] + 1j * raw[1::2]
         vis = g.get("airspy:vision_offset_hz")
-    else:  # real IF
+    else:  # real IF: RX888 (rx888:*) or AirSpy raw 20 MS/s (airspy:*)
         x = raw
-        vis = g.get("rx888:vision_if_hz")
+        vis = g.get("rx888:vision_if_hz") or g.get("airspy:vision_if_hz")
     return x, fs, (None if vis is None else float(vis)), meta
 
 

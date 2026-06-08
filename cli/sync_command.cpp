@@ -90,19 +90,16 @@ void SyncCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(carrier_, "hz")["--carrier"]("Carrier Hz (default: rx888:vision_if_hz)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs"))
-          .add_argument(lyra::opt(no_sound_trap_)["--no-sound-trap"]("Disable the sound-carrier notch"))
-          .add_argument(lyra::opt(sound_q_, "q")["--sound-q"]("Sound-trap notch Q"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to inspect (e.g. corpus/alex_kidd)")));
 }
 
 int SyncCommand::run() const {
   const auto loaded = load_recording(recording_, carrier_);
 
-  // Demodulate to the composite envelope (real IF or complex baseband, hidden
-  // behind stream_envelope) and gather it for the batch pulse analysis.
+  // Demodulate to the composite envelope (behind stream_envelope) and gather it
+  // for the batch pulse analysis.
   std::vector<float> env;
-  const EnvelopeOptions opts{
-      .cutoff_hz = cutoff_, .decimation = decimate_, .no_sound_trap = no_sound_trap_, .sound_q = sound_q_};
+  const EnvelopeOptions opts{.cutoff_hz = cutoff_, .decimation = decimate_};
   const auto es =
       stream_envelope(loaded, opts, [&](std::span<const float> e) { env.insert(env.end(), e.begin(), e.end()); });
   for (const auto &w: es.warnings)

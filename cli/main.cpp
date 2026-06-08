@@ -49,7 +49,7 @@ int main(int argc, const char **argv) {
     return 1;
   }
   // Last-resort handler for anything the subcommands didn't catch (e.g. a bad
-  // --cutoff that trips AmEnvelope's std::invalid_argument). Commands still
+  // --cutoff that trips the envelope's std::invalid_argument). Commands still
   // print their own prefixed diagnostics for the cases they know about; this
   // just stops an escaped exception from terminating without a useful message.
   try {
