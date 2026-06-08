@@ -6,13 +6,14 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <format>
 #include <numbers>
+#include <stdexcept>
 
 namespace palindrome::video {
 
 namespace {
 constexpr double kTwoPi = 2.0 * std::numbers::pi;
-constexpr double kApc = 0.1; // APC EMA rate (averages the ±45° swing over ~10 lines)
 constexpr double kIdent = 0.1; // ident leaky-integrator rate for the PAL-switch bistable
 
 // Keep the chroma band-pass top edge below Nyquist (the AirSpy's 10 MS/s only
@@ -43,6 +44,10 @@ ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
   // assume it, so luma and chroma stay co-registered.
   if (cfg_.bandpass_taps % 2 == 0 || cfg_.demod_lp_taps % 2 == 0)
     throw std::invalid_argument{"ChromaDecoder: bandpass_taps and demod_lp_taps must be odd"};
+  if (!(cfg_.ref_tc_lines >= 2.0 && cfg_.ref_tc_lines <= 100.0))
+    throw std::invalid_argument{
+        std::format("ChromaDecoder: ref_tc_lines must be in [2, 100], got {}", cfg_.ref_tc_lines)};
+  apc_rate_ = 1.0 / cfg_.ref_tc_lines;
   nco_omega_ = cfg_.subcarrier_hz / cfg_.sample_rate_hz;
   nco_step_ = std::polar(1.0, kTwoPi * nco_omega_);
   // The comb delay is one line; size the ring for the longest line we expect.
@@ -87,7 +92,7 @@ void ChromaDecoder::finalize_line() {
   // APC: a slow EMA of the burst phasor locks the reference onto the -U axis. The
   // ±45° swing alternates line to line, so it averages out and the EMA tracks the
   // steady LO-vs-subcarrier offset (and any slow source drift), like a real APC.
-  apc_phasor_ = (1.0 - kApc) * apc_phasor_ + kApc * std::complex<double>{bc, bs};
+  apc_phasor_ = (1.0 - apc_rate_) * apc_phasor_ + apc_rate_ * std::complex<double>{bc, bs};
   // The ACC level: the same phasor's magnitude is the swing-averaged burst (the
   // ±45° swing shrinks it by cos45°, so ×√2 recovers |burst|). One tracker, not two.
   burst_amp_ = std::numbers::sqrt2 * std::abs(apc_phasor_);

@@ -162,7 +162,14 @@ baseband U/V — a DSP-era convenience, robust to an off-nominal source line rat
 that the fixed delay-line geometry is not). `--no-delay-line` is an alias for
 `--comb-mode off`. The subcarrier is a fixed 4.43361875 MHz crystal (override with
 `--subcarrier`); the per-line burst rotation tracks the source's offset from it,
-exactly as a real set's APC does.
+exactly as a real set's APC does. `--ref-tc` (lines, default 10) sets how slowly
+that APC reference locks: 10 is a modern fast loop that chases per-line drift, so
+the comb modes look alike; raising it toward a period-faithful slow reference
+stops the loop chasing, and `delay-line`'s structural sum/difference then
+suppresses Hanover bars that `post` (de-rotating each line against a now-lagging
+reference) can't — the experiment that makes the comb placement matter. Range
+[2, 100]: below ~2 the loop tracks the ±45° burst swing, above ~100 it can't pull
+in an off-nominal source.
 
 ### `demod` — composite envelope to WAV (inspection)
 
