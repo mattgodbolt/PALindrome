@@ -36,6 +36,29 @@ TEST_CASE("hilbert_kernel is an antisymmetric Type III transformer") {
   }
 }
 
+TEST_CASE("Hilbert's polyphase quadrature is bit-identical to the full-kernel FIR") {
+  // The polyphase split drops only the kernel's exact-zero even-offset taps, so
+  // the quadrature plane must match the full Hilbert kernel run through one FIR
+  // (the pre-optimisation implementation) to the bit — same fmaf order.
+  constexpr std::size_t taps = 127;
+  std::vector<float> x(3000);
+  for (std::size_t k = 0; k < x.size(); ++k)
+    x[k] = static_cast<float>(std::sin(0.31 * static_cast<double>(k)) + 0.4 * std::cos(0.07 * static_cast<double>(k)));
+
+  dsp::Fir full{dsp::hilbert_kernel(taps)};
+  full.prepare(x.size());
+  const auto qref = full.process(x);
+  const std::vector<float> ref{qref.begin(), qref.end()};
+
+  demod::Hilbert dut{taps};
+  dut.prepare(x.size());
+  const auto out = dut.process(x);
+
+  REQUIRE(out.size() == ref.size());
+  for (std::size_t k = 0; k < out.size(); ++k)
+    CHECK(out[k].imag() == ref[k]); // bit-exact, not just close
+}
+
 TEST_CASE("Hilbert forms a one-sided analytic signal of the right sign") {
   constexpr double fs = 20.0e6;
   constexpr double f = 4.0e6; // mid-band, well inside the Hilbert passband
@@ -103,4 +126,8 @@ TEST_CASE("Hilbert is block-invariant (bit-exact across chunkings)") {
   }
 }
 
-TEST_CASE("Hilbert rejects an even tap count") { CHECK_THROWS_AS(demod::Hilbert{64}, std::invalid_argument); }
+TEST_CASE("Hilbert rejects tap counts that aren't 3 (mod 4)") {
+  CHECK_THROWS_AS(demod::Hilbert{64}, std::invalid_argument); // even
+  CHECK_THROWS_AS(demod::Hilbert{65}, std::invalid_argument); // odd but 1 (mod 4): non-zero taps land on odd indices
+  CHECK_NOTHROW(demod::Hilbert{127}); // 3 (mod 4): non-zero taps on even indices
+}

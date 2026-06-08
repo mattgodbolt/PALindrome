@@ -73,13 +73,17 @@ private:
 // the low-pass, which only works when the carrier sits high enough that the image
 // (at -2*carrier after the mix) clears the chroma cutoff: RX888 vision at 3.56 MHz
 // and the AirSpy raw capture's ~3 MHz both do. Making the signal analytic deletes
-// that image outright, so the carrier placement isn't load-bearing. The FIR +
-// matched delay are sample-order recurrences, so this stage is bit-exact
-// block-invariant.
+// that image outright, so the carrier placement isn't load-bearing. The
+// quadrature FIR runs as a polyphase even/odd pair (a Type III kernel's non-zero
+// taps occupy one array parity, so each output depends on only one input parity),
+// parity-routed by a global sample count; that and the matched delay are
+// sample-order recurrences, so this stage is bit-exact block-invariant.
 class Hilbert {
 public:
-  // num_taps: Hilbert FIR length; odd gives an integer group delay (num_taps-1)/2.
-  // Throws std::invalid_argument if num_taps is 0 or even.
+  // num_taps: Hilbert FIR length. Must be ≡ 3 (mod 4) — odd, for an integer group
+  // delay (num_taps-1)/2, and with the kernel's non-zero taps on even array
+  // indices, which the polyphase split assumes (the natural 2^k-1 lengths qualify;
+  // see the implementation). Throws std::invalid_argument otherwise.
   explicit Hilbert(std::size_t num_taps = kDefaultVisionTaps, dsp::Window window = dsp::Window::Hamming);
 
   void prepare(std::size_t max_in);
@@ -95,9 +99,18 @@ public:
   [[nodiscard]] std::size_t group_delay_samples() const noexcept { return delay_; }
 
 private:
-  dsp::Fir q_filter_; // antisymmetric Hilbert kernel -> quadrature plane
+  // Polyphase quadrature: a Type III Hilbert kernel's even-offset taps are all
+  // zero, so Q[n] depends only on the same-parity input samples. Split the input
+  // into its even- and odd-index streams and run each (half-rate) through the
+  // half-length even-tap kernel — the same multiply-adds as the full kernel minus
+  // the structural zeros, in the same order, so bit-identical at ~half the work.
+  dsp::Fir q_even_; // even-tap kernel over the even-index input samples
+  dsp::Fir q_odd_; // ... and over the odd-index samples
+  Buffer<float> even_in_; // scratch: the deinterleaved even-index input half
+  Buffer<float> odd_in_; // scratch: the deinterleaved odd-index input half
   std::vector<float> i_history_; // last `delay_` inputs, carried for the matched in-phase delay
   std::size_t delay_; // (num_taps - 1) / 2: the FIR group delay the I plane matches
+  std::size_t samples_seen_ = 0; // global input count, for each block's even/odd parity
   Buffer<std::complex<float>> out_; // owned analytic output, reused across calls
 };
 

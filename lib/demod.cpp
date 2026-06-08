@@ -13,13 +13,32 @@
 namespace palindrome::demod {
 
 namespace {
-// Validate a Hilbert tap count before any work is done with it: odd (so the
-// group delay (n-1)/2 is integer and the I-plane delay matches the FIR exactly)
-// and non-zero. Returns it for use in a member initialiser.
-std::size_t require_odd_hilbert_taps(std::size_t num_taps) {
-  if (num_taps == 0 || num_taps % 2 == 0)
-    throw std::invalid_argument{"Hilbert: num_taps must be odd and non-zero (for an integer group delay)"};
+// Validate a Hilbert tap count before any work is done with it, and return it for
+// use in a member initialiser. Must be ≡ 3 (mod 4): that makes it odd (so the
+// group delay (n-1)/2 is an integer the I-plane delay can match) AND puts the
+// centre tap on an odd index, so the Type III kernel's non-zero taps — those at
+// an ODD offset from the centre — land on EVEN array indices, which the polyphase
+// even/odd split below assumes. The natural Hilbert lengths (2^k - 1: 31, 63, 127,
+// ...) all satisfy this; e.g. 65 would not, and is rejected rather than silently
+// picking the zero taps.
+std::size_t require_hilbert_taps(std::size_t num_taps) {
+  if (num_taps % 4 != 3)
+    throw std::invalid_argument{"Hilbert: num_taps must be ≡ 3 (mod 4) — odd, with the kernel's non-zero taps on even "
+                                "indices (e.g. 31, 63, 127)"};
   return num_taps;
+}
+
+// The non-zero taps of the Hilbert kernel. For a num_taps ≡ 3 (mod 4) kernel the
+// non-zero taps (odd offset from the centre) sit at the even array indices, so
+// each polyphase FIR runs full[0], full[2], ... over one input parity; the dropped
+// taps were exact zeros, so the result is bit-identical to convolving the full
+// kernel.
+std::vector<float> even_hilbert_taps(std::size_t num_taps, dsp::Window window) {
+  const auto full = dsp::hilbert_kernel(require_hilbert_taps(num_taps), window);
+  std::vector<float> even((full.size() + 1) / 2);
+  for (std::size_t m = 0; m < even.size(); ++m)
+    even[m] = full[2 * m];
+  return even;
 }
 
 // AM envelope: 2 * sqrt(i^2 + q^2), elementwise. The restrict_ptr params rule out
@@ -95,27 +114,52 @@ std::span<const float> ComplexAmEnvelope::process(std::span<const std::complex<f
 }
 
 Hilbert::Hilbert(std::size_t num_taps, dsp::Window window) :
-    q_filter_{dsp::hilbert_kernel(require_odd_hilbert_taps(num_taps), window)}, delay_{(num_taps - 1) / 2} {
+    q_even_{even_hilbert_taps(num_taps, window)}, q_odd_{even_hilbert_taps(num_taps, window)},
+    delay_{(num_taps - 1) / 2} {
   i_history_.assign(delay_, 0.0f);
 }
 
 void Hilbert::prepare(std::size_t max_in) {
-  q_filter_.prepare(max_in);
+  const std::size_t half = (max_in + 1) / 2; // most even/odd samples a block can hold
+  q_even_.prepare(half);
+  q_odd_.prepare(half);
+  even_in_.reserve(half);
+  odd_in_.reserve(half);
   out_.reserve(max_in);
 }
 
 std::span<const std::complex<float>> Hilbert::process(std::span<const float> in) {
   const std::size_t n = in.size();
-  // Quadrature plane: the Hilbert transform, delayed by the FIR group delay.
-  const auto q = q_filter_.process(in);
-  const auto out = out_.write_n(n);
 
-  // In-phase plane: the input delayed by the same group delay so I and Q align.
-  // The first `delay_` outputs read the tail carried from the previous block;
-  // the rest read this block. Reads happen before the history is rewritten below.
-  for (std::size_t k = 0; k < n; ++k) {
-    const float i = k < delay_ ? i_history_[k] : in[k - delay_];
-    out[k] = std::complex<float>{i, q[k]};
+  // Deinterleave by GLOBAL parity (carried in samples_seen_) so each half-rate
+  // stream is exactly the even / odd samples of the whole signal, independent of
+  // how it was chunked. A block starting on a global-even index has ceil(n/2)
+  // even samples; on an odd index, floor(n/2).
+  const bool start_odd = (samples_seen_ & 1u) != 0;
+  const std::size_t even_count = (n + (start_odd ? 0 : 1)) / 2;
+  const auto ev_in = even_in_.write_n(even_count);
+  const auto od_in = odd_in_.write_n(n - even_count);
+  for (std::size_t i = 0, ei = 0, oi = 0; i < n; ++i) {
+    if (((i & 1u) != 0) == start_odd)
+      ev_in[ei++] = in[i];
+    else
+      od_in[oi++] = in[i];
+  }
+
+  // Quadrature plane: each polyphase FIR is the even-tap kernel over one parity;
+  // its output for the j-th same-parity sample is Q at that sample's index. The
+  // two are interleaved back below — bit-identical to the full-kernel transform.
+  const auto qe = q_even_.process(ev_in);
+  const auto qo = q_odd_.process(od_in);
+
+  // In-phase plane: the input delayed by the FIR group delay so I and Q align.
+  // The first `delay_` outputs read the tail carried from the previous block; the
+  // rest read this block. Reads happen before the history is rewritten below.
+  const auto out = out_.write_n(n);
+  for (std::size_t i = 0, ei = 0, oi = 0; i < n; ++i) {
+    const float q = (((i & 1u) != 0) == start_odd) ? qe[ei++] : qo[oi++];
+    const float iplane = i < delay_ ? i_history_[i] : in[i - delay_];
+    out[i] = std::complex<float>{iplane, q};
   }
 
   // Carry the last `delay_` inputs for the next block. If this block is shorter
@@ -131,6 +175,7 @@ std::span<const std::complex<float>> Hilbert::process(std::span<const float> in)
       std::copy(in.begin(), in.end(), i_history_.end() - m);
     }
   }
+  samples_seen_ += n;
   return out_.view();
 }
 
