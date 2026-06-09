@@ -74,11 +74,28 @@ public:
     std::size_t channels; // 1 = grey, 3 = interleaved RGB
   };
 
+  // Handed to the field callback at each boundary. Quantising a Frame is the
+  // expensive part of a snapshot, so the event is lazy: frame() quantises the
+  // field now (the per-field PNG sequence), while latch() just copies the float
+  // state aside so latched_frame() can quantise it once, later — the
+  // single-image "keep the last clean boundary" shape, which would otherwise
+  // quantise and discard every field but the last.
+  class FieldEvent {
+  public:
+    [[nodiscard]] Frame frame() const { return screen_->snapshot(); }
+    void latch() const { screen_->latch_boundary(); }
+
+  private:
+    friend class Screen;
+    explicit FieldEvent(Screen &screen) : screen_{&screen} {}
+    Screen *screen_;
+  };
+
   // on_field fires once per field boundary (the field_start sample), with the
-  // phosphor snapshot as completed at that instant — the hook for a per-field
-  // PNG sequence. (Field, not frame, until even/odd parity tracking lands with
+  // phosphor as completed at that instant — the hook for a per-field PNG
+  // sequence. (Field, not frame, until even/odd parity tracking lands with
   // colour; then this can fire per full frame.) Empty by default = no snapshots.
-  using FieldCallback = std::function<void(const Frame &)>;
+  using FieldCallback = std::function<void(const FieldEvent &)>;
   void process(std::span<const ChromaSample> picture, std::span<const BeamSample> hbeam, std::span<const VSample> vbeam,
       const FieldCallback &on_field = {});
 
@@ -87,6 +104,12 @@ public:
   // preserved). Const — snapshotting doesn't disturb the running sim, so the
   // per-field callback can call it at every field boundary.
   [[nodiscard]] Frame snapshot() const;
+
+  // The frame as latched by the most recent FieldEvent::latch(): the phosphor
+  // and white reference as they stood at that boundary, quantised now. Falls
+  // back to snapshot() (the live state) if nothing was ever latched — e.g. a
+  // stream too short to reach a field boundary.
+  [[nodiscard]] Frame latched_frame() const;
 
 private:
   // luma envelope -> beam drive (gun cutoff). h_phase locates the back porch for
@@ -120,6 +143,14 @@ private:
   // per field, not per sample" (git log -- lib/video.cpp; show its parent).
   std::vector<float> bright_; // per-pixel-per-channel accumulated phosphor charge
   float field_decay_ = 1.0f; // whole-buffer multiply applied once per field
+
+  // FieldEvent::latch() support: the phosphor and white reference copied aside
+  // at a field boundary (a float memcpy — far cheaper than quantising a Frame
+  // per field when only the last one is kept). latched_white_ < 0 = never.
+  void latch_boundary();
+  [[nodiscard]] Frame quantise(const std::vector<float> &bright, double white_ref) const;
+  std::vector<float> latch_bright_;
+  double latch_white_ = -1.0;
 
   // Deflection-yoke model + vertical beam splat. A real TV's yoke is rotated a
   // hair so each line traces straight across X even though the beam creeps

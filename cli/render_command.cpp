@@ -13,7 +13,6 @@
 #include <filesystem>
 #include <format>
 #include <iostream>
-#include <optional>
 #include <print>
 #include <span>
 #include <vector>
@@ -193,25 +192,26 @@ int RenderCommand::run() const {
   if (output.empty())
     output = std::format("{}.png", loaded.meta_path.stem().string());
 
-  // Snapshot at field boundaries: in sequence mode write every Nth as
-  // <stem>_NNNN.png; otherwise keep the last clean boundary for a single image
-  // (cleaner than the mid-field state wherever the stream happens to end).
+  // Snapshot at field boundaries: in sequence mode quantise and write every Nth
+  // as <stem>_NNNN.png; otherwise just latch the boundary state (a float copy)
+  // so the last clean boundary is quantised once at the end — cleaner than the
+  // mid-field state wherever the stream happens to end, without paying a full
+  // quantise pass per field for frames that are thrown away.
   std::size_t fields_seen = 0;
   std::size_t written = 0;
-  std::optional<video::Screen::Frame> last_frame;
   const auto save = [](const std::filesystem::path &p, const video::Screen::Frame &f) {
     if (f.channels == 3)
       image::write_png_rgb(p, f.pixels, static_cast<unsigned>(f.width), static_cast<unsigned>(f.height));
     else
       image::write_png_grey(p, f.pixels, static_cast<unsigned>(f.width), static_cast<unsigned>(f.height));
   };
-  const video::Screen::FieldCallback on_field = [&](const video::Screen::Frame &f) {
+  const video::Screen::FieldCallback on_field = [&](const video::Screen::FieldEvent &e) {
     if (frame_stride_ == 0) {
-      last_frame = f; // single-image mode: keep the latest clean boundary
+      e.latch(); // single-image mode: keep the latest clean boundary
       return;
     }
     if (fields_seen++ % frame_stride_ == 0)
-      save(numbered_path(output, written++), f);
+      save(numbered_path(output, written++), e.frame());
   };
 
   // The pipeline: a push source (the real-IF/complex front end, which the
@@ -237,7 +237,7 @@ int RenderCommand::run() const {
   }
 
   if (frame_stride_ == 0)
-    save(output, last_frame ? *last_frame : decoder.snapshot());
+    save(output, decoder.latched_frame()); // falls back to the live state if no field completed
 
   if (colour_)
     std::println("colour: crystal {:.4f} MHz, burst amplitude {:.4g}, burst swing {:.1f} deg",
