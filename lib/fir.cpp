@@ -81,6 +81,40 @@ void convolve_strip(const float *taps, const float *window, float *y, std::size_
     // Lane L wants window[2k + t + 2L]; load the 16-sample span [2k+t .. 2k+t+15]
     // and gather its even elements into one register.
     const __m256i even = _mm256_setr_epi32(0, 1, 4, 5, 2, 3, 6, 7);
+    // Like the d == 1 tier, carry four accumulators (32 outputs, a 64-sample
+    // input span) per strip so the tap loop isn't bound by one chain's 4-cycle
+    // FMA latency. Each lane still sums its taps in natural order with one fma,
+    // so the result is bit-identical to the 8-wide strip and the scalar dot.
+    for (; k + 32 <= outputs && 2 * k + 48 + n + 15 <= win_len; k += 32) {
+      __m256 a0 = _mm256_setzero_ps();
+      __m256 a1 = _mm256_setzero_ps();
+      __m256 a2 = _mm256_setzero_ps();
+      __m256 a3 = _mm256_setzero_ps();
+      const float *wb = window + 2 * k;
+      for (std::size_t t = 0; t < n; ++t) {
+        const __m256 tap = _mm256_broadcast_ss(taps + t);
+        const __m256 l0 = _mm256_loadu_ps(wb + t);
+        const __m256 l1 = _mm256_loadu_ps(wb + t + 8);
+        const __m256 l2 = _mm256_loadu_ps(wb + t + 16);
+        const __m256 l3 = _mm256_loadu_ps(wb + t + 24);
+        const __m256 l4 = _mm256_loadu_ps(wb + t + 32);
+        const __m256 l5 = _mm256_loadu_ps(wb + t + 40);
+        const __m256 l6 = _mm256_loadu_ps(wb + t + 48);
+        const __m256 l7 = _mm256_loadu_ps(wb + t + 56);
+        a0 = _mm256_fmadd_ps(
+            tap, _mm256_permutevar8x32_ps(_mm256_shuffle_ps(l0, l1, _MM_SHUFFLE(2, 0, 2, 0)), even), a0);
+        a1 = _mm256_fmadd_ps(
+            tap, _mm256_permutevar8x32_ps(_mm256_shuffle_ps(l2, l3, _MM_SHUFFLE(2, 0, 2, 0)), even), a1);
+        a2 = _mm256_fmadd_ps(
+            tap, _mm256_permutevar8x32_ps(_mm256_shuffle_ps(l4, l5, _MM_SHUFFLE(2, 0, 2, 0)), even), a2);
+        a3 = _mm256_fmadd_ps(
+            tap, _mm256_permutevar8x32_ps(_mm256_shuffle_ps(l6, l7, _MM_SHUFFLE(2, 0, 2, 0)), even), a3);
+      }
+      _mm256_storeu_ps(y + k, a0);
+      _mm256_storeu_ps(y + k + 8, a1);
+      _mm256_storeu_ps(y + k + 16, a2);
+      _mm256_storeu_ps(y + k + 24, a3);
+    }
     // The hi load reads window[2k+t+8 .. +15]; cap k so its last access (t=n-1)
     // stays in the window. The leftover outputs drop to the in-bounds scalar dot.
     for (; k + 8 <= outputs && 2 * k + n + 15 <= win_len; k += 8) {
