@@ -314,6 +314,71 @@ TEST_CASE("Screen latch defers quantisation without changing the boundary frame"
   CHECK(latched.pixels != screen.snapshot().pixels); // the post-boundary deposit is visible live
 }
 
+TEST_CASE("Screen scan windows remap the beam (overscan) and the readout can encode") {
+  // A 0-sigma beam at h_phase 0.5 / v_phase 0.5 with the full-scan windows
+  // lands mid-frame; with a [0.25, 0.75] window pair the same beam position is
+  // still mid-window, and h_phase 0.375 lands at a quarter of the width.
+  const auto run_one = [](const video::ScreenConfig &cfg, float hp, float vp) {
+    video::Screen screen{cfg};
+    const std::array pic{video::ChromaSample{.luma = 1.0f}, video::ChromaSample{.luma = 0.0f}};
+    const std::array hbeam{video::BeamSample{.h_phase = 0.10f}, video::BeamSample{.h_phase = hp}};
+    const std::array vbeam{video::VSample{.v_phase = 0.0f}, video::VSample{.v_phase = vp}};
+    screen.process(pic, hbeam, vbeam); // sample 0 seeds black; sample 1 deposits
+    const auto frame = screen.snapshot();
+    for (std::size_t i = 0; i < frame.pixels.size(); ++i)
+      if (frame.pixels[i] > 0)
+        return std::pair{i % cfg.width, i / cfg.width};
+    return std::pair{std::size_t{9999}, std::size_t{9999}};
+  };
+
+  video::ScreenConfig cfg{.width = 64, .height = 64, .sample_rate_hz = kRate, .beam_sigma_rows = 0.0, .gamma = 1.0};
+  CHECK(run_one(cfg, 0.5f, 0.5f).first == 32);
+  cfg.h_window_lo = 0.25;
+  cfg.h_window_hi = 0.75;
+  cfg.v_window_lo = 0.25;
+  cfg.v_window_hi = 0.75;
+  CHECK(run_one(cfg, 0.5f, 0.5f).first == 32); // window centre stays centred
+  CHECK(run_one(cfg, 0.375f, 0.5f).first == 16); // quarter into the window
+  CHECK(run_one(cfg, 0.5f, 0.375f).second < 32); // above centre (yoke shear offsets it slightly)
+
+  // Readout encode: a pixel at half the drive of the brightest must read at a
+  // ratio of 0.5 with the linear readout and 0.5^(1/g) with an encode of g —
+  // ratios, because a once-hit pixel doesn't reach the steady-state white the
+  // readout normalises to.
+  const auto grey_ratio = [&](double readout_gamma) {
+    const video::ScreenConfig rc{.width = 8,
+        .height = 8,
+        .sample_rate_hz = kRate,
+        .beam_sigma_rows = 0.0,
+        .gamma = 1.0,
+        .readout_gamma = readout_gamma};
+    video::Screen screen{rc};
+    const std::array pic{
+        video::ChromaSample{.luma = 1.0f}, video::ChromaSample{.luma = 0.0f}, video::ChromaSample{.luma = 0.5f}};
+    const std::array hbeam{
+        video::BeamSample{.h_phase = 0.10f}, video::BeamSample{.h_phase = 0.3f}, video::BeamSample{.h_phase = 0.7f}};
+    const std::array vbeam{
+        video::VSample{.v_phase = 0.5f}, video::VSample{.v_phase = 0.5f}, video::VSample{.v_phase = 0.5f}};
+    screen.process(pic, hbeam, vbeam);
+    const auto frame = screen.snapshot();
+    std::uint8_t hi = 0;
+    std::uint8_t mid = 0;
+    for (const auto p: frame.pixels) {
+      if (p > hi) {
+        mid = hi;
+        hi = p;
+      }
+      else if (p > mid) {
+        mid = p;
+      }
+    }
+    REQUIRE(hi > 0);
+    return static_cast<double>(mid) / static_cast<double>(hi);
+  };
+  CHECK(std::abs(grey_ratio(1.0) - 0.5) < 0.02); // linear: half drive, half level
+  CHECK(std::abs(grey_ratio(2.2) - std::pow(0.5, 1.0 / 2.2)) < 0.02); // encoded: brighter mids
+}
+
 TEST_CASE("ChromaDecoder is block-invariant (the streaming guarantee)") {
   const auto env = synth_colour_composite(40, 1028);
 

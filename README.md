@@ -142,10 +142,17 @@ that keeps the 4.43 MHz subcarrier below ~0.7·Nyquist — RX888 32 MS/s → /2,
 AirSpy 20 MS/s → /1; pass a number to override), `--carrier`, `--cutoff`,
 `--sync-cutoff` (the narrow low-pass on the sync-detection branch), and the CRT
 knobs `--persistence` (phosphor decay, in field periods), `--beam-sigma`
-(beam-spot vertical size, in rows), `--gamma` (electron-gun curve), and
+(beam-spot vertical size, in rows), `--gamma` (the electron-gun curve, default
+2.6 — a real tube), `--readout-gamma` (the "camera" between the phosphor and
+the PNG: the framebuffer is linear light, so the readout encodes it for a
+display that will decode at ~2.2; `1` writes raw linear light, the old
+double-gamma'd look), `--overscan` (default 0.06: the nominal active picture,
+cropped that fraction behind the bezel, fills the frame as on a real set —
+blanking lives off-screen; negative restores the old full-scan framing), and
 `--frame-stride` (write a PNG every Nth field as `<stem>_NNNN.png` instead of a
 single image). PNGs are encoded fast (uncompressed) rather than small — this is a
-research tool that throws most of them away.
+research tool that throws most of them away. The old default look is exactly
+`--gamma 1.5 --overscan -1 --readout-gamma 1`.
 
 The horizontal hold is a true dual-time-constant flywheel, as a TDA2593-era
 set's line oscillator: fast acquisition gains pull in until a coincidence

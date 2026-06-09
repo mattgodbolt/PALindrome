@@ -56,9 +56,19 @@ KNOBS = [
          help="Horizontal size of the beam spot, in output columns. Smaller is sharper horizontally; too small "
               "and the sampling beat shows as faint vertical stripes. Match it to the row sigma for a round spot."),
     dict(name="gamma", flag="--gamma", label="Gun gamma",
-         min=1.0, max=3.0, step=0.05, default=1.5,
-         help="Electron-gun brightness curve: light ∝ drive^gamma. The source pre-distorts its video expecting a CRT "
-              "to undo it, so ~2.2 restores natural contrast and shadows; 1.0 is linear (flat, washed-out midtones)."),
+         min=1.0, max=3.0, step=0.05, default=2.6,
+         help="Electron-gun brightness curve: light ∝ drive^gamma. A real tube runs ~2.6; the source pre-distorts its "
+              "video (~1/2.2) expecting that. Pairs with the readout gamma below — tube 2.6 + readout 2.2 is the "
+              "broadcast chain's deliberate end-to-end system gamma (~1.2)."),
+    dict(name="readout_gamma", flag="--readout-gamma", label="Readout gamma",
+         min=1.0, max=2.6, step=0.05, default=2.2,
+         help="The 'camera' between phosphor and PNG: encodes the linear phosphor light for a display that decodes "
+              "with this gamma (your monitor: ~2.2). 1.0 writes raw linear light — which a monitor then darkens by "
+              "its own gamma, the old double-gamma look."),
+    dict(name="overscan", flag="--overscan", label="Overscan",
+         min=-0.01, max=0.15, step=0.01, default=0.06,
+         help="Fraction of the nominal active picture cropped behind the bezel (half per side), filling the frame "
+              "like a real set. Negative = the old full-scan framing with blanking visible."),
     dict(name="saturation", flag="--saturation", label="Saturation",
          min=0.0, max=0.5, step=0.01, default=0.17,
          help="Colour intensity: the chroma gain as a fraction of the luma white reference (the colour pot). 0 = "

@@ -36,10 +36,15 @@ Decoder::Decoder(const DecoderConfig &cfg) :
         .colour = cfg.colour,
         .saturation = cfg.saturation,
         .contrast = cfg.contrast,
+        .readout_gamma = cfg.readout_gamma,
         .h_blank = cfg.h_blank,
         // Register the picture: in colour it lags the timing rails by the chroma
         // group delay. Mono is the raw envelope (no lag).
-        .picture_lag_samples = cfg.colour ? static_cast<double>(chroma_.group_delay_samples()) : 0.0}} {}
+        .picture_lag_samples = cfg.colour ? static_cast<double>(chroma_.group_delay_samples()) : 0.0,
+        .h_window_lo = cfg.h_window_lo,
+        .h_window_hi = cfg.h_window_hi,
+        .v_window_lo = cfg.v_window_lo,
+        .v_window_hi = cfg.v_window_hi}} {}
 
 void Decoder::prepare(std::size_t max_in) {
   sync_lp_.prepare(max_in);

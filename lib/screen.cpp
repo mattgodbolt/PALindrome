@@ -26,6 +26,8 @@ Screen::Screen(const ScreenConfig &cfg) :
     throw std::invalid_argument{"Screen: beam_sigma_rows must be non-negative"};
   if (!(cfg_.nominal_line_hz > cfg_.field_hz))
     throw std::invalid_argument{"Screen: nominal_line_hz must exceed field_hz"};
+  if (!(cfg_.h_window_lo < cfg_.h_window_hi && cfg_.v_window_lo < cfg_.v_window_hi))
+    throw std::invalid_argument{"Screen: scan windows need lo < hi"};
   // Decay per sample so that brightness falls by 1/e over persistence_fields
   // field periods: tau_samples = persistence * (sample_rate / field_hz).
   const double tau_samples = cfg_.persistence_fields * cfg_.sample_rate_hz / cfg_.field_hz;
@@ -44,9 +46,16 @@ Screen::Screen(const ScreenConfig &cfg) :
   // per field). Steady state for a pixel re-hit every frame (two fields) is then
   // 1/(1 - field_decay_^2) == phosphor_gain_, so the readout scale is unchanged.
   field_decay_ = static_cast<float>(std::exp(log_decay * cfg_.sample_rate_hz / cfg_.field_hz));
+  // The scan-to-frame mapping: the configured window fills the output, so a
+  // window narrower than the full scan magnifies (the overscan). With [0,1]
+  // windows these are just width and height — the original full-scan framing.
+  x_scale_ = static_cast<double>(cfg_.width) / (cfg_.h_window_hi - cfg_.h_window_lo);
+  y_scale_ = static_cast<double>(cfg_.height) / (cfg_.v_window_hi - cfg_.v_window_lo);
   // Yoke shear: the beam steps (field_hz / line_hz) of a field per line, i.e.
-  // this many output rows — the amount to un-creep within each line.
-  yoke_tilt_rows_ = static_cast<double>(cfg_.height) * cfg_.field_hz / cfg_.nominal_line_hz;
+  // this many output rows — the amount to un-creep within each line. The field
+  // spans y_scale_ rows (more than the frame when overscanned), so the shear
+  // scales with it.
+  yoke_tilt_rows_ = y_scale_ * cfg_.field_hz / cfg_.nominal_line_hz;
   // The picture rail lags the timing rails by picture_lag_samples; one sample is
   // nominal_line_hz / sample_rate of a line in h_phase, so shift the picture back
   // by that fraction to register it with the sweep.
@@ -196,7 +205,7 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // normalised weights depend only on xf's fractional part, so look up the bin.
     // picture_h_offset_ shifts the picture back onto the sweep to register colour
     // with mono (sync timing — blanking, yoke — still uses the raw h_phase).
-    const double xf = (static_cast<double>(hbeam[i].h_phase) - picture_h_offset_) * static_cast<double>(cfg_.width);
+    const double xf = (static_cast<double>(hbeam[i].h_phase) - picture_h_offset_ - cfg_.h_window_lo) * x_scale_;
     const double xf_floor = std::floor(xf);
     const auto base_col = static_cast<std::ptrdiff_t>(xf_floor) - static_cast<std::ptrdiff_t>(splat_radius_x_);
     auto bin_x = static_cast<std::size_t>((xf - xf_floor) * static_cast<double>(kGaussBins));
@@ -205,7 +214,7 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     const auto *cweights = &gauss_lut_x_[bin_x * gauss_stride_x_];
 
     // Yoke shear: un-creep the vertical so the scanline is flat (see header).
-    const auto yc = static_cast<double>(vbeam[i].v_phase) * static_cast<double>(cfg_.height) -
+    const auto yc = (static_cast<double>(vbeam[i].v_phase) - cfg_.v_window_lo) * y_scale_ -
                     yoke_tilt_rows_ * static_cast<double>(hbeam[i].h_phase);
 
     // Gaussian beam spot, centred on the sheared sub-pixel row. The normalised
@@ -254,12 +263,25 @@ Screen::Frame Screen::quantise(const std::vector<float> &bright, double white_re
   // moves the white point; cells above it clip into white, as a real tube does —
   // no per-frame statistic, so the exposure is causal and doesn't breathe.
   const double white = white_ref * phosphor_gain_;
-  const float scale = white > 0.0 ? static_cast<float>(255.0 * cfg_.contrast / white) : 0.0f;
-  // The buffer already holds the displayed charge (decay is applied per field,
-  // not per pixel), so readout is a straight scale-and-quantise.
   std::vector<std::uint8_t> pixels(bright.size());
-  for (std::size_t idx = 0; idx < bright.size(); ++idx)
-    pixels[idx] = static_cast<std::uint8_t>(std::clamp(bright[idx] * scale, 0.0f, 255.0f) + 0.5f);
+  if (cfg_.readout_gamma == 1.0) {
+    // Linear readout: the raw phosphor light, straight scale-and-quantise (the
+    // buffer already holds the displayed charge; decay is applied per field).
+    const float scale = white > 0.0 ? static_cast<float>(255.0 * cfg_.contrast / white) : 0.0f;
+    for (std::size_t idx = 0; idx < bright.size(); ++idx)
+      pixels[idx] = static_cast<std::uint8_t>(std::clamp(bright[idx] * scale, 0.0f, 255.0f) + 0.5f);
+  }
+  else {
+    // The "camera": encode the linear light for a display that will decode it
+    // with readout_gamma, so the viewer sees the phosphor's light and not a
+    // double-gamma'd version. Once per emitted frame, not per sample.
+    const float scale = white > 0.0 ? static_cast<float>(cfg_.contrast / white) : 0.0f;
+    const auto inv = static_cast<float>(1.0 / cfg_.readout_gamma);
+    for (std::size_t idx = 0; idx < bright.size(); ++idx) {
+      const float lit = std::clamp(bright[idx] * scale, 0.0f, 1.0f);
+      pixels[idx] = static_cast<std::uint8_t>(255.0f * std::pow(lit, inv) + 0.5f);
+    }
+  }
   return Frame{.pixels = std::move(pixels), .width = cfg_.width, .height = cfg_.height, .channels = channels_};
 }
 

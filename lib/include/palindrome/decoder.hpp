@@ -46,7 +46,14 @@ struct DecoderConfig {
   bool colour = false;
   double saturation = 1.0;
   double contrast = 1.0; // readout white point (see ScreenConfig::contrast)
+  double readout_gamma = 1.0; // the PNG "camera" encode (see ScreenConfig::readout_gamma)
   double h_blank = 0.16; // retrace blanking end, h_phase (see ScreenConfig::h_blank)
+  // The scan window mapped to the frame (see ScreenConfig) — the driver derives
+  // these from its overscan setting; [0,1]x[0,1] shows the whole scan.
+  double h_window_lo = 0.0;
+  double h_window_hi = 1.0;
+  double v_window_lo = 0.0;
+  double v_window_hi = 1.0;
   ChromaDecoderConfig chroma{}; // sample_rate_hz filled in at construction
 };
 
