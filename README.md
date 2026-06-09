@@ -181,6 +181,17 @@ reference) can't — the experiment that makes the comb placement matter. Range
 [2, 100]: below ~2 the loop tracks the ±45° burst swing, above ~100 it can't pull
 in an off-nominal source.
 
+The APC also **pulls the crystal**, as a real burst phase detector pulls the
+4.43 MHz crystal itself: the per-line drift of the burst reference is folded
+into the NCO, clamped to a catching range (`--apc-catch`, default 500 Hz —
+TDA3561A spec 500–700 Hz; `--apc-pull` sets the loop rate). A source inside
+the range is tracked exactly (no intra-line hue ramp, and `render` reports the
+measured pull — both SDRs agree the SMS crystal sits ~3 Hz low); a source
+beyond it pins at the rail, the reference can't track the residual, and the
+killer drops the colour — the authentic off-spec failure, where the old
+fixed-crystal + per-line-rotation scheme would lock anything. `--apc-catch 0`
+restores the fixed crystal exactly.
+
 A **colour killer** gates the chroma, as the TDA3561A's ident/killer does: the
 verdict is the ident signal (does the burst's ±45° swing sense agree with the
 PAL-switch bistable line after line — something noise can't fake), the mute is

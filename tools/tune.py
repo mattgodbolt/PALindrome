@@ -88,6 +88,15 @@ KNOBS = [
               "real set's APC was slower. High values stop the reference chasing per-line drift, which is what lets "
               "delay-line's structural sum/difference suppress Hanover bars (a fast loop hides the difference). [2,100]: "
               "below 2 the loop tracks the ±45° swing, above 100 it can't pull in an off-nominal source."),
+    dict(name="apc_catch", flag="--apc-catch", label="APC catch range (Hz)",
+         min=0, max=2000, step=50, default=500,
+         help="How far the burst phase detector may pull the 4.43 MHz colour crystal, as a real APC's catching range "
+              "(TDA3561A: 500-700 Hz). A source further off crystal fails to lock and the killer drops the colour. "
+              "0 = fixed crystal (the per-line rotation absorbs everything, the pre-pull behaviour)."),
+    dict(name="apc_pull", flag="--apc-pull", label="APC pull rate",
+         min=0.002, max=0.2, step=0.002, default=0.02,
+         help="What fraction of the measured per-line reference drift is folded into the crystal each line. Higher "
+              "pulls in faster but chases noise; lower is a heavier crystal."),
     dict(name="h_blank", flag="--h-blank", label="Retrace blanking (h_phase)",
          min=0.10, max=0.28, step=0.005, default=0.16,
          help="How far into the line the beam stays blanked (sync + back porch + burst). Must clear the burst, or it "

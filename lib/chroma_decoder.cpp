@@ -47,6 +47,11 @@ const ChromaDecoderConfig &validate(const ChromaDecoderConfig &cfg) {
     throw std::invalid_argument{
         std::format("ChromaDecoder: killer ramp time constants must be >= 1 line, got on {} / off {}",
             cfg.killer_on_tc_lines, cfg.killer_off_tc_lines)};
+  if (!(cfg.apc_catch_range_hz >= 0.0))
+    throw std::invalid_argument{
+        std::format("ChromaDecoder: apc_catch_range_hz must be >= 0, got {}", cfg.apc_catch_range_hz)};
+  if (!(cfg.apc_pull > 0.0 && cfg.apc_pull <= 1.0))
+    throw std::invalid_argument{std::format("ChromaDecoder: apc_pull must be in (0, 1], got {}", cfg.apc_pull)};
   return cfg;
 }
 } // namespace
@@ -113,6 +118,7 @@ void ChromaDecoder::finalize_line() {
   // colour. Skip them entirely — don't move the APC or rotation — and hold the
   // last good line's rotation across the gap.
   burst_ref_ = std::max(burst_ref_ * 0.9995, mag);
+  ++gate_closes_;
   if (mag < 0.3 * burst_ref_)
     return;
   const double phi = std::atan2(bs, bc);
@@ -150,6 +156,31 @@ void ChromaDecoder::finalize_line() {
   // thousand lines, whose random swing then mutes the chroma.
   update_killer(ident_ >= cfg_.killer_threshold);
 
+  // APC frequency pull: across a consecutive pair of good lines, the drift of
+  // the swing-free reference axis measures the source-vs-NCO frequency error
+  // (radians per line); fold apc_pull of it into the NCO, clamped to the
+  // crystal's catching range. The clamp is the authentic failure mode: a source
+  // beyond it leaves a residual the reference can't track, the burst
+  // measurements smear, and the ident/killer drop the colour — where the
+  // per-line rotation alone would have locked anything. Gaps (VBI, dropouts)
+  // skip the measurement: a wrapped angle over an unknown number of lines is
+  // ambiguous.
+  if (cfg_.apc_catch_range_hz > 0.0) {
+    if (gate_closes_ == prev_good_close_ + 1) {
+      // The demod is (cos, sin) against the NCO, so the measured axis rotates
+      // at MINUS the source-vs-NCO frequency error: a positive drift means the
+      // NCO is fast. Hence the subtraction.
+      const double dpsi = dsp::wrap_angle(psi_axis - prev_psi_axis_);
+      const double domega = dpsi / (kTwoPi * cfg_.sample_rate_hz / kNominalLineHz); // cycles/sample
+      const double crystal = cfg_.subcarrier_hz / cfg_.sample_rate_hz;
+      const double range = cfg_.apc_catch_range_hz / cfg_.sample_rate_hz;
+      nco_omega_ = std::clamp(nco_omega_ - cfg_.apc_pull * domega, crystal - range, crystal + range);
+      nco_step_ = std::polar(1.0, kTwoPi * nco_omega_);
+    }
+    prev_psi_axis_ = psi_axis;
+    prev_good_close_ = gate_closes_;
+  }
+
   // De-rotate by π - psi_axis so the -U axis lands on the negative-real axis;
   // U = -Re, V = Im (switch-corrected by v_flip_) then follow in process().
   const double psi = std::numbers::pi - psi_axis;
@@ -160,10 +191,51 @@ void ChromaDecoder::finalize_line() {
 std::span<const ChromaSample> ChromaDecoder::process(
     std::span<const float> envelope, std::span<const BeamSample> hbeam) {
   const std::size_t n = std::min(envelope.size(), hbeam.size());
+  const auto out = out_.write_n(n);
 
-  // Pass 1: isolate the chroma subcarrier and synchronously demodulate it against
-  // the fixed crystal LO. nco_phasor_ is e^{+i2πθ}, so (c·cosθ, c·sinθ) are the
-  // raw U and V quadratures (matching cos/sin demodulation).
+  // The APC frequency pull feeds BACK into pass 1's mix, so a retune must take
+  // effect at the same sample whatever the caller's chunking — otherwise the
+  // loop's delay would be the block size and the result chunk-dependent. Split
+  // the block at each burst-gate close (the sample where finalize_line may
+  // retune the NCO ends its segment), and decode segment by segment: the FIRs
+  // and recurrences all stream, so the only effect is that each segment's mix
+  // runs at the frequency set by the previous gate close. With the pull
+  // disabled nothing feeds back and the whole block is one segment.
+  std::size_t start = 0;
+  while (start < n) {
+    std::size_t end = n;
+    if (cfg_.apc_catch_range_hz > 0.0) {
+      // Replay the gate state machine (reads only hbeam) to find the first
+      // close at or after `start`; pass 3 will then walk the same transitions.
+      bool gate_prev = in_gate_prev_;
+      for (std::size_t k = start; k < n; ++k) {
+        if (hbeam[k].line_start)
+          gate_prev = false;
+        const float hp = hbeam[k].h_phase;
+        const bool in_gate =
+            hp >= static_cast<float>(cfg_.burst_gate_lo) && hp < static_cast<float>(cfg_.burst_gate_hi);
+        const bool closes = !in_gate && gate_prev;
+        gate_prev = in_gate;
+        if (closes) {
+          end = k + 1;
+          break;
+        }
+      }
+    }
+    decode_segment(
+        envelope.subspan(start, end - start), hbeam.subspan(start, end - start), out.subspan(start, end - start));
+    start = end;
+  }
+  return out_.view();
+}
+
+void ChromaDecoder::decode_segment(
+    std::span<const float> envelope, std::span<const BeamSample> hbeam, std::span<ChromaSample> out) {
+  const std::size_t n = envelope.size();
+
+  // Pass 1: isolate the chroma subcarrier and synchronously demodulate it
+  // against the crystal LO. nco_phasor_ is e^{+i2πθ}, so (c·cosθ, c·sinθ) are
+  // the raw U and V quadratures (matching cos/sin demodulation).
   const auto chroma = bandpass_.process(envelope.first(n));
   const auto mu = mix_u_.write_n(n);
   const auto mv = mix_v_.write_n(n);
@@ -192,7 +264,6 @@ std::span<const ChromaSample> ChromaDecoder::process(
   // this line's rotation), then de-rotate each sample to transmitted U/V, flip V
   // on PAL-style lines, and run the 1H comb. Chroma is normalised by the smoothed
   // burst amplitude (ACC), so the saturation knob is capture-independent.
-  const auto out = out_.write_n(n);
   for (std::size_t k = 0; k < n; ++k) {
     if (hbeam[k].line_start) {
       const std::size_t len = sample_index_ - last_line_start_;
@@ -286,7 +357,6 @@ std::span<const ChromaSample> ChromaDecoder::process(
     }
     out[k] = ChromaSample{.luma = luma[k], .u = u, .v = v};
   }
-  return out_.view();
 }
 
 } // namespace palindrome::video

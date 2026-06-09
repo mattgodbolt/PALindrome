@@ -73,6 +73,19 @@ struct ChromaDecoderConfig {
   double killer_threshold = 0.4; // ident level counted as "PAL identified"
   double killer_on_tc_lines = 1500.0; // switch-on ramp (~0.1 s of lines)
   double killer_off_tc_lines = 100.0; // kill ramp (fast mute)
+  // APC frequency pull. A real burst phase detector pulls the 4.43 MHz crystal
+  // itself, with a spec'd catching range (TDA3561A: 500-700 Hz); a source
+  // further off simply failed to lock colour (the killer drops it). The pull is
+  // the loop's integral term: per pair of consecutive good lines, the drift of
+  // the (swing-free) APC reference axis is a frequency-error measurement, and
+  // apc_pull of it is folded into the NCO, clamped to ±apc_catch_range_hz of
+  // the crystal. catch range 0 disables the pull — the NCO stays a fixed
+  // crystal and the per-line rotation absorbs everything (the pre-pull
+  // behaviour, whose unlimited catch range no real set had). Within range the
+  // pull also removes the intra-line hue ramp a fixed NCO leaves on a source
+  // off crystal frequency (the per-line rotation only corrects line averages).
+  double apc_catch_range_hz = 500.0;
+  double apc_pull = 0.02; // fraction of the measured per-line drift folded in per line
 };
 
 // The colour channel, a PAL-D delay-line decoder. Off the same composite envelope
@@ -119,6 +132,10 @@ public:
 
 private:
   void finalize_line(); // per-line burst measurement + class assignment at gate close
+  // One internally-chunked piece of process(): the three decode passes over a
+  // segment that ends at a burst-gate close, so an NCO retune there reaches
+  // the next segment's mix at the same sample whatever the caller's chunking.
+  void decode_segment(std::span<const float> envelope, std::span<const BeamSample> hbeam, std::span<ChromaSample> out);
 
   ChromaDecoderConfig cfg_;
   dsp::Fir bandpass_; // isolates the chroma subcarrier from the composite
@@ -126,11 +143,20 @@ private:
   dsp::Fir lp_v_; // post-demod low-pass on raw V
   dsp::Fir lp_luma_; // luma = notch(envelope): a 4.43 MHz chroma trap, luma stays wide
 
-  // The fixed crystal LO, advanced one step per sample (never retuned).
+  // The crystal LO, advanced one step per sample. The APC's frequency pull
+  // retunes it within ±apc_catch_range_hz of the crystal (see the config);
+  // with the pull disabled it stays fixed, the original behaviour.
   double nco_omega_; // cycles/sample (× sample_rate = crystal Hz)
   std::complex<double> nco_phasor_{1.0, 0.0}; // e^{+i*2π*phase}
   std::complex<double> nco_step_; // e^{+i*2π*omega}
   std::size_t since_renorm_ = 0;
+  // Frequency-pull bookkeeping: the reference axis at the previous good line,
+  // usable only when that line was the immediately preceding gate close (a
+  // VBI/dropout gap would alias the wrapped phase drift, so the pull skips
+  // across gaps and resumes on the next consecutive pair).
+  double prev_psi_axis_ = 0.0;
+  std::size_t gate_closes_ = 0; // every finalize_line() that measured a burst
+  std::size_t prev_good_close_ = 0; // gate_closes_ at the last APC-updating line
 
   // Per-line burst gate + the recovered rotation it sets for the line.
   std::complex<double> burst_acc_{0.0, 0.0}; // Σ(raw U, raw V) over the gate
