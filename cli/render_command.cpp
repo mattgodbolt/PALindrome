@@ -70,8 +70,11 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(ref_tc_, "lines")["--ref-tc"](
               "Colour: APC reference time constant in lines (default 10; slower = more period-faithful, [2,100])"))
           .add_argument(lyra::opt(sync_level_, "x")["--sync-level"]("Sync-separator slice level"))
-          .add_argument(lyra::opt(h_kp_, "x")["--h-kp"]("Horizontal hold: AFC kp"))
-          .add_argument(lyra::opt(h_ki_, "x")["--h-ki"]("Horizontal hold: AFC ki"))
+          .add_argument(
+              lyra::opt(h_kp_, "x")["--h-kp"]("Horizontal hold: locked (flywheel) AFC kp; 1.0 = direct triggering"))
+          .add_argument(lyra::opt(h_ki_, "x")["--h-ki"]("Horizontal hold: locked AFC ki"))
+          .add_argument(lyra::opt(h_acq_kp_, "x")["--h-acq-kp"]("Horizontal hold: acquisition AFC kp"))
+          .add_argument(lyra::opt(h_acq_ki_, "x")["--h-acq-ki"]("Horizontal hold: acquisition AFC ki"))
           .add_argument(lyra::opt(h_clamp_, "x")["--h-clamp"]("Horizontal hold: omega clamp"))
           .add_argument(lyra::opt(v_level_, "x")["--v-level"]("Vertical hold: vsync slice level"))
           .add_argument(lyra::opt(v_kp_, "x")["--v-kp"]("Vertical hold: field-PLL kp"))
@@ -176,6 +179,8 @@ int RenderCommand::run() const {
   dc.sep.sync_level = sync_level_;
   dc.hsweep.pll_kp = h_kp_;
   dc.hsweep.pll_ki = h_ki_;
+  dc.hsweep.acq_kp = h_acq_kp_;
+  dc.hsweep.acq_ki = h_acq_ki_;
   dc.hsweep.omega_clamp = h_clamp_;
   dc.vsync.vsync_level = v_level_;
   dc.vsync.pll_kp = v_kp_;
@@ -248,9 +253,10 @@ int RenderCommand::run() const {
                                             output.stem().string(), frame_stride_)
                                       : std::format("wrote {}", output.string());
   std::println("{} ({}x{}); envelope @ {:g} MS/s after /{} decimation, carrier {:.4f} MHz; "
-               "horizontal locked {} edges @ {:.1f} Hz ({:+.2f}%); vertical locked {} fields @ {:.2f} Hz ({:+.2f}%)",
-      what, width_, height_, envelope_rate / 1e6, decimate, loaded.vision_carrier_hz / 1e6, decoder.accepted_edges(),
-      line_hz, 100.0 * (line_hz - video::kNominalLineHz) / video::kNominalLineHz, decoder.detected_fields(), field_hz,
+               "horizontal {} {} edges @ {:.1f} Hz ({:+.2f}%); vertical locked {} fields @ {:.2f} Hz ({:+.2f}%)",
+      what, width_, height_, envelope_rate / 1e6, decimate, loaded.vision_carrier_hz / 1e6,
+      decoder.hold_locked() ? "locked" : "STILL ACQUIRING after", decoder.accepted_edges(), line_hz,
+      100.0 * (line_hz - video::kNominalLineHz) / video::kNominalLineHz, decoder.detected_fields(), field_hz,
       100.0 * (field_hz - video::kNominalFieldHz) / video::kNominalFieldHz);
   return 0;
 }

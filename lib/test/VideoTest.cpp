@@ -1,5 +1,6 @@
 #include "palindrome/chroma_decoder.hpp"
 #include "palindrome/horizontal_sweep.hpp"
+#include "palindrome/phase.hpp"
 #include "palindrome/screen.hpp"
 #include "palindrome/sync_separator.hpp"
 #include "palindrome/vertical_sync.hpp"
@@ -97,6 +98,69 @@ TEST_CASE("separator + sweep are block-invariant (the streaming guarantee)") {
       CHECK(chunked[i].line_start == whole[i].line_start);
     }
   }
+}
+
+TEST_CASE("HorizontalSweep flywheel: locks, rides a phase step slowly, re-acquires") {
+  // A bare sync-bit train: one `pulse`-wide line-sync pulse at the start of
+  // every `line_len`-sample line. 1024 samples = exactly nominal at 16 MS/s.
+  constexpr std::size_t kLine = 1024;
+  constexpr std::size_t kPulse = 73; // ~4.6 us: inside the line-sync width window
+  const auto one_line = [] {
+    std::vector<video::SyncSample> line(kLine);
+    for (std::size_t k = 0; k < kPulse; ++k)
+      line[k].sync = true;
+    return line;
+  }();
+  const std::vector<video::SyncSample> silence(kLine / 10); // 0.1 line of no sync
+
+  // Feed one line; return the oscillator's phase error at the leading edge
+  // (the BeamSample there is written before this line's trailing-edge
+  // correction, so it is the pre-correction error the loop sees).
+  const auto feed_line = [&](video::HorizontalSweep &sweep) {
+    const auto beam = sweep.process(one_line);
+    const double hp = beam.front().h_phase;
+    return std::abs(palindrome::dsp::wrap_error(hp));
+  };
+
+  video::HorizontalSweep sweep{video::HorizontalSweepConfig{.sample_rate_hz = kRate}};
+  sweep.prepare(kLine);
+
+  // Acquisition: clean nominal lines bring the coincidence detector up.
+  CHECK(!sweep.locked());
+  for (int l = 0; l < 30; ++l)
+    feed_line(sweep);
+  CHECK(sweep.locked());
+
+  // A 0.1-line phase step (all later edges arrive late). A locked flywheel
+  // must NOT snap: the error decays over many lines (the top-of-picture
+  // flagging of a real set), and the sustained miss drains the detector back
+  // to acquisition before the loop pulls in fast and re-locks.
+  static_cast<void>(sweep.process(silence));
+  const double err0 = feed_line(sweep);
+  CHECK(err0 > 0.08); // the step arrived
+  double err = err0;
+  bool unlocked_seen = false;
+  for (int l = 0; l < 3; ++l)
+    err = feed_line(sweep);
+  CHECK(err > 0.04); // still mostly uncorrected three lines on: no snap
+  for (int l = 0; l < 60; ++l) {
+    feed_line(sweep);
+    unlocked_seen = unlocked_seen || !sweep.locked();
+  }
+  CHECK(unlocked_seen); // the detector dropped to acquisition...
+  CHECK(sweep.locked()); // ...and the loop re-locked
+  CHECK(feed_line(sweep) < 0.01); // back on the edge
+
+  // Direct triggering (both gain sets at the old kp = 1) snaps the same step
+  // within one line — the pre-flywheel behaviour, still reachable by knob.
+  video::HorizontalSweep direct{video::HorizontalSweepConfig{
+      .sample_rate_hz = kRate, .pll_kp = 1.0, .pll_ki = 1.0e-5, .acq_kp = 1.0, .acq_ki = 1.0e-5}};
+  direct.prepare(kLine);
+  for (int l = 0; l < 30; ++l)
+    feed_line(direct);
+  static_cast<void>(direct.process(silence));
+  CHECK(feed_line(direct) > 0.08); // the step, seen once...
+  CHECK(feed_line(direct) < 0.01); // ...and gone the next line
 }
 
 TEST_CASE("Screen is block-invariant") {

@@ -52,8 +52,10 @@ private:
   bool no_threads_{false}; // decode serially instead of the default stage pipeline
   // Sync/sweep hold knobs — the rest of the decoder, surfaced for the tuner.
   double sync_level_{0.85}; // separator slice level
-  double h_kp_{1.0}; // horizontal hold (AFC PI + omega clamp)
+  double h_kp_{0.1}; // horizontal hold: locked (flywheel) AFC gains + omega clamp
   double h_ki_{1.0e-5};
+  double h_acq_kp_{0.5}; // horizontal hold: acquisition gains (pre-coincidence)
+  double h_acq_ki_{1.0e-4};
   double h_clamp_{0.2};
   double v_level_{0.4}; // vertical hold (vsync slice + PI)
   double v_kp_{1.0};

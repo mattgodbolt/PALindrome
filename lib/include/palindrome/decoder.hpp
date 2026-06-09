@@ -88,6 +88,7 @@ public:
   [[nodiscard]] std::size_t accepted_edges() const noexcept { return hsweep_.accepted_edges(); }
   [[nodiscard]] std::size_t rejected_edges() const noexcept { return hsweep_.rejected_edges(); }
   [[nodiscard]] double line_omega() const noexcept { return hsweep_.omega(); }
+  [[nodiscard]] bool hold_locked() const noexcept { return hsweep_.locked(); }
   [[nodiscard]] std::size_t detected_fields() const noexcept { return vsync_.detected_fields(); }
   [[nodiscard]] double field_omega() const noexcept { return vsync_.omega(); }
   // Colour diagnostics (meaningful only when colour is enabled).
