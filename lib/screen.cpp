@@ -158,7 +158,7 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // boundary, i.e. the interlace even/odd parity tracking still to be added.
     if (vbeam[i].field_start) {
       if (on_field)
-        on_field(snapshot());
+        on_field(FieldEvent{*this});
       for (float &b: bright_)
         b *= field_decay_;
     }
@@ -248,19 +248,32 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
   }
 }
 
-Screen::Frame Screen::snapshot() const {
+Screen::Frame Screen::quantise(const std::vector<float> &bright, double white_ref) const {
   // Scale by the AGC white reference (the steady-state phosphor brightness a
   // tracked-white pixel reaches), one shared scale so hue is preserved. Contrast
   // moves the white point; cells above it clip into white, as a real tube does —
   // no per-frame statistic, so the exposure is causal and doesn't breathe.
-  const double white = white_ref_ * phosphor_gain_;
+  const double white = white_ref * phosphor_gain_;
   const float scale = white > 0.0 ? static_cast<float>(255.0 * cfg_.contrast / white) : 0.0f;
   // The buffer already holds the displayed charge (decay is applied per field,
   // not per pixel), so readout is a straight scale-and-quantise.
-  std::vector<std::uint8_t> pixels(bright_.size());
-  for (std::size_t idx = 0; idx < bright_.size(); ++idx)
-    pixels[idx] = static_cast<std::uint8_t>(std::clamp(bright_[idx] * scale, 0.0f, 255.0f) + 0.5f);
+  std::vector<std::uint8_t> pixels(bright.size());
+  for (std::size_t idx = 0; idx < bright.size(); ++idx)
+    pixels[idx] = static_cast<std::uint8_t>(std::clamp(bright[idx] * scale, 0.0f, 255.0f) + 0.5f);
   return Frame{.pixels = std::move(pixels), .width = cfg_.width, .height = cfg_.height, .channels = channels_};
+}
+
+Screen::Frame Screen::snapshot() const { return quantise(bright_, white_ref_); }
+
+void Screen::latch_boundary() {
+  latch_bright_.assign(bright_.begin(), bright_.end());
+  latch_white_ = white_ref_;
+}
+
+Screen::Frame Screen::latched_frame() const {
+  if (latch_white_ < 0.0)
+    return snapshot();
+  return quantise(latch_bright_, latch_white_);
 }
 
 } // namespace palindrome::video

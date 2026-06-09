@@ -83,6 +83,7 @@ public:
   void decode_into(DecodedBlock &out, std::span<const float> envelope);
   void deposit(const DecodedBlock &block, const Screen::FieldCallback &on_field = {});
   [[nodiscard]] Screen::Frame snapshot() const { return screen_.snapshot(); }
+  [[nodiscard]] Screen::Frame latched_frame() const { return screen_.latched_frame(); }
 
   [[nodiscard]] std::size_t accepted_edges() const noexcept { return hsweep_.accepted_edges(); }
   [[nodiscard]] std::size_t rejected_edges() const noexcept { return hsweep_.rejected_edges(); }

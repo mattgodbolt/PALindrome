@@ -187,7 +187,8 @@ TEST_CASE("Screen snapshots a field before fading it, exactly once per field_sta
   const std::array boundary_pic{video::ChromaSample{.luma = 0.0f}};
   const std::array boundary_hbeam{video::BeamSample{.h_phase = 0.0f}};
   const std::array boundary_vbeam{video::VSample{.v_phase = 0.0f, .field_start = true}};
-  screen.process(boundary_pic, boundary_hbeam, boundary_vbeam, [&](const video::Screen::Frame &f) { at_boundary = f; });
+  screen.process(boundary_pic, boundary_hbeam, boundary_vbeam,
+      [&](const video::Screen::FieldEvent &e) { at_boundary = e.frame(); });
 
   // Snapshot-before-fade: the boundary frame equals the pre-fade charge exactly.
   REQUIRE(at_boundary.pixels.size() == deposited.pixels.size());
@@ -201,6 +202,47 @@ TEST_CASE("Screen snapshots a field before fading it, exactly once per field_sta
         static_cast<int>(std::lround(static_cast<double>(deposited.pixels[i]) * static_cast<double>(field_decay)));
     CHECK(std::abs(static_cast<int>(faded.pixels[i]) - expected) <= 1);
   }
+}
+
+TEST_CASE("Screen latch defers quantisation without changing the boundary frame") {
+  const video::ScreenConfig cfg{.width = 8, .height = 8, .sample_rate_hz = kRate, .beam_sigma_rows = 0.0, .gamma = 1.0};
+  video::Screen screen{cfg};
+
+  // Before any latch, latched_frame() falls back to the live snapshot.
+  CHECK(screen.latched_frame().pixels == screen.snapshot().pixels);
+
+  std::vector<video::ChromaSample> pic;
+  std::vector<video::BeamSample> hbeam;
+  std::vector<video::VSample> vbeam;
+  const auto add = [&](float h_phase, float v_phase, float luma, bool field_start) {
+    pic.push_back(video::ChromaSample{.luma = luma});
+    hbeam.push_back(video::BeamSample{.h_phase = h_phase});
+    vbeam.push_back(video::VSample{.v_phase = v_phase, .field_start = field_start});
+  };
+  add(0.10f, 0.0f, 1.0f, false); // back porch: seed the black reference
+  for (const float vp: {0.25f, 0.5f, 0.75f})
+    add(0.5f, vp, 0.0f, false); // active white into three pixels
+  screen.process(pic, hbeam, vbeam);
+
+  // At the boundary, quantise now (frame) AND latch; then deposit more on top.
+  // The latched frame must still equal the boundary-time quantisation exactly —
+  // that equivalence is what lets the single-image driver defer the quantise.
+  video::Screen::Frame at_boundary;
+  pic.clear();
+  hbeam.clear();
+  vbeam.clear();
+  add(0.10f, 0.0f, 1.0f, true); // the field boundary
+  add(0.5f, 0.125f, 0.0f, false); // post-boundary deposit, must not leak into the latch
+  screen.process(pic, hbeam, vbeam, [&](const video::Screen::FieldEvent &e) {
+    at_boundary = e.frame();
+    e.latch();
+  });
+
+  const auto latched = screen.latched_frame();
+  REQUIRE(latched.pixels.size() == at_boundary.pixels.size());
+  for (std::size_t i = 0; i < latched.pixels.size(); ++i)
+    CHECK(latched.pixels[i] == at_boundary.pixels[i]);
+  CHECK(latched.pixels != screen.snapshot().pixels); // the post-boundary deposit is visible live
 }
 
 TEST_CASE("ChromaDecoder is block-invariant (the streaming guarantee)") {
