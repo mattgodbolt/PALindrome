@@ -15,6 +15,10 @@ namespace palindrome::video {
 namespace {
 constexpr double kTwoPi = 2.0 * std::numbers::pi;
 constexpr double kIdent = 0.1; // ident leaky-integrator rate for the PAL-switch bistable
+// The ultrasonic glass delay line's trimmed length, in subcarrier cycles: a
+// half-integer count so the delayed subcarrier returns antiphase-aligned —
+// 283.5 / 4.43361875 MHz = 63.943 us, NOT the 64 us line period.
+constexpr double kGlassDelayCycles = 283.5;
 
 // Keep the chroma band-pass top edge below Nyquist (the AirSpy's 10 MS/s only
 // just spans the subcarrier, so a 5 MHz edge would otherwise overrun it).
@@ -79,6 +83,12 @@ ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
   ring_cap_ = static_cast<std::size_t>(nominal_line * 1.5) + 2;
   u_ring_.assign(ring_cap_, 0.0f);
   v_ring_.assign(ring_cap_, 0.0f);
+  // The glass block: trimmed to exactly 283.5 cycles of the crystal (63.943 us
+  // for PAL) — a half-integer subcarrier count, deliberately NOT the line
+  // period, and fixed for the life of the set whatever the source does.
+  glass_len_ = static_cast<std::size_t>(std::lround(kGlassDelayCycles * cfg_.sample_rate_hz / cfg_.subcarrier_hz));
+  if (cfg_.comb_mode == CombMode::glass && glass_len_ >= ring_cap_)
+    throw std::invalid_argument{"ChromaDecoder: glass delay exceeds the comb ring (subcarrier far below nominal?)"};
 }
 
 void ChromaDecoder::prepare(std::size_t max_in) {
@@ -293,11 +303,13 @@ void ChromaDecoder::decode_segment(
     in_gate_prev_ = in_gate;
     ++sample_index_;
 
-    // The comb's read index, one line back. ring_pos_ is kept wrapped in
-    // [0, ring_cap_) so it's a conditional subtract, not a per-sample modulo;
-    // line_len_ < ring_cap_, so the read offset wraps at most once.
+    // The comb's read index, one delay back: the measured line for the
+    // adaptive modes, the fixed glass length for CombMode::glass. ring_pos_ is
+    // kept wrapped in [0, ring_cap_) so it's a conditional subtract, not a
+    // per-sample modulo; the delay < ring_cap_, so it wraps at most once.
+    const std::size_t delay = cfg_.comb_mode == CombMode::glass ? glass_len_ : line_len_;
     const std::size_t wi = ring_pos_;
-    const std::size_t ri = wi >= line_len_ ? wi - line_len_ : wi + ring_cap_ - line_len_;
+    const std::size_t ri = wi >= delay ? wi - delay : wi + ring_cap_ - delay;
     // ACC normalisation, gated by the killer. The gate is a SWITCH with a
     // ramped opening, not a proportional fader: below the switch point the
     // chroma is fully muted (the TDA3561A kills > 50 dB — and the unbounded
@@ -309,6 +321,7 @@ void ChromaDecoder::decode_segment(
     float u = 0.0f;
     float v = 0.0f;
     switch (cfg_.comb_mode) {
+      case CombMode::glass: // the same PAL-D sum/difference, at the fixed glass depth (ri above)
       case CombMode::delay_line: {
         // Period-correct PAL-D: the 1H comb sits on the chroma BEFORE the per-line
         // de-rotation (a delay line on the modulated chroma; the continuous NCO

@@ -332,7 +332,8 @@ TEST_CASE("ChromaDecoder is block-invariant (the streaming guarantee)") {
 
   // Every comb mode must be block-invariant — the NCO phasor, FIR state, burst
   // gate, comb ring and parity all carry across calls in each.
-  for (const auto mode: {video::CombMode::post, video::CombMode::delay_line, video::CombMode::off}) {
+  for (const auto mode:
+      {video::CombMode::post, video::CombMode::delay_line, video::CombMode::off, video::CombMode::glass}) {
     const video::ChromaDecoderConfig cfg{.sample_rate_hz = kRate, .comb_mode = mode};
 
     video::ChromaDecoder whole{cfg};
@@ -525,6 +526,41 @@ TEST_CASE("APC catch range 0 pins the crystal (the pre-pull behaviour)") {
   const auto run = run_chroma(env, cfg);
   CHECK(run.subcarrier_hz == 4.43361875e6); // never retuned
   CHECK(run.killer_gain > 0.05); // the per-line rotation still locks an in-range source
+}
+
+TEST_CASE("the glass comb is the delay line at the real fixed geometry") {
+  // The glass block is 283.5 subcarrier cycles = 1023 samples at 16 MS/s. On a
+  // source whose lines are exactly that long, the adaptive delay-line comb
+  // measures the same depth, so the two modes must agree bit-for-bit (after
+  // the adaptive mode's first line-length measurement settles). On the
+  // off-nominal 1028-sample lines they must diverge: the fixed block pairs
+  // chroma displaced 5 samples along the line, ghosting colour transitions —
+  // the real PAL-D off-spec misregistration the adaptive convenience hides.
+  // Killer disabled: the comb is under test.
+  const auto run_mode = [](std::span<const float> env, video::CombMode mode) {
+    auto cfg = killer_test_config();
+    cfg.killer_threshold = 0.0;
+    cfg.comb_mode = mode;
+    return run_chroma(env, cfg);
+  };
+
+  const auto on_spec = synth_colour_composite(60, 1023);
+  const auto glass_on = run_mode(on_spec, video::CombMode::glass);
+  const auto adaptive_on = run_mode(on_spec, video::CombMode::delay_line);
+  REQUIRE(glass_on.out.size() == adaptive_on.out.size());
+  for (std::size_t k = 5 * 1023; k < glass_on.out.size(); ++k) {
+    CHECK(glass_on.out[k].u == adaptive_on.out[k].u);
+    CHECK(glass_on.out[k].v == adaptive_on.out[k].v);
+  }
+
+  const auto off_spec = synth_colour_composite(60, 1028);
+  const auto glass_off = run_mode(off_spec, video::CombMode::glass);
+  const auto adaptive_off = run_mode(off_spec, video::CombMode::delay_line);
+  float max_diff = 0.0f;
+  for (std::size_t k = 5 * 1028; k < glass_off.out.size(); ++k)
+    max_diff = std::max({max_diff, std::abs(glass_off.out[k].u - adaptive_off.out[k].u),
+        std::abs(glass_off.out[k].v - adaptive_off.out[k].v)});
+  CHECK(max_diff > 0.1f); // the mistimed pairing visibly corrupts the chroma
 }
 
 TEST_CASE("ChromaDecoder rejects an out-of-range ref_tc_lines") {
