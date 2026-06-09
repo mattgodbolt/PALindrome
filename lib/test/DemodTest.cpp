@@ -166,9 +166,10 @@ TEST_CASE("ComplexAmEnvelope recovers a known AM envelope off an offset carrier"
   REQUIRE(out.size() == n);
 
   // The FIR delays the envelope by its (integer) group delay; check against the
-  // shifted modulation law, skipping the filter warm-up at both ends. The 2%
-  // tolerance absorbs the FIR passband ripple and the DC blocker's slow start-up
-  // transient (its pole is ~10k samples).
+  // shifted modulation law, skipping the filter warm-up at both ends. The ±0.02
+  // absolute tolerance absorbs the FIR passband ripple and the DC blocker's slow
+  // start-up transient (its pole is ~10k samples) — both absolute effects, which
+  // is why it isn't a relative bound.
   const std::size_t gd = (taps - 1) / 2;
   for (std::size_t k = 2 * gd; k + gd < n; ++k) {
     const auto t = static_cast<double>(k - gd) / fs;
