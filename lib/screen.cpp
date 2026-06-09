@@ -28,6 +28,8 @@ Screen::Screen(const ScreenConfig &cfg) :
     throw std::invalid_argument{"Screen: nominal_line_hz must exceed field_hz"};
   if (!(cfg_.h_window_lo < cfg_.h_window_hi && cfg_.v_window_lo < cfg_.v_window_hi))
     throw std::invalid_argument{"Screen: scan windows need lo < hi"};
+  if (!(cfg_.readout_gamma > 0.0))
+    throw std::invalid_argument{"Screen: readout_gamma must be positive"};
   // Decay per sample so that brightness falls by 1/e over persistence_fields
   // field periods: tau_samples = persistence * (sample_rate / field_hz).
   const double tau_samples = cfg_.persistence_fields * cfg_.sample_rate_hz / cfg_.field_hz;
