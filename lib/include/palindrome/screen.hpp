@@ -42,6 +42,14 @@ struct ScreenConfig {
   // luma. 1.0 puts tracked white at full scale; lower dims, higher clips into
   // white. The analog of the contrast pot in front of a set's IF AGC.
   double contrast = 1.0;
+  // Readout transfer: the "camera" between the phosphor and the PNG. The
+  // framebuffer is linear light; a PNG viewed on an sRGB display gets the
+  // monitor's ~2.2 decode applied, so an authentic tube gamma needs the
+  // readout to ENCODE with this exponent (pixel = light^(1/readout_gamma)) or
+  // the picture is gamma'd twice. 1.0 = linear (the original raw readout);
+  // 2.2 with a ~2.6 tube gives the broadcast chain's deliberate end-to-end
+  // system gamma of ~1.2.
+  double readout_gamma = 1.0;
   // Retrace blanking: the beam is held off for h_phase below this — the sync,
   // back porch and colour burst — exactly as a real set's line-blanking pulse
   // keeps the flyback (and the burst) off the screen. h_phase = 0 is the sync
@@ -52,6 +60,16 @@ struct ScreenConfig {
   // this so colour registers with mono instead of sliding right — the luminance
   // delay line, in reverse. 0 in mono (the picture is the raw envelope).
   double picture_lag_samples = 0.0;
+  // The window of the scan mapped onto the output frame, in h_phase / v_phase.
+  // [0,1]x[0,1] shows the whole scan, blanking and all. A real set overscans:
+  // the raster is larger than the tube window, so the bezel hides the blanking
+  // and a few percent of the picture — the driver expresses that by mapping the
+  // (cropped) nominal active box here. Pure remap: deposits outside the window
+  // fall to the existing frame clip, so it costs nothing per sample.
+  double h_window_lo = 0.0;
+  double h_window_hi = 1.0;
+  double v_window_lo = 0.0;
+  double v_window_hi = 1.0;
 };
 
 // The picture tube. A join sink fed three aligned rails — the picture (luma +
@@ -171,6 +189,8 @@ private:
   // and reconstructing along the line (horizontally).
   double yoke_tilt_rows_ = 0.0; // vertical rows the beam advances per line
   double picture_h_offset_ = 0.0; // h_phase shift to register the picture rail (see ScreenConfig)
+  double x_scale_ = 0.0; // columns per unit h_phase: width / (h_window_hi - h_window_lo)
+  double y_scale_ = 0.0; // rows per unit v_phase: height / (v_window_hi - v_window_lo)
   std::size_t splat_radius_y_ = 0; // Gaussian half-width in rows
   std::size_t splat_radius_x_ = 0; // Gaussian half-width in columns
 
