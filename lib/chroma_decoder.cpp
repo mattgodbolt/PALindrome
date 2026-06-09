@@ -40,6 +40,13 @@ const ChromaDecoderConfig &validate(const ChromaDecoderConfig &cfg) {
   if (!(cfg.ref_tc_lines >= 2.0 && cfg.ref_tc_lines <= 100.0))
     throw std::invalid_argument{
         std::format("ChromaDecoder: ref_tc_lines must be in [2, 100], got {}", cfg.ref_tc_lines)};
+  if (!(cfg.killer_threshold < 1.0))
+    throw std::invalid_argument{std::format(
+        "ChromaDecoder: killer_threshold must be < 1 (ident never exceeds 1), got {}", cfg.killer_threshold)};
+  if (!(cfg.killer_on_tc_lines >= 1.0 && cfg.killer_off_tc_lines >= 1.0))
+    throw std::invalid_argument{
+        std::format("ChromaDecoder: killer ramp time constants must be >= 1 line, got on {} / off {}",
+            cfg.killer_on_tc_lines, cfg.killer_off_tc_lines)};
   return cfg;
 }
 } // namespace
@@ -55,6 +62,10 @@ ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
         cfg.subcarrier_hz - cfg.luma_notch_half_hz,
         clamp_high(cfg.subcarrier_hz + cfg.luma_notch_half_hz, cfg.sample_rate_hz))} {
   apc_rate_ = 1.0 / cfg_.ref_tc_lines;
+  // killer_threshold <= 0 disables the killer: the gate is pinned open rather
+  // than ramped (update_killer no-ops), the pre-killer behaviour.
+  if (cfg_.killer_threshold <= 0.0)
+    kill_gain_ = 1.0;
   nco_omega_ = cfg_.subcarrier_hz / cfg_.sample_rate_hz;
   nco_step_ = std::polar(1.0, kTwoPi * nco_omega_);
   // The comb delay is one line; size the ring for the longest line we expect.
@@ -73,6 +84,16 @@ void ChromaDecoder::prepare(std::size_t max_in) {
   mix_u_.reserve(max_in);
   mix_v_.reserve(max_in);
   out_.reserve(max_in);
+}
+
+void ChromaDecoder::update_killer(bool identified) {
+  if (cfg_.killer_threshold <= 0.0)
+    return; // disabled: the gate stays pinned open
+  // One ramp step per measured line. Switch-on is the slow direction (colour
+  // fades in well after lock — and brief noise-driven ident excursions can't
+  // meaningfully open the gate); the kill direction mutes much faster.
+  const double rate = identified ? 1.0 / cfg_.killer_on_tc_lines : 1.0 / cfg_.killer_off_tc_lines;
+  kill_gain_ += rate * ((identified ? 1.0 : 0.0) - kill_gain_);
 }
 
 void ChromaDecoder::finalize_line() {
@@ -120,6 +141,14 @@ void ChromaDecoder::finalize_line() {
   }
   v_flip_ = (parity_ == polarity_) ? 1.0 : -1.0;
   swing_deg_ = std::abs(swing) * 180.0 / std::numbers::pi;
+
+  // The killer's verdict for this line: a sustained, bistable-consistent swing
+  // sense is something noise can't fake — amplitude alone could. Lines skipped
+  // above (VBI, dropouts) HOLD the gate instead: the vertical interval must not
+  // drain a locked killer, and after a genuine burst loss the decaying
+  // burst_ref_ starts letting noise lines through here within a couple of
+  // thousand lines, whose random swing then mutes the chroma.
+  update_killer(ident_ >= cfg_.killer_threshold);
 
   // De-rotate by π - psi_axis so the -U axis lands on the negative-real axis;
   // U = -Re, V = Im (switch-corrected by v_flip_) then follow in process().
@@ -197,7 +226,13 @@ std::span<const ChromaSample> ChromaDecoder::process(
     // line_len_ < ring_cap_, so the read offset wraps at most once.
     const std::size_t wi = ring_pos_;
     const std::size_t ri = wi >= line_len_ ? wi - line_len_ : wi + ring_cap_ - line_len_;
-    const double scale = burst_amp_ > 1e-9 ? 1.0 / burst_amp_ : 0.0;
+    // ACC normalisation, gated by the killer. The gate is a SWITCH with a
+    // ramped opening, not a proportional fader: below the switch point the
+    // chroma is fully muted (the TDA3561A kills > 50 dB — and the unbounded
+    // ACC 1/burst would otherwise amplify any leakage on a noise "burst"),
+    // above it the slow ramp plays out as the saturation fading in.
+    const double gate = kill_gain_ >= kKillerSwitch ? kill_gain_ : 0.0;
+    const double scale = burst_amp_ > 1e-9 ? gate / burst_amp_ : 0.0;
 
     float u = 0.0f;
     float v = 0.0f;

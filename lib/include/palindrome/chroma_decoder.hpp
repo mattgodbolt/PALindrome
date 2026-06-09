@@ -59,6 +59,20 @@ struct ChromaDecoderConfig {
   // of [2, 100]: below ~2 the loop tracks the ±45° swing itself, not the axis;
   // above ~100 it can't pull in an off-nominal source's per-line phase ramp.
   double ref_tc_lines = 10.0;
+  // Colour killer. The ident circuit's verdict — does the burst's ±45° swing
+  // sense agree with the bistable, line after line — gates the chroma, exactly
+  // as the TDA3561A's ident/killer mutes the chrominance amplifier when no PAL
+  // ident is found. Noise can pass an amplitude test but cannot fake a
+  // consistent swing, so ident is the discriminator. The gate is a slow ramp:
+  // switch-ON is deliberately delayed (the saturation-control time constant —
+  // colour fades in a fraction of a second after lock), which is also what
+  // makes brief noise-driven ident excursions harmless; the kill direction is
+  // much faster. killer_threshold <= 0 disables the killer — no ident-based
+  // muting (chroma can still come out zero when no burst is measured at all:
+  // the ACC has nothing to normalise against).
+  double killer_threshold = 0.4; // ident level counted as "PAL identified"
+  double killer_on_tc_lines = 1500.0; // switch-on ramp (~0.1 s of lines)
+  double killer_off_tc_lines = 100.0; // kill ramp (fast mute)
 };
 
 // The colour channel, a PAL-D delay-line decoder. Off the same composite envelope
@@ -71,6 +85,10 @@ struct ChromaDecoderConfig {
 // block-invariant like every other stage.
 class ChromaDecoder {
 public:
+  // The killer gate hard-mutes below this level (the > 50 dB mute of a real
+  // killer); diagnostics should treat a gate below it as "colour killed".
+  static constexpr double kKillerSwitch = 0.1;
+
   explicit ChromaDecoder(const ChromaDecoderConfig &cfg);
 
   void prepare(std::size_t max_in);
@@ -81,11 +99,13 @@ public:
   [[nodiscard]] std::size_t input_multiple() const noexcept { return 1; }
 
   // Diagnostics: the crystal frequency (Hz), the smoothed burst amplitude (the
-  // ACC level), and this line's burst swing in degrees (~45° once the colour is
-  // locked — the ±45° -U±V swinging burst).
+  // ACC level), this line's burst swing in degrees (~45° once the colour is
+  // locked — the ±45° -U±V swinging burst), and the killer's gate ([0, 1]:
+  // 0 = chroma muted, 1 = full colour).
   [[nodiscard]] double subcarrier_hz() const noexcept { return nco_omega_ * cfg_.sample_rate_hz; }
   [[nodiscard]] double burst_amplitude() const noexcept { return burst_amp_; }
   [[nodiscard]] double burst_swing_deg() const noexcept { return swing_deg_; }
+  [[nodiscard]] double killer_gain() const noexcept { return kill_gain_; }
 
   // Group delay of the chroma/luma rails in samples. The luma notch is built with
   // (bandpass_taps + demod_lp_taps - 1) taps, so its delay — and the cascaded
@@ -142,6 +162,11 @@ private:
   bool polarity_ = false; // which bistable phase is the V-inverted (PAL) line
   double ident_ = 0.0; // leaky agreement: < 0 means the bistable is mis-phased
   double swing_deg_ = 90.0; // this line's burst |swing|; ~45 once locked
+
+  // The killer's gate, ramped per line toward 1 (ident above threshold) or 0.
+  // Starts killed: a set powers up mono and fades colour in once identified.
+  double kill_gain_ = 0.0;
+  void update_killer(bool identified); // one per-line ramp step (or hold, if disabled)
 
   // Line-length tracking, for the 1H comb delay depth.
   std::size_t sample_index_ = 0;
