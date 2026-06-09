@@ -181,6 +181,16 @@ reference) can't — the experiment that makes the comb placement matter. Range
 [2, 100]: below ~2 the loop tracks the ±45° burst swing, above ~100 it can't pull
 in an off-nominal source.
 
+A **colour killer** gates the chroma, as the TDA3561A's ident/killer does: the
+verdict is the ident signal (does the burst's ±45° swing sense agree with the
+PAL-switch bistable line after line — something noise can't fake), the mute is
+hard (no identification → a grey picture, never noise painted as colour), and
+switch-ON is deliberately slow — colour pops in and fades up over ~a tenth of a
+second after lock, the saturation-control time constant of a real set. A
+burst-free transmission (or a source that suppresses its colourburst) decodes
+as clean monochrome. `--no-killer` disables it (the old paint-anything
+behaviour); `render` prints the killer gate state with the colour diagnostics.
+
 ### `demod` — composite envelope to WAV (inspection)
 
 `palindrome demod corpus/wb3 -o /tmp/wb3.wav` AM-demodulates the vision carrier
@@ -246,9 +256,6 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
 
 Smaller things noted in passing, not yet scheduled:
 
-- **Test the colour-killer on noise.** Feed random/white noise and assert the
-  output is an appropriately colourless white-noise image — with no valid burst
-  the colour-killer should suppress chroma, not paint spurious colour.
 - **Fast gun-gamma `pow`.** With `--gamma ≠ 1` the electron-gun curve calls
   `std::pow` per sample in the screen deposit (~0.4s of a colour render) — the
   last un-LUT'd transcendental and the threaded pipeline's bottleneck stage. LUT

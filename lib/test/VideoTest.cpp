@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <numbers>
 #include <span>
@@ -45,19 +46,23 @@ constexpr double kRate = 16.0e6;
 // A synthetic composite carrying chroma: synth_composite plus ~10 cycles of
 // colour burst on the back porch and a constant-phase subcarrier across the
 // active video, so the chroma decoder has a real burst to gate and a steady
-// colour to recover. Block-invariance (not colour accuracy) is what we assert.
+// colour to recover. The burst swings ±45° about its mean axis on alternate
+// lines — the PAL swinging burst, which is what the ident (and so the colour
+// killer) recognises as PAL; without the swing the killer rightly treats the
+// signal as not-PAL and mutes it.
 std::vector<float> synth_colour_composite(std::size_t lines, std::size_t line_len) {
   auto e = synth_composite(lines, line_len);
   constexpr double fsc = 4.43361875e6;
   const double w = 2.0 * std::numbers::pi * fsc / kRate;
   for (std::size_t l = 0; l < lines; ++l) {
     const std::size_t base = l * line_len;
+    const double swing = (l % 2 == 0 ? 1.0 : -1.0) * std::numbers::pi / 4.0;
     for (std::size_t k = 0; k < line_len; ++k) {
       const double phase = w * static_cast<double>(base + k);
       const bool in_burst = k >= line_len / 12 && k < line_len / 12 + 36;
       const bool in_active = k > line_len / 6;
       if (in_burst)
-        e[base + k] += 0.15f * static_cast<float>(std::sin(phase)); // back-porch burst
+        e[base + k] += 0.15f * static_cast<float>(std::sin(phase + swing)); // ±45° swinging burst
       else if (in_active)
         e[base + k] += 0.08f * static_cast<float>(std::cos(phase)); // steady chroma
     }
@@ -356,6 +361,91 @@ TEST_CASE("ChromaDecoder is block-invariant (the streaming guarantee)") {
       }
     }
   }
+}
+
+namespace {
+// Run separator -> sweep -> chroma over `env`, returning the chroma stream and
+// the decoder's killer gate after the run.
+struct ChromaRun {
+  std::vector<video::ChromaSample> out;
+  double killer_gain;
+};
+ChromaRun run_chroma(std::span<const float> env, const video::ChromaDecoderConfig &cfg) {
+  video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate}};
+  sep.prepare(env.size());
+  const auto sync = sep.process(env);
+  video::HorizontalSweep hsweep{video::HorizontalSweepConfig{.sample_rate_hz = kRate}};
+  hsweep.prepare(sync.size());
+  const auto hbeam = hsweep.process(sync);
+  video::ChromaDecoder chroma{cfg};
+  chroma.prepare(env.size());
+  const auto out = chroma.process(env, hbeam);
+  return ChromaRun{.out = {out.begin(), out.end()}, .killer_gain = chroma.killer_gain()};
+}
+
+float peak_chroma(std::span<const video::ChromaSample> s) {
+  float peak = 0.0f;
+  for (const auto &c: s)
+    peak = std::max({peak, std::abs(c.u), std::abs(c.v)});
+  return peak;
+}
+
+// The killer tests build their timing rail straight off the separator (no
+// sync-branch low-pass), so unlike the full decoder the rail carries no group
+// delay — the demodulated burst lands ~60 samples (the chroma path's delay)
+// after the synth's back-porch position. Place the gate there.
+video::ChromaDecoderConfig killer_test_config() {
+  return video::ChromaDecoderConfig{.sample_rate_hz = kRate, .burst_gate_lo = 0.145, .burst_gate_hi = 0.175};
+}
+} // namespace
+
+TEST_CASE("colour killer mutes a burst-free (mono) signal") {
+  // synth_composite carries no subcarrier at all — a mono transmission (or the
+  // CRTC-abuse trick that suppresses the burst). The ident never finds a PAL
+  // swing, so the gate must stay shut and no spurious colour painted.
+  const auto env = synth_composite(60, 1028);
+  const auto run = run_chroma(env, killer_test_config());
+  CHECK(run.killer_gain < 0.05);
+  CHECK(peak_chroma(run.out) < 1e-3f);
+}
+
+TEST_CASE("colour killer mutes white noise") {
+  // Deterministic LCG noise across the whole envelope: sync barely locks and
+  // any burst-gate measurement is random. Noise can pass an amplitude test but
+  // can't fake a bistable-consistent ±45° swing, so the killer holds the
+  // chroma off — the picture decodes as (noisy) monochrome.
+  std::vector<float> env(600 * 1028);
+  std::uint32_t lcg = 1;
+  for (auto &e: env) {
+    lcg = lcg * 1664525u + 1013904223u;
+    e = static_cast<float>(lcg >> 8) / static_cast<float>(1u << 24);
+  }
+  const auto run = run_chroma(env, killer_test_config());
+  CHECK(run.killer_gain < 0.1);
+  CHECK(peak_chroma(run.out) < 0.05f);
+}
+
+TEST_CASE("colour killer fades a valid burst in slowly, and can be disabled") {
+  const auto env = synth_colour_composite(300, 1028);
+
+  // A real burst identifies within a few lines, but the gate opens on the slow
+  // saturation-control ramp: well off zero after 300 lines, nowhere near full.
+  const auto period = run_chroma(env, killer_test_config());
+  CHECK(period.killer_gain > 0.05);
+  CHECK(period.killer_gain < 0.6);
+  // The switch-on is visible in the output: the early lines are still fully
+  // muted (the gate hasn't reached the switch point), the late ones carry
+  // chroma — colour pops on and fades up, as a set at switch-on.
+  const std::size_t fifth = period.out.size() / 5;
+  CHECK(peak_chroma(std::span{period.out}.first(fifth)) < 1e-3f);
+  CHECK(peak_chroma(std::span{period.out}.last(fifth)) > 0.05f);
+
+  // killer_threshold <= 0 disables the gate entirely (the pre-killer decode).
+  auto open_cfg = killer_test_config();
+  open_cfg.killer_threshold = 0.0;
+  const auto open = run_chroma(env, open_cfg);
+  CHECK(open.killer_gain == 1.0);
+  CHECK(peak_chroma(open.out) > peak_chroma(period.out));
 }
 
 TEST_CASE("ChromaDecoder rejects an out-of-range ref_tc_lines") {

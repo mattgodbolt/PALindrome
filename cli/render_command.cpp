@@ -69,6 +69,8 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(no_delay_line_)["--no-delay-line"]("Colour: alias for --comb-mode off"))
           .add_argument(lyra::opt(ref_tc_, "lines")["--ref-tc"](
               "Colour: APC reference time constant in lines (default 10; slower = more period-faithful, [2,100])"))
+          .add_argument(lyra::opt(no_killer_)["--no-killer"](
+              "Colour: disable the colour killer (paint chroma even with no identified burst)"))
           .add_argument(lyra::opt(sync_level_, "x")["--sync-level"]("Sync-separator slice level"))
           .add_argument(
               lyra::opt(h_kp_, "x")["--h-kp"]("Horizontal hold: locked (flywheel) AFC kp; 1.0 = direct triggering"))
@@ -162,6 +164,8 @@ int RenderCommand::run() const {
   dc.chroma.burst_gate_lo = burst_gate_lo_;
   dc.chroma.burst_gate_hi = burst_gate_hi_;
   dc.chroma.ref_tc_lines = ref_tc_;
+  if (no_killer_)
+    dc.chroma.killer_threshold = 0.0;
   if (no_delay_line_) // deprecated alias, overridden by an explicit --comb-mode
     dc.chroma.comb_mode = video::CombMode::off;
   if (!comb_mode_.empty()) {
@@ -244,8 +248,9 @@ int RenderCommand::run() const {
     save(output, decoder.latched_frame()); // falls back to the live state if no field completed
 
   if (colour_)
-    std::println("colour: crystal {:.4f} MHz, burst amplitude {:.4g}, burst swing {:.1f} deg",
-        decoder.subcarrier_hz() / 1e6, decoder.burst_amplitude(), decoder.burst_swing_deg());
+    std::println("colour: crystal {:.4f} MHz, burst amplitude {:.4g}, burst swing {:.1f} deg, killer gate {:.2f}{}",
+        decoder.subcarrier_hz() / 1e6, decoder.burst_amplitude(), decoder.burst_swing_deg(), decoder.killer_gain(),
+        decoder.killer_gain() < 0.1 ? " (COLOUR KILLED)" : "");
 
   const double line_hz = decoder.line_omega() * envelope_rate;
   const double field_hz = decoder.field_omega() * envelope_rate;

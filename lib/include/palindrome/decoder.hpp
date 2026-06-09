@@ -95,6 +95,7 @@ public:
   [[nodiscard]] double subcarrier_hz() const noexcept { return chroma_.subcarrier_hz(); }
   [[nodiscard]] double burst_amplitude() const noexcept { return chroma_.burst_amplitude(); }
   [[nodiscard]] double burst_swing_deg() const noexcept { return chroma_.burst_swing_deg(); }
+  [[nodiscard]] double killer_gain() const noexcept { return chroma_.killer_gain(); }
 
 private:
   bool colour_;
