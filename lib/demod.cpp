@@ -90,13 +90,17 @@ std::span<const float> ComplexAmEnvelope::process(std::span<const std::complex<f
   // DC-block, then shift the carrier to DC. Both recurrences carry across calls,
   // so the result is independent of how the input is chunked (to float rounding).
   for (std::size_t k = 0; k < n; ++k) {
-    const std::complex<double> x{in[k].real(), in[k].imag()};
-    const std::complex<double> hp = x - dc_prev_in_ + kDcPole * dc_prev_out_;
-    dc_prev_in_ = x;
-    dc_prev_out_ = hp;
+    const auto xr = static_cast<double>(in[k].real());
+    const auto xi = static_cast<double>(in[k].imag());
+    const double hp_re = xr - dc_prev_in_re_ + kDcPole * dc_prev_out_re_;
+    const double hp_im = xi - dc_prev_in_im_ + kDcPole * dc_prev_out_im_;
+    dc_prev_in_re_ = xr;
+    dc_prev_in_im_ = xi;
+    dc_prev_out_re_ = hp_re;
+    dc_prev_out_im_ = hp_im;
 
     const std::complex<float> p{static_cast<float>(phasor_.real()), static_cast<float>(phasor_.imag())};
-    const std::complex<float> m = std::complex<float>{static_cast<float>(hp.real()), static_cast<float>(hp.imag())} * p;
+    const std::complex<float> m = std::complex<float>{static_cast<float>(hp_re), static_cast<float>(hp_im)} * p;
     mi[k] = m.real();
     mq[k] = m.imag();
     phasor_ = dsp::cmul(phasor_, step_);
