@@ -556,6 +556,7 @@ TEST_CASE("the glass comb is the delay line at the real fixed geometry") {
   const auto off_spec = synth_colour_composite(60, 1028);
   const auto glass_off = run_mode(off_spec, video::CombMode::glass);
   const auto adaptive_off = run_mode(off_spec, video::CombMode::delay_line);
+  REQUIRE(glass_off.out.size() == adaptive_off.out.size());
   float max_diff = 0.0f;
   for (std::size_t k = 5 * 1028; k < glass_off.out.size(); ++k)
     max_diff = std::max({max_diff, std::abs(glass_off.out[k].u - adaptive_off.out[k].u),
