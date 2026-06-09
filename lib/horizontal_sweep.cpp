@@ -9,6 +9,15 @@
 
 namespace palindrome::video {
 
+namespace {
+// A non-coincident edge drains the coincidence detector this many times faster
+// than a coincident edge fills it: brief noise (a VCR head-switch, an impulse)
+// doesn't drop a locked loop into fast acquisition, but a sustained phase step
+// unlocks within a handful of lines — the RC integrator of a real coincidence
+// detector, in saturating-counter form.
+constexpr std::size_t kCoincidencePenalty = 4;
+} // namespace
+
 HorizontalSweep::HorizontalSweep(const HorizontalSweepConfig &cfg) : cfg_{cfg} {
   if (!(cfg_.sample_rate_hz > 0.0))
     throw std::invalid_argument{"HorizontalSweep: sample_rate_hz must be positive"};
@@ -24,6 +33,17 @@ HorizontalSweep::HorizontalSweep(const HorizontalSweepConfig &cfg) : cfg_{cfg} {
     throw std::invalid_argument{"HorizontalSweep: pll_kp must be in [0, 1]"};
   if (!(cfg_.pll_ki >= 0.0))
     throw std::invalid_argument{"HorizontalSweep: pll_ki must be >= 0"};
+  if (!(cfg_.acq_kp >= 0.0 && cfg_.acq_kp <= 1.0))
+    throw std::invalid_argument{"HorizontalSweep: acq_kp must be in [0, 1]"};
+  if (!(cfg_.acq_ki >= 0.0))
+    throw std::invalid_argument{"HorizontalSweep: acq_ki must be >= 0"};
+  if (!(cfg_.coincidence_window > 0.0 && cfg_.coincidence_window < 0.5))
+    throw std::invalid_argument{"HorizontalSweep: coincidence_window must be in (0, 0.5)"};
+  // The upper bound keeps the detector arithmetic (2 * lines, charge + 1) far
+  // from size_t wrap, and a threshold past ~a field's worth of lines would be
+  // meaningless as a lock criterion anyway.
+  if (cfg_.coincidence_lines == 0 || cfg_.coincidence_lines > 1000)
+    throw std::invalid_argument{"HorizontalSweep: coincidence_lines must be in [1, 1000]"};
   if (!(cfg_.omega_clamp > 0.0 && cfg_.omega_clamp < 1.0))
     throw std::invalid_argument{"HorizontalSweep: omega_clamp must be in (0, 1)"};
   omega_ = cfg_.nominal_line_hz / cfg_.sample_rate_hz;
@@ -67,11 +87,22 @@ std::span<const BeamSample> HorizontalSweep::process(std::span<const SyncSample>
       if (width >= min_pulse && width <= max_pulse && gap_ok) {
         // PI correction anchored to the LEADING edge (the sharp, stable sync
         // transition). err is the leading edge's phase, which should have been
-        // 0. kp snaps it there; ki nudges omega toward the true line rate,
+        // 0. kp pulls it there; ki nudges omega toward the true line rate,
         // anti-windup clamped so a biased acquisition can't run omega away.
+        // The gains come from the coincidence detector's state BEFORE this
+        // edge updates it: a phase step hitting a locked loop is corrected
+        // slowly first (the flagging/recentring of a real flywheel), and only
+        // once the detector drains does the loop re-acquire fast.
         const double err = dsp::wrap_error(leading_edge_phase_);
-        phase_ -= cfg_.pll_kp * err;
-        omega_ = std::clamp(omega_ - cfg_.pll_ki * err, omega_lo, omega_hi);
+        const double kp = locked_ ? cfg_.pll_kp : cfg_.acq_kp;
+        const double ki = locked_ ? cfg_.pll_ki : cfg_.acq_ki;
+        phase_ -= kp * err;
+        omega_ = std::clamp(omega_ - ki * err, omega_lo, omega_hi);
+        if (std::abs(err) <= cfg_.coincidence_window)
+          coincidence_ = std::min(coincidence_ + 1, 2 * cfg_.coincidence_lines);
+        else
+          coincidence_ -= std::min(coincidence_, kCoincidencePenalty);
+        locked_ = coincidence_ >= cfg_.coincidence_lines;
         last_accepted_sample_ = sample_index_;
         have_accepted_ = true;
         ++accepted_;

@@ -97,14 +97,23 @@ KNOBS = [
          min=0.5, max=0.95, step=0.01, default=0.85,
          help="Where the separator decides 'sync pulse' vs picture, as a fraction of the white→sync-tip range. ~0.85 "
               "sits inside the sync region. Too low catches dark picture as false sync; too high misses weak sync."),
-    dict(name="h_kp", flag="--h-kp", label="H-hold kp",
-         min=0.0, max=1.0, step=0.02, default=1.0,
-         help="Horizontal hold (stops sideways tearing/slant), proportional gain: how hard the line oscillator snaps "
-              "its phase onto each sync edge. 1.0 = lock exactly to every edge; lower ignores jitter but can drift."),
-    dict(name="h_ki", flag="--h-ki", label="H-hold ki",
+    dict(name="h_kp", flag="--h-kp", label="H-hold kp (locked)",
+         min=0.0, max=1.0, step=0.02, default=0.1,
+         help="Horizontal hold (stops sideways tearing/slant), locked-loop proportional gain: how hard the line "
+              "oscillator is pulled onto each sync edge once the flywheel has locked. 0.1 = a period flywheel that "
+              "rides out edge noise (and flags on phase steps); 1.0 = direct triggering, snapping to every edge."),
+    dict(name="h_ki", flag="--h-ki", label="H-hold ki (locked)",
          min=0.0, max=5.0e-5, step=1.0e-6, default=1.0e-5,
-         help="Horizontal hold, integral gain: how fast the line *frequency* is nudged toward the recording's true "
-              "line rate. Tiny values track slow drift; too high makes the lock hunt and oscillate."),
+         help="Horizontal hold, locked-loop integral gain: how fast the line *frequency* is nudged toward the "
+              "recording's true line rate. Tiny values track slow drift; too high makes the lock hunt and oscillate."),
+    dict(name="h_acq_kp", flag="--h-acq-kp", label="H-hold kp (acquire)",
+         min=0.0, max=1.0, step=0.02, default=0.5,
+         help="Horizontal hold, acquisition proportional gain: used until the coincidence detector sees enough sync "
+              "edges landing where the oscillator predicted, then the locked gains take over."),
+    dict(name="h_acq_ki", flag="--h-acq-ki", label="H-hold ki (acquire)",
+         min=0.0, max=5.0e-4, step=1.0e-5, default=1.0e-4,
+         help="Horizontal hold, acquisition integral gain: pulls the line frequency in fast before lock; the locked "
+              "ki takes over once the flywheel engages."),
     dict(name="h_clamp", flag="--h-clamp", label="H omega clamp",
          min=0.02, max=0.30, step=0.01, default=0.20,
          help="How far the line frequency may stray from nominal (± fraction) — stops the loop running away while "
