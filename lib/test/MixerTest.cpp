@@ -34,8 +34,8 @@ void reference_mix(std::span<const float> in, double fs, double carrier, std::ve
   const double omega = two_pi * carrier / fs;
   for (std::size_t n = 0; n < in.size(); ++n) {
     const auto phasor = std::polar(1.0, -omega * static_cast<double>(n));
-    i.push_back(static_cast<float>(in[n] * phasor.real()));
-    q.push_back(static_cast<float>(in[n] * phasor.imag()));
+    i.push_back(static_cast<float>(static_cast<double>(in[n]) * phasor.real()));
+    q.push_back(static_cast<float>(static_cast<double>(in[n]) * phasor.imag()));
   }
 }
 } // namespace
@@ -77,10 +77,11 @@ TEST_CASE("Mixer shifts the carrier to DC") {
   mix.prepare(x.size());
   const auto [i, q] = mix.process(x);
 
-  double mean_i = 0.0, mean_q = 0.0;
+  double mean_i = 0.0;
+  double mean_q = 0.0;
   for (std::size_t n = 0; n < i.size(); ++n) {
-    mean_i += i[n];
-    mean_q += q[n];
+    mean_i += static_cast<double>(i[n]);
+    mean_q += static_cast<double>(q[n]);
   }
   mean_i /= static_cast<double>(i.size());
   mean_q /= static_cast<double>(q.size());

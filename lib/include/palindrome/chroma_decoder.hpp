@@ -102,7 +102,8 @@ private:
 
   ChromaDecoderConfig cfg_;
   dsp::Fir bandpass_; // isolates the chroma subcarrier from the composite
-  dsp::Fir lp_u_, lp_v_; // post-demod low-pass on the two quadratures (raw U, V)
+  dsp::Fir lp_u_; // post-demod low-pass on raw U
+  dsp::Fir lp_v_; // post-demod low-pass on raw V
   dsp::Fir lp_luma_; // luma = notch(envelope): a 4.43 MHz chroma trap, luma stays wide
 
   // The fixed crystal LO, advanced one step per sample (never retuned).
@@ -117,7 +118,8 @@ private:
   bool in_gate_prev_ = false;
   double burst_amp_ = 0.0; // ACC level = √2·|apc_phasor_| (the swing-averaged burst)
   double burst_ref_ = 0.0; // slow-decay peak burst level for the colour-killer
-  double psi_cos_ = 1.0, psi_sin_ = 0.0; // this line's rotation R(ψ)
+  double psi_cos_ = 1.0; // this line's rotation R(ψ)
+  double psi_sin_ = 0.0;
   double v_flip_ = 1.0; // +1 on NTSC-style lines, -1 on PAL-style (V inversion)
 
   // Automatic phase control: a slow complex EMA of the back-porch burst locks the
@@ -148,12 +150,14 @@ private:
 
   // The delay line: a ring one line deep of the comb's input — the final U/V for
   // CombMode::post, the raw demod quadratures for CombMode::delay_line.
-  std::vector<float> u_ring_, v_ring_;
+  std::vector<float> u_ring_;
+  std::vector<float> v_ring_;
   std::size_t ring_cap_;
   std::size_t ring_pos_ = 0; // running write position into the comb ring
 
   // Scratch (reused across calls): the demodulated quadratures pass 1 produces.
-  Buffer<float> mix_u_, mix_v_;
+  Buffer<float> mix_u_;
+  Buffer<float> mix_v_;
   Buffer<ChromaSample> out_;
 };
 

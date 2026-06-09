@@ -22,6 +22,8 @@ HorizontalSweep::HorizontalSweep(const HorizontalSweepConfig &cfg) : cfg_{cfg} {
     throw std::invalid_argument{"HorizontalSweep: min_line_fraction must be < 1"};
   if (!(cfg_.pll_kp >= 0.0 && cfg_.pll_kp <= 1.0))
     throw std::invalid_argument{"HorizontalSweep: pll_kp must be in [0, 1]"};
+  if (!(cfg_.pll_ki >= 0.0))
+    throw std::invalid_argument{"HorizontalSweep: pll_ki must be >= 0"};
   if (!(cfg_.omega_clamp > 0.0 && cfg_.omega_clamp < 1.0))
     throw std::invalid_argument{"HorizontalSweep: omega_clamp must be in (0, 1)"};
   omega_ = cfg_.nominal_line_hz / cfg_.sample_rate_hz;

@@ -40,8 +40,10 @@ private:
   double h_blank_{0.16}; // retrace blanking end, h_phase
   double subcarrier_{0.0}; // subcarrier crystal Hz; 0 => textbook 4.43361875 MHz
   double uv_bandwidth_{0.0}; // post-demod U/V low-pass corner Hz; 0 => decoder default
-  double band_lo_{0.0}, band_hi_{0.0}; // chroma band-pass edges Hz; 0 => decoder default
-  double burst_gate_lo_{0.11}, burst_gate_hi_{0.14}; // burst gate, h_phase window
+  double band_lo_{0.0}; // chroma band-pass edges Hz; 0 => decoder default
+  double band_hi_{0.0};
+  double burst_gate_lo_{0.11}; // burst gate, h_phase window
+  double burst_gate_hi_{0.14};
   bool no_delay_line_{false}; // deprecated alias for --comb-mode off
   std::string comb_mode_; // "off" | "post" | "delay-line"; empty => decoder default (post)
   double ref_tc_{10.0}; // APC reference time constant in lines (EMA rate = 1/ref_tc)
@@ -50,9 +52,14 @@ private:
   bool no_threads_{false}; // decode serially instead of the default stage pipeline
   // Sync/sweep hold knobs — the rest of the decoder, surfaced for the tuner.
   double sync_level_{0.85}; // separator slice level
-  double h_kp_{1.0}, h_ki_{1.0e-5}, h_clamp_{0.2}; // horizontal hold (AFC PI + omega clamp)
-  double v_level_{0.4}, v_kp_{1.0}, v_ki_{2.0e-8}; // vertical hold (vsync slice + PI)
-  double v_tc_{0.5}, v_minfield_{0.7}; // vertical integrator tc, min field fraction
+  double h_kp_{1.0}; // horizontal hold (AFC PI + omega clamp)
+  double h_ki_{1.0e-5};
+  double h_clamp_{0.2};
+  double v_level_{0.4}; // vertical hold (vsync slice + PI)
+  double v_kp_{1.0};
+  double v_ki_{2.0e-8};
+  double v_tc_{0.5}; // vertical integrator tc
+  double v_minfield_{0.7}; // min field fraction
 };
 
 } // namespace palindrome::cli

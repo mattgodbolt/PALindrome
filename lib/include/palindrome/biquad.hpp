@@ -30,8 +30,13 @@ public:
   void reset();
 
 private:
-  double b0_, b1_, b2_, a1_, a2_;
-  double z1_{}, z2_{}; // transposed direct-form II state
+  double b0_;
+  double b1_;
+  double b2_;
+  double a1_;
+  double a2_;
+  double z1_{}; // transposed direct-form II state
+  double z2_{};
   Buffer<float> out_; // owned output, reused across calls
 };
 

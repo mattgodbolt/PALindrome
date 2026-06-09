@@ -6,7 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        preset: [ debug, release ]
+        preset: [ debug, release, sanitize ]
     steps:
       - uses: actions/checkout@v6
       - name: Install GCC 15

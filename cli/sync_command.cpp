@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <complex>
 #include <cstddef>
 #include <optional>
 #include <print>
@@ -148,7 +147,9 @@ int SyncCommand::run() const {
   // spread is the wobble we're chasing.
   std::vector<double> line_gaps;
   std::optional<std::size_t> prev_leading;
-  std::size_t n_line = 0, n_eq = 0, n_broad = 0;
+  std::size_t n_line = 0;
+  std::size_t n_eq = 0;
+  std::size_t n_broad = 0;
   for (const auto &p: pulses) {
     const auto w = static_cast<double>(p.width) * us_per_sample;
     if (w < line_lo_us) {

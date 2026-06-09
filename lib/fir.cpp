@@ -135,7 +135,7 @@ std::vector<float> lowpass_kernel(std::size_t num_taps, double sample_rate_hz, d
     sum += tap;
   }
   for (float &tap: taps)
-    tap = static_cast<float>(tap / sum); // normalise to unity DC gain
+    tap = static_cast<float>(static_cast<double>(tap) / sum); // normalise to unity DC gain
   return taps;
 }
 
@@ -169,12 +169,14 @@ std::vector<float> bandpass_kernel(
   const double gain = std::hypot(gain_re, gain_im);
   if (gain > 0.0)
     for (float &tap: taps)
-      tap = static_cast<float>(tap / gain);
+      tap = static_cast<float>(static_cast<double>(tap) / gain);
   return taps;
 }
 
 std::vector<float> notch_kernel(
     std::size_t num_taps, double sample_rate_hz, double low_hz, double high_hz, Window window) {
+  if (num_taps % 2 == 0)
+    throw std::invalid_argument("notch needs an odd tap count (the unit impulse must land on the centre tap)");
   auto k = bandpass_kernel(num_taps, sample_rate_hz, low_hz, high_hz, window);
   for (auto &t: k)
     t = -t;

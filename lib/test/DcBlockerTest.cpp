@@ -24,8 +24,10 @@ std::vector<float> tone(double fs, double freq, std::size_t n, float offset = 0.
 
 double rms(std::span<const float> s) {
   double energy = 0.0;
-  for (const float v: s)
-    energy += static_cast<double>(v) * v;
+  for (const float v: s) {
+    const auto dv = static_cast<double>(v);
+    energy += dv * dv;
+  }
   return std::sqrt(energy / static_cast<double>(s.size()));
 }
 } // namespace

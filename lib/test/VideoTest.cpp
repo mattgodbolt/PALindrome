@@ -197,7 +197,8 @@ TEST_CASE("Screen snapshots a field before fading it, exactly once per field_sta
   // Exactly one fade applied at the boundary: the buffer is now deposit*field_decay.
   const auto faded = screen.snapshot();
   for (std::size_t i = 0; i < deposited.pixels.size(); ++i) {
-    const auto expected = static_cast<int>(std::lround(static_cast<double>(deposited.pixels[i]) * field_decay));
+    const auto expected =
+        static_cast<int>(std::lround(static_cast<double>(deposited.pixels[i]) * static_cast<double>(field_decay)));
     CHECK(std::abs(static_cast<int>(faded.pixels[i]) - expected) <= 1);
   }
 }
