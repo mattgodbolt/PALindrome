@@ -153,9 +153,9 @@ detector sees the sync edges landing where the oscillator predicts, then a
 deliberately slow locked loop (~250 Hz bandwidth) takes over, so single-edge
 noise barely moves the line — at the price of the authentic slow-tracking
 artifacts (flagging on phase steps, gradual recentring). `--h-kp`/`--h-ki` set
-the locked gains, `--h-acq-kp`/`--h-acq-ki` the acquisition ones; `--h-kp 1
---h-acq-kp 1 --h-acq-ki 1e-5` restores the old snap-to-every-edge direct
-triggering exactly.
+the locked gains, `--h-acq-kp`/`--h-acq-ki` the acquisition ones; passing
+`--h-kp 1 --h-acq-kp 1 --h-acq-ki 1e-5` restores the old snap-to-every-edge
+direct triggering exactly.
 
 For colour, add `--colour`: it decodes the chroma and writes an RGB PNG.
 `--saturation` is the chroma gain (a fraction of the luma white — the colour pot)

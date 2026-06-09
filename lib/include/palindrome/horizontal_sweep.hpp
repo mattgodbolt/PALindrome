@@ -40,11 +40,13 @@ struct HorizontalSweepConfig {
   double omega_clamp = 0.2;
   // Coincidence detector: an accepted edge landing within this window (line
   // fractions) of where the free-running oscillator predicted counts as
-  // coincident; coincidence_lines consecutive coincident edges switch the loop
-  // to the locked gains. Non-coincident edges drain the detector several times
-  // faster than coincident ones fill it (see kCoincidencePenalty), so brief
-  // noise doesn't kick a locked loop back into fast mode, but a genuine loss
-  // re-acquires within a handful of lines.
+  // coincident. The detector is a saturating charge (cap 2 * coincidence_lines):
+  // coincident edges add one, non-coincident edges drain several times faster
+  // (see kCoincidencePenalty), and the loop runs the locked gains while the
+  // charge is at or above coincidence_lines. So from cold, coincidence_lines
+  // coincident edges engage the flywheel; once saturated, brief noise doesn't
+  // kick it back into fast mode, but a sustained loss drains it within a
+  // handful of lines.
   double coincidence_window = 0.02;
   std::size_t coincidence_lines = 16;
 };

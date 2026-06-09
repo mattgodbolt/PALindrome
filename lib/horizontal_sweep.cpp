@@ -39,8 +39,11 @@ HorizontalSweep::HorizontalSweep(const HorizontalSweepConfig &cfg) : cfg_{cfg} {
     throw std::invalid_argument{"HorizontalSweep: acq_ki must be >= 0"};
   if (!(cfg_.coincidence_window > 0.0 && cfg_.coincidence_window < 0.5))
     throw std::invalid_argument{"HorizontalSweep: coincidence_window must be in (0, 0.5)"};
-  if (cfg_.coincidence_lines == 0)
-    throw std::invalid_argument{"HorizontalSweep: coincidence_lines must be >= 1"};
+  // The upper bound keeps the detector arithmetic (2 * lines, charge + 1) far
+  // from size_t wrap, and a threshold past ~a field's worth of lines would be
+  // meaningless as a lock criterion anyway.
+  if (cfg_.coincidence_lines == 0 || cfg_.coincidence_lines > 1000)
+    throw std::invalid_argument{"HorizontalSweep: coincidence_lines must be in [1, 1000]"};
   if (!(cfg_.omega_clamp > 0.0 && cfg_.omega_clamp < 1.0))
     throw std::invalid_argument{"HorizontalSweep: omega_clamp must be in (0, 1)"};
   omega_ = cfg_.nominal_line_hz / cfg_.sample_rate_hz;
