@@ -19,7 +19,8 @@
       "displayName": "Debug (system GCC)",
       "description": "Fast dev build with assertions and debug info.",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-D_GLIBCXX_ASSERTIONS"
       }
     },
     {
@@ -29,6 +30,18 @@
       "description": "Optimised build with debug info.",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "sanitize",
+      "inherits": "_base",
+      "displayName": "ASan+UBSan (system GCC)",
+      "description": "Debug build under AddressSanitizer and UndefinedBehaviorSanitizer.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS":
+            "-D_GLIBCXX_ASSERTIONS -D_GLIBCXX_USE_TBB_PAR_BACKEND=0 -fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
       }
     }
   ],
@@ -40,6 +53,10 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "sanitize",
+      "configurePreset": "sanitize"
     }
   ],
   "testPresets": [
@@ -61,6 +78,11 @@
     {
       "name": "release",
       "configurePreset": "release",
+      "inherits": "_test-base"
+    },
+    {
+      "name": "sanitize",
+      "configurePreset": "sanitize",
       "inherits": "_test-base"
     }
   ]

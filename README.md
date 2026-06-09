@@ -177,7 +177,7 @@ in an off-nominal source.
 and writes the recovered composite envelope as a WAV (peak-normalised,
 sync-to-the-bottom, slowed so it opens at audio rates in Audacity). A
 debugging/inspection tool. Flags: `--carrier`, `--cutoff`, `--decimate`,
-`--slowdown`, `--no-sound-trap`, `--sound-q`.
+`--slowdown`.
 
 ### `sync` — the timebase microscope
 
@@ -236,11 +236,6 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
 
 Smaller things noted in passing, not yet scheduled:
 
-- **Colour shifts the picture right vs greyscale.** `--colour` registers the
-  image a few pixels right of the mono render — almost certainly a group-delay
-  mismatch between the chroma path and the luma path (the colour luma goes
-  through the notch filter; the mono luma doesn't). Match the delays or
-  compensate so the two line up.
 - **Test the colour-killer on noise.** Feed random/white noise and assert the
   output is an appropriately colourless white-noise image — with no valid burst
   the colour-killer should suppress chroma, not paint spurious colour.

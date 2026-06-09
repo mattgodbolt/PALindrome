@@ -25,8 +25,10 @@ std::vector<float> tone(double fs, double freq, std::size_t n) {
 
 double rms(std::span<const float> s) {
   double energy = 0.0;
-  for (const float v: s)
-    energy += static_cast<double>(v) * v;
+  for (const float v: s) {
+    const auto dv = static_cast<double>(v);
+    energy += dv * dv;
+  }
   return std::sqrt(energy / static_cast<double>(s.size()));
 }
 } // namespace
@@ -37,7 +39,7 @@ TEST_CASE("lowpass_kernel is unity-gain, symmetric, and validated") {
 
   double sum = 0.0;
   for (const float t: k)
-    sum += t;
+    sum += static_cast<double>(t);
   CHECK_THAT(sum, WithinAbs(1.0, 1e-5)); // unity DC gain
 
   for (std::size_t i = 0; i < k.size() / 2; ++i)

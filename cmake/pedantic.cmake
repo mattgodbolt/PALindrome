@@ -12,7 +12,15 @@ if (MSVC)
     target_compile_options(opt_pedantic INTERFACE "/W4" "/WX")
 else ()
     target_compile_options(opt_pedantic INTERFACE
-            "-Wall" "-Wextra" "-pedantic" "-Wshadow" "-Wconversion" "-Werror")
+            "-Wall" "-Wextra" "-pedantic" "-Wshadow" "-Wconversion" "-Werror"
+            "-Wnull-dereference" "-Wnon-virtual-dtor" "-Wsuggest-override"
+            # Mechanises the float/double rule in CLAUDE.md: data must not drift
+            # up to double implicitly — widen with an explicit cast or not at all.
+            "-Wdouble-promotion")
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(opt_pedantic INTERFACE
+                "-Wduplicated-cond" "-Wduplicated-branches" "-Wlogical-op")
+    endif ()
 endif ()
 
 add_library(opt_cxx_std INTERFACE)

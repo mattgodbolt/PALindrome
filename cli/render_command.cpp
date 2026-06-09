@@ -7,7 +7,6 @@
 #include "palindrome/pipeline_run.hpp"
 
 #include <algorithm>
-#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>

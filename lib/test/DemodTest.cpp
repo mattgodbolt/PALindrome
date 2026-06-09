@@ -81,7 +81,7 @@ TEST_CASE("Hilbert forms a one-sided analytic signal of the right sign") {
   double phase_step = 0.0;
   for (std::size_t k = lo; k < hi; ++k) {
     CHECK_THAT(std::abs(out[k]), WithinAbs(1.0, 0.03)); // one-sided => |.| ~ amplitude
-    phase_step += std::arg(out[k] * std::conj(out[k - 1]));
+    phase_step += static_cast<double>(std::arg(out[k] * std::conj(out[k - 1])));
   }
   const double mean_step = phase_step / static_cast<double>(hi - lo - 1);
   CHECK_THAT(mean_step, WithinAbs(two_pi * f / fs, 0.02)); // positive, ~ +2*pi*f/fs

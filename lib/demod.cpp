@@ -7,6 +7,7 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <numbers>
 #include <span>
 #include <stdexcept>
 
@@ -60,7 +61,7 @@ void envelope_magnitude(
 } // namespace
 
 namespace {
-constexpr double kTwoPi = 6.283185307179586476925286766559;
+constexpr double kTwoPi = 2.0 * std::numbers::pi;
 constexpr double kDcPole = 0.9999; // complex DC-blocker feedback, matching dsp::DcBlocker
 } // namespace
 

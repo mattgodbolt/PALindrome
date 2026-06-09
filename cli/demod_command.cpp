@@ -28,6 +28,10 @@ void DemodCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
 }
 
 int DemodCommand::run() const {
+  if (slowdown_ <= 0.0) {
+    std::println(std::cerr, "demod: --slowdown must be positive (got {:g})", slowdown_);
+    return 1;
+  }
   const auto loaded = load_recording(recording_, carrier_);
 
   // The same composite envelope render/sync see, accumulated for the WAV dump.

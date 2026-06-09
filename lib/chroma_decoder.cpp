@@ -21,11 +21,32 @@ constexpr double kIdent = 0.1; // ident leaky-integrator rate for the PAL-switch
 [[nodiscard]] double clamp_high(double hi, double sample_rate_hz) noexcept {
   return std::min(hi, 0.49 * sample_rate_hz);
 }
+
+// Validated on the way into the first mem-initialiser, so a bad config throws
+// before any of the four FIR kernels is built (and the odd-taps check runs
+// before notch_kernel could build a mis-centred filter).
+const ChromaDecoderConfig &validate(const ChromaDecoderConfig &cfg) {
+  if (!(cfg.sample_rate_hz > 0.0))
+    throw std::invalid_argument{"ChromaDecoder: sample_rate_hz must be positive"};
+  if (!(cfg.subcarrier_hz > 0.0 && cfg.subcarrier_hz < cfg.sample_rate_hz / 2.0))
+    throw std::invalid_argument{"ChromaDecoder: subcarrier_hz out of range"};
+  if (!(cfg.burst_gate_lo >= 0.0 && cfg.burst_gate_lo < cfg.burst_gate_hi && cfg.burst_gate_hi < 1.0))
+    throw std::invalid_argument{"ChromaDecoder: burst gate must be 0 <= lo < hi < 1"};
+  // Odd taps give linear phase and an integer group delay; the luma-notch length
+  // (bandpass + demod - 1) and the colour registration (group_delay_samples) both
+  // assume it, so luma and chroma stay co-registered.
+  if (cfg.bandpass_taps % 2 == 0 || cfg.demod_lp_taps % 2 == 0)
+    throw std::invalid_argument{"ChromaDecoder: bandpass_taps and demod_lp_taps must be odd"};
+  if (!(cfg.ref_tc_lines >= 2.0 && cfg.ref_tc_lines <= 100.0))
+    throw std::invalid_argument{
+        std::format("ChromaDecoder: ref_tc_lines must be in [2, 100], got {}", cfg.ref_tc_lines)};
+  return cfg;
+}
 } // namespace
 
 ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
-    cfg_{cfg}, bandpass_{dsp::bandpass_kernel(cfg.bandpass_taps, cfg.sample_rate_hz, cfg.band_lo_hz,
-                   clamp_high(cfg.band_hi_hz, cfg.sample_rate_hz))},
+    cfg_{validate(cfg)}, bandpass_{dsp::bandpass_kernel(cfg.bandpass_taps, cfg.sample_rate_hz, cfg.band_lo_hz,
+                             clamp_high(cfg.band_hi_hz, cfg.sample_rate_hz))},
     lp_u_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
     lp_v_{dsp::lowpass_kernel(cfg.demod_lp_taps, cfg.sample_rate_hz, cfg.uv_bandwidth_hz)},
     // Luma notch length = band-pass + demod low-pass lengths, so its group delay
@@ -33,20 +54,6 @@ ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
     lp_luma_{dsp::notch_kernel(cfg.bandpass_taps + cfg.demod_lp_taps - 1, cfg.sample_rate_hz,
         cfg.subcarrier_hz - cfg.luma_notch_half_hz,
         clamp_high(cfg.subcarrier_hz + cfg.luma_notch_half_hz, cfg.sample_rate_hz))} {
-  if (!(cfg_.sample_rate_hz > 0.0))
-    throw std::invalid_argument{"ChromaDecoder: sample_rate_hz must be positive"};
-  if (!(cfg_.subcarrier_hz > 0.0 && cfg_.subcarrier_hz < cfg_.sample_rate_hz / 2.0))
-    throw std::invalid_argument{"ChromaDecoder: subcarrier_hz out of range"};
-  if (!(cfg_.burst_gate_lo >= 0.0 && cfg_.burst_gate_lo < cfg_.burst_gate_hi && cfg_.burst_gate_hi < 1.0))
-    throw std::invalid_argument{"ChromaDecoder: burst gate must be 0 <= lo < hi < 1"};
-  // Odd taps give linear phase and an integer group delay; the luma-notch length
-  // (bandpass + demod - 1) and the colour registration (group_delay_samples) both
-  // assume it, so luma and chroma stay co-registered.
-  if (cfg_.bandpass_taps % 2 == 0 || cfg_.demod_lp_taps % 2 == 0)
-    throw std::invalid_argument{"ChromaDecoder: bandpass_taps and demod_lp_taps must be odd"};
-  if (!(cfg_.ref_tc_lines >= 2.0 && cfg_.ref_tc_lines <= 100.0))
-    throw std::invalid_argument{
-        std::format("ChromaDecoder: ref_tc_lines must be in [2, 100], got {}", cfg_.ref_tc_lines)};
   apc_rate_ = 1.0 / cfg_.ref_tc_lines;
   nco_omega_ = cfg_.subcarrier_hz / cfg_.sample_rate_hz;
   nco_step_ = std::polar(1.0, kTwoPi * nco_omega_);
@@ -192,39 +199,45 @@ std::span<const ChromaSample> ChromaDecoder::process(
     const std::size_t ri = wi >= line_len_ ? wi - line_len_ : wi + ring_cap_ - line_len_;
     const double scale = burst_amp_ > 1e-9 ? 1.0 / burst_amp_ : 0.0;
 
-    float u;
-    float v;
-    if (cfg_.comb_mode == CombMode::delay_line) {
-      // Period-correct PAL-D: the 1H comb sits on the chroma BEFORE the per-line
-      // de-rotation (a delay line on the modulated chroma; the continuous NCO
-      // demod has already cancelled the inter-line carrier advance, so adjacent
-      // lines' raw quadratures are aligned to within the slow crystal-vs-source
-      // drift). U comes from the SUM (the opposite-switch V cancels) and V from
-      // the DIFFERENCE (U cancels), each on its own demod axis — the TDA3561A's
-      // two delay-line demodulators. Unlike `post`, the delayed line is NOT
-      // individually phase-corrected, so a source off the nominal line rate
-      // leaves the authentic residual. The ring holds the raw quadratures.
-      const double id = u_ring_[ri];
-      const double qd = v_ring_[ri];
-      u_ring_[wi] = static_cast<float>(i);
-      v_ring_[wi] = static_cast<float>(q);
-      if (++ring_pos_ == ring_cap_)
-        ring_pos_ = 0;
-      const double su = i + id; // sum: U-bearing (V cancels)
-      const double sq = q + qd;
-      const double du = i - id; // difference: V-bearing (U cancels)
-      const double dq = q - qd;
-      u = static_cast<float>(0.5 * (psi_cos_ * su - psi_sin_ * sq) * scale);
-      v = static_cast<float>(0.5 * (psi_sin_ * du + psi_cos_ * dq) * v_flip_ * scale);
-    }
-    else {
-      // R(ψ): U = cosψ·rawU - sinψ·rawV; V_mod = sinψ·rawU + cosψ·rawV. V flips on
-      // PAL-style lines to recover transmitted V.
-      u = static_cast<float>((psi_cos_ * i - psi_sin_ * q) * scale);
-      v = static_cast<float>((psi_sin_ * i + psi_cos_ * q) * v_flip_ * scale);
-      if (cfg_.comb_mode == CombMode::post) {
-        // DSP-era convenience: average the recovered baseband U/V across a line
-        // pair (both lines already de-rotated and V-un-flipped, so a straight mean).
+    float u = 0.0f;
+    float v = 0.0f;
+    switch (cfg_.comb_mode) {
+      case CombMode::delay_line: {
+        // Period-correct PAL-D: the 1H comb sits on the chroma BEFORE the per-line
+        // de-rotation (a delay line on the modulated chroma; the continuous NCO
+        // demod has already cancelled the inter-line carrier advance, so adjacent
+        // lines' raw quadratures are aligned to within the slow crystal-vs-source
+        // drift). U comes from the SUM (the opposite-switch V cancels) and V from
+        // the DIFFERENCE (U cancels), each on its own demod axis — the TDA3561A's
+        // two delay-line demodulators. Unlike `post`, the delayed line is NOT
+        // individually phase-corrected, so a source off the nominal line rate
+        // leaves the authentic residual. The ring holds the raw quadratures.
+        const double id = u_ring_[ri];
+        const double qd = v_ring_[ri];
+        u_ring_[wi] = static_cast<float>(i);
+        v_ring_[wi] = static_cast<float>(q);
+        if (++ring_pos_ == ring_cap_)
+          ring_pos_ = 0;
+        const double su = i + id; // sum: U-bearing (V cancels)
+        const double sq = q + qd;
+        const double du = i - id; // difference: V-bearing (U cancels)
+        const double dq = q - qd;
+        u = static_cast<float>(0.5 * (psi_cos_ * su - psi_sin_ * sq) * scale);
+        v = static_cast<float>(0.5 * (psi_sin_ * du + psi_cos_ * dq) * v_flip_ * scale);
+        break;
+      }
+      case CombMode::off:
+        // R(ψ): U = cosψ·rawU - sinψ·rawV; V_mod = sinψ·rawU + cosψ·rawV. V flips
+        // on PAL-style lines to recover transmitted V.
+        u = static_cast<float>((psi_cos_ * i - psi_sin_ * q) * scale);
+        v = static_cast<float>((psi_sin_ * i + psi_cos_ * q) * v_flip_ * scale);
+        break;
+      case CombMode::post: {
+        // Same R(ψ) as `off`, then the DSP-era convenience: average the recovered
+        // baseband U/V across a line pair (both lines already de-rotated and
+        // V-un-flipped, so a straight mean).
+        u = static_cast<float>((psi_cos_ * i - psi_sin_ * q) * scale);
+        v = static_cast<float>((psi_sin_ * i + psi_cos_ * q) * v_flip_ * scale);
         const float u_avg = 0.5f * (u + u_ring_[ri]);
         const float v_avg = 0.5f * (v + v_ring_[ri]);
         u_ring_[wi] = u;
@@ -233,6 +246,7 @@ std::span<const ChromaSample> ChromaDecoder::process(
         v = v_avg;
         if (++ring_pos_ == ring_cap_)
           ring_pos_ = 0;
+        break;
       }
     }
     out[k] = ChromaSample{.luma = luma[k], .u = u, .v = v};

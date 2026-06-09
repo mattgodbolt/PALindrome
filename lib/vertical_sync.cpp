@@ -30,6 +30,8 @@ VerticalSync::VerticalSync(const VerticalSyncConfig &cfg) : cfg_{cfg} {
     throw std::invalid_argument{"VerticalSync: min_field_fraction must be in [0, 1)"};
   if (!(cfg_.pll_kp >= 0.0 && cfg_.pll_kp <= 1.0))
     throw std::invalid_argument{"VerticalSync: pll_kp must be in [0, 1]"};
+  if (!(cfg_.pll_ki >= 0.0))
+    throw std::invalid_argument{"VerticalSync: pll_ki must be >= 0"};
   if (!(cfg_.omega_clamp > 0.0 && cfg_.omega_clamp < 1.0))
     throw std::invalid_argument{"VerticalSync: omega_clamp must be in (0, 1)"};
 
