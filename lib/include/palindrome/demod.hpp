@@ -53,9 +53,15 @@ private:
   std::size_t since_renorm_ = 0; // samples since phasor_ was renormalised
   // Complex one-pole DC blocker on the input: kills the zero-IF LO-leakage
   // spike at DC, which would otherwise mix onto the carrier and beat into the
-  // envelope (the AirSpy's equivalent of the real path's dsp::DcBlocker).
-  std::complex<double> dc_prev_in_{0.0, 0.0};
-  std::complex<double> dc_prev_out_{0.0, 0.0};
+  // envelope (the AirSpy's equivalent of the real path's dsp::DcBlocker). The
+  // state is held as scalar re/im pairs, not std::complex<double>: GCC keeps a
+  // packed complex loop-carried value in one xmm register and then splits it
+  // through a stack store/reload each iteration, which dominated this loop.
+  // Componentwise it is the identical recurrence.
+  double dc_prev_in_re_ = 0.0;
+  double dc_prev_in_im_ = 0.0;
+  double dc_prev_out_re_ = 0.0;
+  double dc_prev_out_im_ = 0.0;
   dsp::Fir i_filter_; // baseband low-pass, in-phase
   dsp::Fir q_filter_; // baseband low-pass, quadrature
   Buffer<float> mix_i_; // scratch: mixed I before filtering
