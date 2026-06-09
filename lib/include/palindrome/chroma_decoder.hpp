@@ -155,6 +155,7 @@ private:
   // VBI/dropout gap would alias the wrapped phase drift, so the pull skips
   // across gaps and resumes on the next consecutive pair).
   double prev_psi_axis_ = 0.0;
+  bool have_prev_psi_ = false; // prev_psi_axis_ holds a real measurement (not the initial 0)
   std::size_t gate_closes_ = 0; // every finalize_line() that measured a burst
   std::size_t prev_good_close_ = 0; // gate_closes_ at the last APC-updating line
 

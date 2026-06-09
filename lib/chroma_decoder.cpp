@@ -166,7 +166,7 @@ void ChromaDecoder::finalize_line() {
   // skip the measurement: a wrapped angle over an unknown number of lines is
   // ambiguous.
   if (cfg_.apc_catch_range_hz > 0.0) {
-    if (gate_closes_ == prev_good_close_ + 1) {
+    if (have_prev_psi_ && gate_closes_ == prev_good_close_ + 1) {
       // The demod is (cos, sin) against the NCO, so the measured axis rotates
       // at MINUS the source-vs-NCO frequency error: a positive drift means the
       // NCO is fast. Hence the subtraction.
@@ -178,6 +178,7 @@ void ChromaDecoder::finalize_line() {
       nco_step_ = std::polar(1.0, kTwoPi * nco_omega_);
     }
     prev_psi_axis_ = psi_axis;
+    have_prev_psi_ = true;
     prev_good_close_ = gate_closes_;
   }
 
