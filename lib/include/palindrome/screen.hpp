@@ -80,8 +80,15 @@ public:
   // state aside so latched_frame() can quantise it once, later — the
   // single-image "keep the last clean boundary" shape, which would otherwise
   // quantise and discard every field but the last.
+  //
+  // The event is a view of the live screen, only meaningful synchronously
+  // inside the callback: once it returns, the boundary fade (and further
+  // deposits) move the state on, so frame()/latch() from a stashed event would
+  // silently read the wrong instant. Non-copyable to keep that impossible.
   class FieldEvent {
   public:
+    FieldEvent(const FieldEvent &) = delete;
+    FieldEvent &operator=(const FieldEvent &) = delete;
     [[nodiscard]] Frame frame() const { return screen_->snapshot(); }
     void latch() const { screen_->latch_boundary(); }
 
