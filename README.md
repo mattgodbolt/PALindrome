@@ -165,12 +165,17 @@ the RX888 and the AirSpy raw 20 MS/s capture — a bare `--colour` decodes eithe
 `--uv-bandwidth` and `--band-lo`/`--band-hi` size the post-demod U/V low-pass and
 the chroma band-pass. `--comb-mode` chooses where the 1H line-pair comb sits,
 spanning the eras of PAL hardware: `off` (a "PAL-S" simple set, no delay line),
-`delay-line` (the period-correct PAL-D comb on the modulated chroma — sum→U,
-difference→V — before demodulation, as the TDA3561A's external glass delay line
-does), or `post` (the default: demodulate first, then average the recovered
-baseband U/V — a DSP-era convenience, robust to an off-nominal source line rate
-that the fixed delay-line geometry is not). `--no-delay-line` is an alias for
-`--comb-mode off`. The subcarrier is a fixed 4.43361875 MHz crystal (override with
+`delay-line` (the PAL-D comb on the modulated chroma — sum→U, difference→V —
+before demodulation, as the TDA3561A's external glass delay line does, but with
+the delay adapting to the measured line length, a convenience no glass block
+had), `glass` (the same comb at the real geometry: a fixed 283.5-subcarrier-
+cycle / 63.943 µs block, so a source off the nominal line rate — the SMS corpus
+runs ~0.35 µs long — pairs chroma displaced along the line: colour edges ghost
+and shimmer with extra cross-colour, the off-spec misregistration of a real
+PAL-D set), or `post` (the default:
+demodulate first, then average the recovered baseband U/V — a DSP-era
+convenience, robust to an off-nominal source line rate that the fixed glass
+geometry is not). `--no-delay-line` is an alias for `--comb-mode off`. The subcarrier is a fixed 4.43361875 MHz crystal (override with
 `--subcarrier`); the per-line burst rotation tracks the source's offset from it,
 exactly as a real set's APC does. `--ref-tc` (lines, default 10) sets how slowly
 that APC reference locks: 10 is a modern fast loop that chases per-line drift, so

@@ -65,7 +65,8 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               lyra::opt(burst_gate_lo_, "x")["--burst-lo"]("Colour: burst gate start (h_phase; ~0.16 at 10 MS/s)"))
           .add_argument(lyra::opt(burst_gate_hi_, "x")["--burst-hi"]("Colour: burst gate end (h_phase)"))
           .add_argument(lyra::opt(comb_mode_, "mode")["--comb-mode"](
-              "Colour: 1H comb placement — off (PAL-S) | delay-line (period PAL-D, pre-demod) | post (default)"))
+              "Colour: 1H comb — off (PAL-S) | delay-line (PAL-D, adaptive depth) | glass (PAL-D, the real fixed "
+              "63.943 us block) | post (default)"))
           .add_argument(lyra::opt(no_delay_line_)["--no-delay-line"]("Colour: alias for --comb-mode off"))
           .add_argument(lyra::opt(ref_tc_, "lines")["--ref-tc"](
               "Colour: APC reference time constant in lines (default 10; slower = more period-faithful, [2,100])"))
@@ -180,8 +181,10 @@ int RenderCommand::run() const {
       dc.chroma.comb_mode = video::CombMode::post;
     else if (comb_mode_ == "delay-line")
       dc.chroma.comb_mode = video::CombMode::delay_line;
+    else if (comb_mode_ == "glass")
+      dc.chroma.comb_mode = video::CombMode::glass;
     else {
-      std::println(std::cerr, "render: --comb-mode must be off, post, or delay-line");
+      std::println(std::cerr, "render: --comb-mode must be off, post, delay-line, or glass");
       return 1;
     }
   }

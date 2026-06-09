@@ -76,12 +76,14 @@ KNOBS = [
          min=0.08, max=0.28, step=0.005, default=0.14,
          help="Where the burst window closes (must be > start). A ~0.03–0.04 window past the start captures the "
               "~10-cycle burst."),
-    dict(name="comb_mode", flag="--comb-mode", choices=["off", "post", "delay-line"], default=1,
+    dict(name="comb_mode", flag="--comb-mode", choices=["off", "post", "delay-line", "glass"], default=1,
          label="1H comb placement",
          help="Where the line-pair comb sits. off = PAL-S, no comb (phase errors show as Hanover bars). post = "
               "demodulate then average baseband U/V (the DSP-era default, robust to an off-nominal line rate). "
-              "delay-line = period PAL-D, comb the modulated chroma before demod (structural Hanover suppression — "
-              "pair with a slow Ref Tc to see it earn its keep over post)."),
+              "delay-line = PAL-D, comb the modulated chroma before demod at an adaptive depth (structural Hanover "
+              "suppression — pair with a slow Ref Tc to see it earn its keep over post). glass = PAL-D with the real "
+              "fixed 63.943 µs glass block — an off-nominal source line rate pairs displaced chroma, ghosting colour "
+              "edges with extra cross-colour (the authentic off-spec misregistration)."),
     dict(name="ref_tc", flag="--ref-tc", label="APC ref Tc (lines)",
          min=2, max=100, step=1, default=10,
          help="How slowly the colour reference (crystal phase) locks onto the burst. 10 = the modern fast default; a "

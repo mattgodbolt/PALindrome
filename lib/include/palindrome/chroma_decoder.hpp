@@ -14,17 +14,27 @@ namespace palindrome::video {
 // Where the 1H line-pair comb sits, spanning the eras of PAL colour hardware:
 //   off        — no comb (a "PAL-S" simple set: phase errors show as Hanover bars,
 //                the eye averages adjacent lines). The cheapest 1970s/early-80s sets.
-//   delay_line — the period-correct PAL-D comb: a 1H delay line on the *modulated*
+//   delay_line — the PAL-D comb topology: a 1H delay line on the *modulated*
 //                chroma, summed (-> U, V cancels) and differenced (-> V, U cancels)
 //                BEFORE demodulation, exactly as the TDA3561A's external glass delay
 //                line feeds its (R-Y)/(B-Y) demodulators (see docs/TDA3561A.md). The
-//                classic 1980s set.
+//                delay ADAPTS to the measured line length — a convenience no real
+//                glass block had, kept so the comb's structural behaviour can be
+//                studied on an off-nominal source without the timing error.
+//   glass      — delay_line with the real geometry: the delay is fixed at 283.5
+//                subcarrier cycles (63.943 us), the ultrasonic glass block's
+//                trimmed length — set by the subcarrier, NOT the line period, and
+//                fixed whatever the source does. On a source off the nominal line
+//                rate the comb pairs chroma displaced along the line (the SMS
+//                corpus runs ~0.35 us long), so colour edges ghost and shimmer
+//                with extra cross-colour — the off-spec misregistration a real
+//                PAL-D set showed. The classic 1980s set, warts and all.
 //   post       — demodulate first (per-line burst de-rotation), then average the
 //                recovered baseband U/V across a line pair. A DSP-era convenience
 //                (late-80s/90s digital line stores and beyond); robust to an
-//                off-nominal source line rate that the fixed delay-line geometry is
+//                off-nominal source line rate that the fixed glass geometry is
 //                not. This is the default.
-enum class CombMode { off, post, delay_line };
+enum class CombMode { off, post, delay_line, glass };
 
 struct ChromaDecoderConfig {
   double sample_rate_hz;
@@ -198,7 +208,8 @@ private:
   // Line-length tracking, for the 1H comb delay depth.
   std::size_t sample_index_ = 0;
   std::size_t last_line_start_ = 0;
-  std::size_t line_len_; // samples in the last line (comb delay)
+  std::size_t line_len_; // samples in the last line (adaptive comb delay)
+  std::size_t glass_len_; // the fixed glass block: 283.5 crystal cycles in samples
 
   // The delay line: a ring one line deep of the comb's input — the final U/V for
   // CombMode::post, the raw demod quadratures for CombMode::delay_line.
