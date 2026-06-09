@@ -47,7 +47,9 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(width_, "px")["--width"]("Output image width"))
           .add_argument(lyra::opt(height_, "px")["--height"]("Output image height"))
           .add_argument(lyra::opt(persistence_, "fields")["--persistence"]("Phosphor persistence in field periods"))
-          .add_argument(lyra::opt(beam_sigma_, "rows")["--beam-sigma"]("Beam-spot vertical size in output rows"))
+          .add_argument(lyra::opt(beam_sigma_, "pitches")["--beam-sigma"](
+              "Beam-spot vertical sigma in scanline pitches (raster-relative, so --height/--overscan don't change "
+              "the spot; default 0.52 ~ the old 1.1 rows)"))
           .add_argument(lyra::opt(beam_sigma_x_, "cols")["--beam-sigma-x"](
               "Beam-spot horizontal size in output columns (<0 = match --beam-sigma, a round spot)"))
           .add_argument(
@@ -156,7 +158,7 @@ int RenderCommand::run() const {
   video::DecoderConfig dc{
       .sample_rate_hz = envelope_rate, .width = width_, .height = height_, .sync_lp_cutoff_hz = sync_cutoff_};
   dc.persistence_fields = persistence_;
-  dc.beam_sigma_rows = beam_sigma_;
+  dc.beam_sigma = beam_sigma_;
   dc.beam_sigma_cols = beam_sigma_x_;
   dc.gamma = gamma_;
   dc.colour = colour_;

@@ -224,7 +224,7 @@ TEST_CASE("Screen snapshots a field before fading it, exactly once per field_sta
       .height = 8,
       .sample_rate_hz = kRate,
       .persistence_fields = persistence,
-      .beam_sigma_rows = 0.0,
+      .beam_sigma = 0.0,
       .gamma = 1.0};
   const float field_decay = static_cast<float>(std::exp(-1.0 / persistence));
 
@@ -274,7 +274,7 @@ TEST_CASE("Screen snapshots a field before fading it, exactly once per field_sta
 }
 
 TEST_CASE("Screen latch defers quantisation without changing the boundary frame") {
-  const video::ScreenConfig cfg{.width = 8, .height = 8, .sample_rate_hz = kRate, .beam_sigma_rows = 0.0, .gamma = 1.0};
+  const video::ScreenConfig cfg{.width = 8, .height = 8, .sample_rate_hz = kRate, .beam_sigma = 0.0, .gamma = 1.0};
   video::Screen screen{cfg};
 
   // Before any latch, latched_frame() falls back to the live snapshot.
@@ -331,7 +331,7 @@ TEST_CASE("Screen scan windows remap the beam (overscan) and the readout can enc
     return std::pair{std::size_t{9999}, std::size_t{9999}};
   };
 
-  video::ScreenConfig cfg{.width = 64, .height = 64, .sample_rate_hz = kRate, .beam_sigma_rows = 0.0, .gamma = 1.0};
+  video::ScreenConfig cfg{.width = 64, .height = 64, .sample_rate_hz = kRate, .beam_sigma = 0.0, .gamma = 1.0};
   CHECK(run_one(cfg, 0.5f, 0.5f).first == 32);
   cfg.h_window_lo = 0.25;
   cfg.h_window_hi = 0.75;
@@ -349,7 +349,7 @@ TEST_CASE("Screen scan windows remap the beam (overscan) and the readout can enc
     const video::ScreenConfig rc{.width = 8,
         .height = 8,
         .sample_rate_hz = kRate,
-        .beam_sigma_rows = 0.0,
+        .beam_sigma = 0.0,
         .gamma = 1.0,
         .readout_gamma = readout_gamma};
     video::Screen screen{rc};
@@ -377,6 +377,33 @@ TEST_CASE("Screen scan windows remap the beam (overscan) and the readout can enc
   };
   CHECK(std::abs(grey_ratio(1.0) - 0.5) < 0.02); // linear: half drive, half level
   CHECK(std::abs(grey_ratio(2.2) - std::pow(0.5, 1.0 / 2.2)) < 0.02); // encoded: brighter mids
+}
+
+TEST_CASE("beam sigma is raster-relative: the spot scales with the line pitch") {
+  // One bright sample mid-screen; the number of rows its splat touches must
+  // scale with the output height (the same physical spot on a denser raster),
+  // which is the point of specifying sigma in scanline pitches.
+  const auto lit_rows = [](std::size_t height) {
+    const video::ScreenConfig cfg{
+        .width = 32, .height = height, .sample_rate_hz = kRate, .beam_sigma = 0.5, .gamma = 1.0};
+    video::Screen screen{cfg};
+    const std::array pic{video::ChromaSample{.luma = 1.0f}, video::ChromaSample{.luma = 0.0f}};
+    const std::array hbeam{video::BeamSample{.h_phase = 0.10f}, video::BeamSample{.h_phase = 0.5f}};
+    const std::array vbeam{video::VSample{.v_phase = 0.5f}, video::VSample{.v_phase = 0.5f}};
+    screen.process(pic, hbeam, vbeam);
+    const auto frame = screen.snapshot();
+    std::size_t rows = 0;
+    for (std::size_t r = 0; r < height; ++r)
+      for (std::size_t c = 0; c < 32; ++c)
+        if (frame.pixels[r * 32 + c] > 0) {
+          ++rows;
+          break;
+        }
+    return rows;
+  };
+  const auto small = lit_rows(64);
+  const auto big = lit_rows(256);
+  CHECK(big >= 3 * small); // 4x the height => ~4x the rows (radius quantisation slack)
 }
 
 TEST_CASE("ChromaDecoder is block-invariant (the streaming guarantee)") {

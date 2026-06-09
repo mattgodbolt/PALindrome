@@ -36,8 +36,9 @@ struct DecoderConfig {
   // Phosphor persistence, in field periods (see ScreenConfig). Higher evens out
   // the brightness between the two interlaced fields; lower sharpens motion.
   double persistence_fields = 1.2;
-  // Beam-spot size (see ScreenConfig::beam_sigma_rows/cols). cols < 0 => round.
-  double beam_sigma_rows = 0.8;
+  // Beam-spot size (see ScreenConfig::beam_sigma — in scanline pitches — and
+  // beam_sigma_cols). cols < 0 => round.
+  double beam_sigma = 0.43;
   double beam_sigma_cols = -1.0;
   double gamma = 1.0; // electron-gun gamma (see ScreenConfig::gamma)
   // Colour: decode chroma and render an RGB triad. Off => the grey rail (the

@@ -22,8 +22,8 @@ Screen::Screen(const ScreenConfig &cfg) :
   // (no fade); 64 fields is already far longer than any real phosphor.
   if (!(cfg_.persistence_fields > 0.0 && cfg_.persistence_fields <= 64.0))
     throw std::invalid_argument{"Screen: persistence_fields must be in (0, 64]"};
-  if (!(cfg_.beam_sigma_rows >= 0.0))
-    throw std::invalid_argument{"Screen: beam_sigma_rows must be non-negative"};
+  if (!(cfg_.beam_sigma >= 0.0))
+    throw std::invalid_argument{"Screen: beam_sigma must be non-negative"};
   if (!(cfg_.nominal_line_hz > cfg_.field_hz))
     throw std::invalid_argument{"Screen: nominal_line_hz must exceed field_hz"};
   if (!(cfg_.h_window_lo < cfg_.h_window_hi && cfg_.v_window_lo < cfg_.v_window_hi))
@@ -70,12 +70,18 @@ Screen::Screen(const ScreenConfig &cfg) :
   // sampling-beat stripe). The horizontal sigma defaults to the vertical, so the
   // spot is round unless beam_sigma_cols is set. The weights depend only on the
   // beam centre's sub-pixel fraction, so each axis tabulates per fraction bin.
-  const double sigma_cols = cfg_.beam_sigma_cols < 0.0 ? cfg_.beam_sigma_rows : cfg_.beam_sigma_cols;
-  splat_radius_y_ = dsp::splat_radius_for(cfg_.beam_sigma_rows);
+  // beam_sigma is in scanline pitches (the raster's per-field line spacing on
+  // the output), so the spot keeps its physical size whatever the output
+  // height or overscan window: pitch_rows = y_scale_ / lines-per-field.
+  const double lines_per_field = cfg_.nominal_line_hz / cfg_.field_hz;
+  const double pitch_rows = y_scale_ / lines_per_field;
+  const double sigma_rows = cfg_.beam_sigma * pitch_rows;
+  const double sigma_cols = cfg_.beam_sigma_cols < 0.0 ? sigma_rows : cfg_.beam_sigma_cols;
+  splat_radius_y_ = dsp::splat_radius_for(sigma_rows);
   splat_radius_x_ = dsp::splat_radius_for(sigma_cols);
   gauss_stride_y_ = 2 * splat_radius_y_ + 1;
   gauss_stride_x_ = 2 * splat_radius_x_ + 1;
-  gauss_lut_y_ = dsp::gaussian_splat_lut(cfg_.beam_sigma_rows, splat_radius_y_, kGaussBins);
+  gauss_lut_y_ = dsp::gaussian_splat_lut(sigma_rows, splat_radius_y_, kGaussBins);
   gauss_lut_x_ = dsp::gaussian_splat_lut(sigma_cols, splat_radius_x_, kGaussBins);
   // Gun gamma table: drive^gamma sampled over [0, kGunDriveMax], read with linear
   // interpolation. Linear at gamma 1.0, so leave the table empty and skip the pow.
@@ -162,7 +168,7 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // the two fields paint alternate lines a field apart, so at readout one
     // field's lines have faded once relative to the other (a 3:1 line-to-line
     // ripple at persistence 0.9). It's invisible only because the beam splat
-    // (beam_sigma_rows) is wide enough to spread each line's charge across its
+    // (beam_sigma) is wide enough to spread each line's charge across its
     // neighbours, blending the fields. Shrink the beam past that and the comb
     // shows. The fix is to fade once per FRAME (every two fields) so both fields
     // paint before any decay — which needs the decay/snapshot aligned to a frame

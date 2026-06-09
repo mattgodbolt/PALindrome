@@ -30,7 +30,7 @@ Decoder::Decoder(const DecoderConfig &cfg) :
         .height = cfg.height,
         .sample_rate_hz = cfg.sample_rate_hz,
         .persistence_fields = cfg.persistence_fields,
-        .beam_sigma_rows = cfg.beam_sigma_rows,
+        .beam_sigma = cfg.beam_sigma,
         .beam_sigma_cols = cfg.beam_sigma_cols,
         .gamma = cfg.gamma,
         .colour = cfg.colour,

@@ -22,12 +22,15 @@ struct ScreenConfig {
   // interlaced frame builds up and older content (and the startup junk) fades.
   double persistence_fields = 1.2;
   // Beam-spot size: each sample is splatted with a round 2-D Gaussian of this
-  // standard deviation. beam_sigma_rows is the vertical extent in output rows (it
-  // fills the gaps between scanlines — the focus); beam_sigma_cols is the
-  // horizontal extent in output columns and defaults to match (a round spot) when
+  // standard deviation. beam_sigma is the vertical extent in SCANLINE PITCHES
+  // (the spacing between a field's lines on the output raster) — the spot is a
+  // property of the tube and the raster, so it must not change size when the
+  // output height or the overscan window does. ~0.5 fills the gaps between
+  // scanlines (the focus). beam_sigma_cols is the horizontal extent in output
+  // columns and defaults to match the derived row sigma (a round spot) when
   // negative. 0 => a single pixel (no splat) on that axis.
-  double beam_sigma_rows = 0.8;
-  double beam_sigma_cols = -1.0; // < 0 => match beam_sigma_rows (round spot)
+  double beam_sigma = 0.43;
+  double beam_sigma_cols = -1.0; // < 0 => match the derived row sigma (round spot)
   // Electron-gun gamma: beam current rises as drive^gamma. The source pre-distorts
   // its video (~1/2.2) expecting a CRT to undo it, so ~2.2-2.8 restores the
   // midtones/contrast; 1.0 is linear (no gamma). Readout normalisation makes the
