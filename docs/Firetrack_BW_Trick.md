@@ -126,6 +126,29 @@ subcarrier frequency and phase (APC), line and field timing. Only the ident is
 starved. That is why the trick is so clean - and why it is plausibly
 TV-dependent.
 
+### The Bruch blanking connection
+
+Broadcast PAL has to solve exactly this parity problem, in exactly this place,
+in the opposite direction. The burst must be suppressed around vertical sync
+(it can't sit on the broad pulses), and a 625-line frame puts 312.5 lines in
+each field, so a burst-blanking window that started on the same line number
+every field would hand the receiver a swing sequence resuming on the wrong
+foot on alternate fields. **Bruch blanking** (after Walter Bruch, PAL's
+designer at Telefunken) is the fix: the nine-line burst-blanking window slides
+its start by one line in a four-field meander (eight fields for the complete
+pattern), arranged so the last burst before the vertical interval and the
+first burst after it always carry the *same* swing sense. As far as the ident
+detector is concerned, the ±45° alternation is continuous straight through
+vsync: the 7.8 kHz ident never takes a phase hit, the V-switch never needs
+re-phasing at field rate, and the killer never gets a reason to twitch.
+
+Firetrack performs the inverse operation: where broadcast engineering added a
+deliberately fiddly four-field dance to keep burst parity continuous across
+the vertical interval, the stretched line injects a parity break there, every
+frame. And because receivers are built to tolerate missing bursts in that
+region (Bruch blanking guarantees they see them every field), the break is
+invisible to everything except the ident path - which is the whole trick.
+
 ## Would it work on every TV?
 
 No direct period evidence either way was found (the most likely sources are
