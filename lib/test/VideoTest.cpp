@@ -50,9 +50,9 @@ constexpr double kRate = 16.0e6;
 // lines — the PAL swinging burst, which is what the ident (and so the colour
 // killer) recognises as PAL; without the swing the killer rightly treats the
 // signal as not-PAL and mutes it.
-std::vector<float> synth_colour_composite(std::size_t lines, std::size_t line_len) {
+std::vector<float> synth_colour_composite(std::size_t lines, std::size_t line_len, double fsc_offset_hz = 0.0) {
   auto e = synth_composite(lines, line_len);
-  constexpr double fsc = 4.43361875e6;
+  const double fsc = 4.43361875e6 + fsc_offset_hz;
   const double w = 2.0 * std::numbers::pi * fsc / kRate;
   for (std::size_t l = 0; l < lines; ++l) {
     const std::size_t base = l * line_len;
@@ -369,6 +369,7 @@ namespace {
 struct ChromaRun {
   std::vector<video::ChromaSample> out;
   double killer_gain;
+  double subcarrier_hz;
 };
 ChromaRun run_chroma(std::span<const float> env, const video::ChromaDecoderConfig &cfg) {
   video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate}};
@@ -380,7 +381,8 @@ ChromaRun run_chroma(std::span<const float> env, const video::ChromaDecoderConfi
   video::ChromaDecoder chroma{cfg};
   chroma.prepare(env.size());
   const auto out = chroma.process(env, hbeam);
-  return ChromaRun{.out = {out.begin(), out.end()}, .killer_gain = chroma.killer_gain()};
+  return ChromaRun{
+      .out = {out.begin(), out.end()}, .killer_gain = chroma.killer_gain(), .subcarrier_hz = chroma.subcarrier_hz()};
 }
 
 float peak_chroma(std::span<const video::ChromaSample> s) {
@@ -446,6 +448,83 @@ TEST_CASE("colour killer fades a valid burst in slowly, and can be disabled") {
   const auto open = run_chroma(env, open_cfg);
   CHECK(open.killer_gain == 1.0);
   CHECK(peak_chroma(open.out) > peak_chroma(period.out));
+}
+
+TEST_CASE("APC pulls the crystal onto an in-range subcarrier offset") {
+  // A source 200 Hz off the crystal — inside the catching range. The frequency
+  // pull should walk the NCO onto the source: the reported crystal frequency
+  // converges to the source's, and colour survives (killer gate opening).
+  constexpr double offset = 200.0;
+  const auto env = synth_colour_composite(300, 1028, offset);
+  const auto run = run_chroma(env, killer_test_config());
+  CHECK(std::abs(run.subcarrier_hz - (4.43361875e6 + offset)) < 20.0);
+  CHECK(run.killer_gain > 0.05);
+}
+
+TEST_CASE("a source beyond the APC catching range fails to lock colour") {
+  // 2 kHz off crystal: a real set's crystal can't be pulled that far. The NCO
+  // pins at the catch-range rail, the reference can't track the residual, and
+  // the ident/killer drop the colour — a mono picture, the authentic failure.
+  constexpr double offset = 2000.0;
+  const auto env = synth_colour_composite(600, 1028, offset);
+  const auto run = run_chroma(env, killer_test_config());
+  CHECK(run.subcarrier_hz > 4.43361875e6 + 400.0); // pinned at (or near) the +500 Hz rail
+  CHECK(run.subcarrier_hz < 4.43361875e6 + 501.0);
+  CHECK(run.killer_gain < 0.1);
+  const std::size_t fifth = run.out.size() / 5;
+  CHECK(peak_chroma(std::span{run.out}.last(fifth)) < 1e-3f); // muted, not garbage colour
+}
+
+TEST_CASE("the APC pull is block-invariant (the feedback reaches the same sample)") {
+  // The retune feeds back into the demod mix, so process() internally segments
+  // at gate closes — a retune must land at the same sample whatever the
+  // caller's chunking, or the loop's delay would be the block size.
+  const auto env = synth_colour_composite(120, 1028, 200.0);
+
+  video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate}};
+  sep.prepare(env.size());
+  const auto sync = sep.process(env);
+  video::HorizontalSweep hsweep{video::HorizontalSweepConfig{.sample_rate_hz = kRate}};
+  hsweep.prepare(sync.size());
+  std::vector<video::BeamSample> hbeam;
+  {
+    const auto b = hsweep.process(sync);
+    hbeam.assign(b.begin(), b.end());
+  }
+
+  video::ChromaDecoder whole{killer_test_config()};
+  whole.prepare(env.size());
+  std::vector<video::ChromaSample> ref;
+  {
+    const auto o = whole.process(env, hbeam);
+    ref.assign(o.begin(), o.end());
+  }
+
+  for (const std::size_t chunk: {std::size_t{7}, std::size_t{333}, std::size_t{4096}}) {
+    video::ChromaDecoder chunked{killer_test_config()};
+    chunked.prepare(chunk);
+    std::vector<video::ChromaSample> got;
+    for (std::size_t off = 0; off < env.size(); off += chunk) {
+      const std::size_t m = std::min(chunk, env.size() - off);
+      const auto o = chunked.process(std::span{env}.subspan(off, m), std::span{hbeam}.subspan(off, m));
+      got.insert(got.end(), o.begin(), o.end());
+    }
+    REQUIRE(got.size() == ref.size());
+    for (std::size_t i = 0; i < ref.size(); ++i) {
+      CHECK(got[i].u == ref[i].u);
+      CHECK(got[i].v == ref[i].v);
+    }
+    CHECK(chunked.subcarrier_hz() == whole.subcarrier_hz());
+  }
+}
+
+TEST_CASE("APC catch range 0 pins the crystal (the pre-pull behaviour)") {
+  const auto env = synth_colour_composite(300, 1028, 200.0);
+  auto cfg = killer_test_config();
+  cfg.apc_catch_range_hz = 0.0;
+  const auto run = run_chroma(env, cfg);
+  CHECK(run.subcarrier_hz == 4.43361875e6); // never retuned
+  CHECK(run.killer_gain > 0.05); // the per-line rotation still locks an in-range source
 }
 
 TEST_CASE("ChromaDecoder rejects an out-of-range ref_tc_lines") {

@@ -48,6 +48,8 @@ private:
   std::string comb_mode_; // "off" | "post" | "delay-line"; empty => decoder default (post)
   double ref_tc_{10.0}; // APC reference time constant in lines (EMA rate = 1/ref_tc)
   bool no_killer_{false}; // disable the colour killer (no ident-based chroma muting)
+  double apc_catch_{500.0}; // APC crystal pull catch range Hz (0 = fixed crystal)
+  double apc_pull_{0.02}; // APC pull rate (fraction of measured drift per line)
   std::size_t frame_stride_{0}; // 0 => one image; N => a PNG every Nth field boundary
   bool no_sync_{false}; // debug: naive-fold the envelope, bypassing the sync graph
   bool no_threads_{false}; // decode serially instead of the default stage pipeline

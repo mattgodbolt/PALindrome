@@ -71,6 +71,9 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "Colour: APC reference time constant in lines (default 10; slower = more period-faithful, [2,100])"))
           .add_argument(
               lyra::opt(no_killer_)["--no-killer"]("Colour: disable the colour killer (no ident-based chroma muting)"))
+          .add_argument(lyra::opt(apc_catch_, "hz")["--apc-catch"](
+              "Colour: APC crystal-pull catching range Hz (default 500, as a real crystal; 0 = fixed crystal)"))
+          .add_argument(lyra::opt(apc_pull_, "x")["--apc-pull"]("Colour: APC pull rate (fraction of drift per line)"))
           .add_argument(lyra::opt(sync_level_, "x")["--sync-level"]("Sync-separator slice level"))
           .add_argument(
               lyra::opt(h_kp_, "x")["--h-kp"]("Horizontal hold: locked (flywheel) AFC kp; 1.0 = direct triggering"))
@@ -166,6 +169,8 @@ int RenderCommand::run() const {
   dc.chroma.ref_tc_lines = ref_tc_;
   if (no_killer_)
     dc.chroma.killer_threshold = 0.0;
+  dc.chroma.apc_catch_range_hz = apc_catch_;
+  dc.chroma.apc_pull = apc_pull_;
   if (no_delay_line_) // deprecated alias, overridden by an explicit --comb-mode
     dc.chroma.comb_mode = video::CombMode::off;
   if (!comb_mode_.empty()) {
@@ -248,8 +253,10 @@ int RenderCommand::run() const {
     save(output, decoder.latched_frame()); // falls back to the live state if no field completed
 
   if (colour_)
-    std::println("colour: crystal {:.4f} MHz, burst amplitude {:.4g}, burst swing {:.1f} deg, killer gate {:.2f}{}",
-        decoder.subcarrier_hz() / 1e6, decoder.burst_amplitude(), decoder.burst_swing_deg(), decoder.killer_gain(),
+    std::println("colour: crystal {:.4f} MHz (APC pull {:+.1f} Hz), burst amplitude {:.4g}, burst swing {:.1f} deg, "
+                 "killer gate {:.2f}{}",
+        decoder.subcarrier_hz() / 1e6, decoder.subcarrier_hz() - subcarrier_hz, decoder.burst_amplitude(),
+        decoder.burst_swing_deg(), decoder.killer_gain(),
         decoder.killer_gain() < video::ChromaDecoder::kKillerSwitch ? " (COLOUR KILLED)" : "");
 
   const double line_hz = decoder.line_omega() * envelope_rate;
