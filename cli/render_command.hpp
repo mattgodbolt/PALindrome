@@ -30,7 +30,7 @@ private:
   std::size_t width_{720};
   std::size_t height_{576};
   double persistence_{1.6}; // phosphor persistence in field periods
-  double beam_sigma_{0.8}; // beam-spot vertical size in output rows
+  double beam_sigma_{1.1}; // beam-spot vertical size in output rows
   double beam_sigma_x_{-1.0}; // beam-spot horizontal size in cols; <0 = match (round)
   double gamma_{2.6}; // electron-gun gamma (a real tube's curve; the source pre-corrects ~1/2.2)
   double readout_gamma_{2.2}; // the PNG "camera" encode; 1.0 = raw linear light
