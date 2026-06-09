@@ -67,7 +67,9 @@ struct ChromaDecoderConfig {
   // switch-ON is deliberately delayed (the saturation-control time constant —
   // colour fades in a fraction of a second after lock), which is also what
   // makes brief noise-driven ident excursions harmless; the kill direction is
-  // much faster. killer_threshold <= 0 disables the killer (chroma always on).
+  // much faster. killer_threshold <= 0 disables the killer — no ident-based
+  // muting (chroma can still come out zero when no burst is measured at all:
+  // the ACC has nothing to normalise against).
   double killer_threshold = 0.4; // ident level counted as "PAL identified"
   double killer_on_tc_lines = 1500.0; // switch-on ramp (~0.1 s of lines)
   double killer_off_tc_lines = 100.0; // kill ramp (fast mute)
@@ -83,6 +85,10 @@ struct ChromaDecoderConfig {
 // block-invariant like every other stage.
 class ChromaDecoder {
 public:
+  // The killer gate hard-mutes below this level (the > 50 dB mute of a real
+  // killer); diagnostics should treat a gate below it as "colour killed".
+  static constexpr double kKillerSwitch = 0.1;
+
   explicit ChromaDecoder(const ChromaDecoderConfig &cfg);
 
   void prepare(std::size_t max_in);

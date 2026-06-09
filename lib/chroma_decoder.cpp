@@ -15,7 +15,6 @@ namespace palindrome::video {
 namespace {
 constexpr double kTwoPi = 2.0 * std::numbers::pi;
 constexpr double kIdent = 0.1; // ident leaky-integrator rate for the PAL-switch bistable
-constexpr double kKillerSwitch = 0.1; // gate level below which the chroma is fully muted
 
 // Keep the chroma band-pass top edge below Nyquist (the AirSpy's 10 MS/s only
 // just spans the subcarrier, so a 5 MHz edge would otherwise overrun it).
@@ -42,9 +41,12 @@ const ChromaDecoderConfig &validate(const ChromaDecoderConfig &cfg) {
     throw std::invalid_argument{
         std::format("ChromaDecoder: ref_tc_lines must be in [2, 100], got {}", cfg.ref_tc_lines)};
   if (!(cfg.killer_threshold < 1.0))
-    throw std::invalid_argument{"ChromaDecoder: killer_threshold must be < 1 (ident never exceeds 1)"};
+    throw std::invalid_argument{std::format(
+        "ChromaDecoder: killer_threshold must be < 1 (ident never exceeds 1), got {}", cfg.killer_threshold)};
   if (!(cfg.killer_on_tc_lines >= 1.0 && cfg.killer_off_tc_lines >= 1.0))
-    throw std::invalid_argument{"ChromaDecoder: killer ramp time constants must be >= 1 line"};
+    throw std::invalid_argument{
+        std::format("ChromaDecoder: killer ramp time constants must be >= 1 line, got on {} / off {}",
+            cfg.killer_on_tc_lines, cfg.killer_off_tc_lines)};
   return cfg;
 }
 } // namespace
