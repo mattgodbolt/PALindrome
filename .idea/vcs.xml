@@ -3,5 +3,10 @@
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/build/debug/_deps/catch2-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build/debug/_deps/lodepng-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build/debug/_deps/stdexec-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build/release/_deps/catch2-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build/release/_deps/lodepng-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/build/release/_deps/stdexec-src" vcs="Git" />
   </component>
 </project>
