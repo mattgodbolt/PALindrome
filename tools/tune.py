@@ -217,18 +217,26 @@ KNOBS = [
 
 PAGE = """<!doctype html><html><head><meta charset=utf-8><title>PALindrome tune</title><style>
 body{font-family:sans-serif;margin:1em;background:#111;color:#ddd}
-#wrap{display:flex;gap:1.5em;align-items:flex-start}
+#wrap{display:flex;gap:1.5em;align-items:flex-start;height:calc(100vh - 2em)}
+#controls{align-self:stretch;overflow-y:auto;flex:0 0 auto;padding-right:.5em}
+#imgcol{align-self:flex-start;position:sticky;top:0}
 .knob{display:flex;align-items:center;gap:.5em;margin:.1em 0}
 .knob label{width:15em;font-size:.82em}.knob input{width:13em}
 .knob output{width:6em;text-align:right;font:.8em monospace}
-img{background:#000;image-rendering:pixelated;image-rendering:crisp-edges}
+img{background:#000;image-rendering:pixelated;image-rendering:crisp-edges;display:block}
+#transport{margin-top:.5em}
+#transport .row{display:flex;align-items:center;gap:.5em}
+#transport input[type=range]{flex:1;min-width:0}
+#transport input[type=number]{width:3.5em}
+#transport .row label{font-size:.85em}
 button{margin:.4em .4em 0 0}#status{font:.85em monospace;margin-top:.5em;color:#9c9}
 </style></head><body><div id=wrap>
-<div><div id=knobs></div>
-<div><button id=play>&#9654; play</button>
-<input id=scrub type=range min=0 max=0 value=0 style="width:18em"> <span id=fnum>0</span></div>
-<div id=status>rendering&hellip;</div></div>
-<div><img id=img></div></div>
+<div id=controls><div id=knobs></div></div>
+<div id=imgcol><img id=img>
+<div id=transport><div class=row><button id=play>&#9654; play</button>
+<input id=scrub type=range min=0 max=0 value=0> <span id=fnum>0</span>
+<label>fps <input id=fps type=number min=1 max=60 step=1 value=50></label></div>
+<div id=status>rendering&hellip;</div></div></div></div>
 <script>
 const KNOBS=__KNOBS__, vals={}, kd=document.getElementById('knobs');
 for(const k of KNOBS){vals[k.name]=k.def;
@@ -243,12 +251,22 @@ for(const k of KNOBS){vals[k.name]=k.def;
 let count=0,gen=0,playing=null;
 const img=document.getElementById('img'),scrub=document.getElementById('scrub'),
  fnum=document.getElementById('fnum'),status=document.getElementById('status');
-img.addEventListener('load',()=>{img.style.width=(img.naturalWidth*2)+'px';}); // 2x, nearest-neighbour
+const controls=document.getElementById('controls'),wrap=document.getElementById('wrap');
+// Nearest-neighbour 2x when there's room for it beside the controls, else 1x. Re-checks on resize.
+function fit(){if(!img.naturalWidth)return;
+ const gap=parseFloat(getComputedStyle(wrap).columnGap)||0;
+ const avail=wrap.clientWidth-controls.offsetWidth-gap;
+ img.style.width=(img.naturalWidth*(img.naturalWidth*2<=avail?2:1))+'px';}
+img.addEventListener('load',fit);window.addEventListener('resize',fit);
 function show(i){fnum.textContent=i;img.src='/frame?i='+i+'&g='+gen;}
 scrub.addEventListener('input',()=>show(+scrub.value));
-document.getElementById('play').addEventListener('click',()=>{
- if(playing){clearInterval(playing);playing=null;return;}
- if(!count)return;playing=setInterval(()=>{let i=(+scrub.value+1)%count;scrub.value=i;show(i);},80);});
+const play=document.getElementById('play'),fps=document.getElementById('fps');
+function stop(){if(playing){clearInterval(playing);playing=null;}play.innerHTML='&#9654; play';}
+function start(){if(!count)return;stop();
+ playing=setInterval(()=>{let i=(+scrub.value+1)%count;scrub.value=i;show(i);},1000/Math.max(1,+fps.value||50));
+ play.innerHTML='&#9632; stop';}
+play.addEventListener('click',()=>playing?stop():start());
+fps.addEventListener('change',()=>{if(playing)start();}); // restart at the new rate
 async function render(){status.textContent='rendering…';
  const qs=Object.entries(vals).map(([k,v])=>k+'='+v).join('&');
  const t=performance.now();
