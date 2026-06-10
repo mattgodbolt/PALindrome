@@ -236,6 +236,10 @@ second after lock, the saturation-control time constant of a real set. A
 burst-free transmission (or a source that suppresses its colourburst) decodes
 as clean monochrome. `--no-killer` disables it (the old paint-anything
 behaviour); `render` prints the killer gate state with the colour diagnostics.
+Note for the current sub-second corpus clips: the switch-on ramp spans most of
+the clip, so the saturation visibly swells through a looped playback (and
+snaps at the loop seam) — that's the power-on behaviour, not noise, and it
+disappears into the first fraction of a second once captures are longer.
 
 ### `demod` — composite envelope to WAV (inspection)
 
