@@ -41,6 +41,12 @@ Screen::Screen(const ScreenConfig &cfg) :
     throw std::invalid_argument{"Screen: eht_focus must be in [0, 1]"};
   if (!(cfg_.line_pull >= 0.0 && cfg_.line_pull < 0.1))
     throw std::invalid_argument{"Screen: line_pull must be in [0, 0.1)"};
+  if (!(cfg_.bcl_threshold >= 0.0 && cfg_.bcl_threshold <= 1.5))
+    throw std::invalid_argument{"Screen: bcl_threshold must be in [0, 1.5] (0 disables)"};
+  // Only meaningful (and only used) when the limiter is enabled.
+  if (cfg_.bcl_threshold > 0.0 && !(cfg_.bcl_tc_fields * cfg_.nominal_line_hz / cfg_.field_hz >= 1.0))
+    throw std::invalid_argument{"Screen: bcl_tc_fields too small (the integrator step would exceed 1)"};
+
   // Decay per sample so that brightness falls by 1/e over persistence_fields
   // field periods: tau_samples = persistence * (sample_rate / field_hz).
   const double tau_samples = cfg_.persistence_fields * cfg_.sample_rate_hz / cfg_.field_hz;
@@ -109,7 +115,9 @@ Screen::Screen(const ScreenConfig &cfg) :
   gauss_stride_x_ = x_classes_[0].stride;
   gauss_lut_y_ = y_classes_[0].lut.data();
   gauss_lut_x_ = x_classes_[0].lut.data();
-  loading_ = cfg_.eht_sag > 0.0 || cfg_.line_pull > 0.0;
+  limiting_ = cfg_.bcl_threshold > 0.0;
+  // The line-load sensor runs for any consumer: the EHT, the pull or a limiter.
+  loading_ = cfg_.eht_sag > 0.0 || cfg_.line_pull > 0.0 || limiting_;
   // The per-line effective mapping starts unloaded (eht_ = 1, no pull).
   x_scale_eff_ = x_scale_;
   x_off_eff_ = -cfg_.h_window_lo * x_scale_;
@@ -200,6 +208,21 @@ void Screen::start_line() {
   line_load_sum_ = 0.0f;
   line_load_n_ = 0;
   prev_line_load_ = load;
+
+  if (limiting_) {
+    // Beam-current limiting: smooth the load, then INTEGRAL feedback on the
+    // gain — the loop contains the limiter (the sensor sees limited drive),
+    // so this settles the measured average exactly at the threshold, as a
+    // real BCL's negative feedback into the contrast stage does.
+    if (cfg_.bcl_threshold > 0.0) {
+      const double alpha = 1.0 / (cfg_.bcl_tc_fields * cfg_.nominal_line_hz / cfg_.field_hz);
+      bcl_state_ += alpha * (load - bcl_state_);
+      const double err = (bcl_state_ - cfg_.bcl_threshold) / cfg_.bcl_threshold;
+      bcl_gain_ = std::clamp(bcl_gain_ * (1.0 - 0.05 * err), 0.05, 1.0);
+    }
+    video_gain_ = bcl_gain_;
+  }
+
   if (cfg_.eht_sag <= 0.0 && cfg_.line_pull <= 0.0)
     return;
 
@@ -267,7 +290,10 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
 
     // Gun drives: luma sets the Y term; the matrix adds the colour difference.
     // Each gun cuts off at zero, then takes its gamma. Grey = the luma gun alone.
-    const double drive = static_cast<double>(drive_of(picture[i].luma, hbeam[i].h_phase));
+    // The limiter is the contrast control: it scales the drive ahead of the
+    // gun (video_gain_ is exactly 1.0 when no limiter is enabled, and the
+    // chroma follows automatically through the white_drive_ reference).
+    const double drive = video_gain_ * static_cast<double>(drive_of(picture[i].luma, hbeam[i].h_phase));
     const float luma_gun = gun(drive);
     // IF AGC: track the peak luma gun (readout white) and the peak luma drive (the
     // chroma reference), fast up, slow down. Tracking drive ties the colour to the

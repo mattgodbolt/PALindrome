@@ -67,6 +67,10 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(line_pull_, "x")["--line-pull"](
               "Line-output loading: width stretch after a full-white line (verticals bend next to bright content; "
               "0 disables)"))
+          .add_argument(lyra::opt(bcl_, "x")["--bcl"](
+              "Beam-current limiter: average beam load above which the contrast is pulled down (default 0.7; "
+              "0 disables — an unprotected set)"))
+          .add_argument(lyra::opt(bcl_tc_, "fields")["--bcl-tc"]("Beam-current limiter response, field periods"))
           .add_argument(lyra::opt(h_shift_, "x")["--h-shift"](
               "Horizontal centring (an internal service adjustment on a real set; factory default 0 should be "
               "right): shifts the picture right by this fraction of a line"))
@@ -182,6 +186,8 @@ int RenderCommand::run() const {
   dc.eht_tc_fields = eht_tc_;
   dc.eht_focus = eht_focus_;
   dc.line_pull = line_pull_;
+  dc.bcl_threshold = bcl_;
+  dc.bcl_tc_fields = bcl_tc_;
   dc.h_blank = h_blank_;
   // Overscan: map the nominal active picture box — the 52 us active line of
   // the 64 us period, and the picture lines after the vertical interval —
@@ -323,6 +329,8 @@ int RenderCommand::run() const {
         decoder.burst_swing_deg(), decoder.killer_gain(),
         decoder.killer_gain() < video::ChromaDecoder::kKillerSwitch ? " (COLOUR KILLED)" : "");
 
+  if (decoder.limiter_gain() < 0.99)
+    std::println("beam limiter: video gain {:.3f}", decoder.limiter_gain());
   const double line_hz = decoder.line_omega() * envelope_rate;
   const double field_hz = decoder.field_omega() * envelope_rate;
   const auto what = frame_stride_ > 0 ? std::format("wrote {} frames {}_NNNN.png (every {} fields)", written,

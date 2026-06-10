@@ -48,7 +48,9 @@ Decoder::Decoder(const DecoderConfig &cfg) :
         .eht_sag = cfg.eht_sag,
         .eht_tc_fields = cfg.eht_tc_fields,
         .eht_focus = cfg.eht_focus,
-        .line_pull = cfg.line_pull}} {}
+        .line_pull = cfg.line_pull,
+        .bcl_threshold = cfg.bcl_threshold,
+        .bcl_tc_fields = cfg.bcl_tc_fields}} {}
 
 void Decoder::prepare(std::size_t max_in) {
   sync_lp_.prepare(max_in);

@@ -502,6 +502,33 @@ TEST_CASE("line pulling stretches the line after a bright one") {
   CHECK(x_bright > x_dark); // right of centre: the pull pushes it further right
 }
 
+TEST_CASE("the beam-current limiter pulls sustained brightness to its threshold") {
+  const video::ScreenConfig cfg{.width = 64,
+      .height = 64,
+      .sample_rate_hz = kRate,
+      .beam_sigma = 0.0,
+      .gamma = 1.0,
+      .bcl_threshold = 0.5,
+      .bcl_tc_fields = 0.5};
+  video::Screen screen{cfg};
+  // Sustained full white: load 1.0 > threshold 0.5, so the limiter settles the
+  // video gain near threshold/load. The loop is closed (the limited drive is
+  // what the sensor measures), so the settled load is the threshold and the
+  // gain ~ threshold (for a full-white source).
+  feed_lines(screen, 900, 0.0f);
+  CHECK(screen.limiter_gain() < 0.6);
+  CHECK(screen.limiter_gain() > 0.4);
+  // A true steady state: thousands more white lines must NOT ratchet the gain
+  // further down (the failure mode of a reference that adapts to its own
+  // limiting — exactly what sank the first peak-white limiter design).
+  feed_lines(screen, 5000, 0.0f);
+  CHECK(screen.limiter_gain() < 0.6);
+  CHECK(screen.limiter_gain() > 0.4);
+  // A dark picture releases it.
+  feed_lines(screen, 900, 0.3f);
+  CHECK(screen.limiter_gain() > 0.95);
+}
+
 TEST_CASE("ChromaDecoder is block-invariant (the streaming guarantee)") {
   const auto env = synth_colour_composite(40, 1028);
 

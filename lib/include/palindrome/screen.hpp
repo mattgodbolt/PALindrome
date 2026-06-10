@@ -90,6 +90,14 @@ struct ScreenConfig {
   double eht_tc_fields = 2.0;
   double eht_focus = 0.3;
   double line_pull = 0.0;
+  // Beam-current limiting: a real set sensed the average beam current in the
+  // EHT return and pulled the video gain (the contrast) down when it exceeded
+  // a safe level — a sustained bright scene dims to protect the tube and
+  // supply. When the smoothed line load exceeds bcl_threshold (as a fraction
+  // of a full-white load), the gun drive is scaled so the average settles at
+  // the threshold, with bcl_tc_fields response. 0 disables.
+  double bcl_threshold = 0.0;
+  double bcl_tc_fields = 0.5;
 };
 
 // The picture tube. A join sink fed three aligned rails — the picture (luma +
@@ -153,6 +161,8 @@ public:
   // Diagnostic: the per-unit EHT (1 = unloaded; sustained full white sags it
   // toward 1 - eht_sag).
   [[nodiscard]] double eht() const noexcept { return eht_; }
+  // Diagnostic: the combined video gain the limiters are applying (1 = none).
+  [[nodiscard]] double limiter_gain() const noexcept { return video_gain_; }
 
   // The frame as latched by the most recent FieldEvent::latch(): the phosphor
   // and white reference as they stood at that boundary, quantised now. Falls
@@ -260,6 +270,18 @@ private:
   double y_off_eff_ = 0.0;
   double tilt_eff_ = 0.0;
   float bright_eff_ = 1.0f; // light ∝ V·I: the per-line EHT brightness factor
+  // Beam-current limiting (see ScreenConfig): bcl_state_ smooths the per-line
+  // load and bcl_gain_ integrates against the threshold; video_gain_ scales
+  // the gun drive (and the chroma with it — it is the contrast control).
+  // (A peak-white limiter — the TDA3561A's one-line-delayed output ceiling —
+  // belongs here too, but needs an ABSOLUTE white reference to act against:
+  // every content-statistical reference either ratchets or misfires on
+  // legitimately bright lines. It lands with the gated AGC (issue #36),
+  // which is what makes levels absolute.)
+  bool limiting_ = false; // the beam-current limiter enabled (set in the ctor)
+  double bcl_state_ = 0.0; // smoothed average load
+  double bcl_gain_ = 1.0; // BCL gain: integral feedback, settles measured load AT the threshold
+  double video_gain_ = 1.0; // the per-line gain applied to the drive
   void start_line(); // finalize the line load, update eht_, refresh the mapping
 
   // The electron-gun curve drive^gamma is the last un-LUT'd per-sample

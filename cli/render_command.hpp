@@ -39,6 +39,8 @@ private:
   double eht_tc_{2.0}; // EHT sag/recovery time constant, field periods
   double eht_focus_{0.3}; // spot growth at full sag
   double line_pull_{0.003}; // width stretch after a full-white line (0 disables)
+  double bcl_{0.7}; // beam-current limiter threshold (average load; 0 disables)
+  double bcl_tc_{0.5}; // BCL response, field periods
   double h_shift_{0.0}; // horizontal centring pot: + moves the picture right (h_phase units)
   double v_shift_{0.0}; // vertical centring pot: + moves the picture down (v_phase units)
   // Colour decode (PAL-D chroma channel). Off => a grey render.
