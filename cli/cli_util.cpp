@@ -77,12 +77,30 @@ EnvelopeStream stream_envelope(const LoadedRecording &loaded, const EnvelopeOpti
   EnvelopeStream result;
   result.rate_hz = loaded.sample_rate_hz / static_cast<double>(opts.decimation);
 
-  // Real IF (RX888, or an AirSpy raw 20 MS/s capture): form the analytic
-  // (one-sided) signal so the carrier's negative-frequency image can't fold onto
-  // the chroma, then mix the vision carrier to DC, low-pass and take the
-  // magnitude. The sound carrier (vision + 6 MHz) lands above the chroma after
-  // the mix and is removed by the cutoff low-pass, so no separate sound trap is
-  // needed (confirmed on the RX888 corpus, whose old strip had one).
+  if (opts.if_mode != IfMode::flat) {
+    // The SAW-era IF: one complex-coefficient FIR realising the set's IF curve
+    // around the carrier, applied straight to the real IF, then the envelope.
+    // One-sided taps subsume the analytic (Hilbert) step, and the template -
+    // not a --cutoff - decides what survives, including a deliberately finite
+    // sound notch, so the sound carrier leaves a faint period-true 6 MHz beat.
+    auto shape = opts.if_mode == IfMode::saw90 ? demod::saw90_template() : demod::saw80_template();
+    if (opts.sound_notch_db > 0.0)
+      shape.sound_notch_db = -opts.sound_notch_db;
+    if (opts.gd_ripple_ns >= 0.0)
+      shape.gd_ripple_ns = opts.gd_ripple_ns;
+    demod::VisionIf vision_if{loaded.sample_rate_hz, loaded.vision_carrier_hz, shape, demod::kDefaultIfTaps,
+        dsp::Window::Hamming, opts.decimation};
+    vision_if.prepare(block_samples);
+    stream_ri16le_blocks(
+        loaded.data_path, [&](std::span<const float> x) { on_block(vision_if.process(x)); }, block_samples);
+    return result;
+  }
+
+  // Flat mode - the pre-SAW chain, kept verbatim: form the analytic (one-sided)
+  // signal so the carrier's negative-frequency image can't fold onto the
+  // chroma, then mix the vision carrier to DC, low-pass and take the magnitude.
+  // The sound carrier (vision + 6 MHz) lands above the chroma after the mix and
+  // is removed entirely by the cutoff low-pass - the ideal no real set was.
   demod::Hilbert hilbert{demod::kDefaultVisionTaps};
   demod::ComplexAmEnvelope env_demod{loaded.sample_rate_hz, loaded.vision_carrier_hz, opts.cutoff_hz,
       demod::kDefaultVisionTaps, dsp::Window::Hamming, opts.decimation};

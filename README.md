@@ -83,7 +83,7 @@ sideband clips, the 2·fSC demod image folds into the chroma); at 20 MS/s it's
 comfortably mid-band. Real samples carry a mirror of the carrier at minus-its-
 frequency, so we tune the vision carrier to ~3 MHz IF (chroma ~7.4, sound ~9 -
 the whole channel fits below the 10 MHz Nyquist) where the mirror clears the
-chroma low-pass, and the decoder forms the analytic signal to delete it. Same
+vision band, and the decoder's one-sided front end deletes it. Same
 real-IF convention as the RX888: carriers are absolute IF bins in `airspy:*`.
 
 ```
@@ -117,7 +117,7 @@ flowchart TD
     SIGMF["corpus sigmf-data<br/>real IF: RX888 32 MS/s /<br/>AirSpy raw 20 MS/s"] --> VIS
 
     subgraph vis["vision chain"]
-      VIS["analytic (Hilbert) →<br/>mix carrier to baseband → FIR LP →<br/>AM envelope (× decimation)"]
+      VIS["SAW IF (one complex FIR on the real IF):<br/>Nyquist flank through the carrier, vestige<br/>cutoff, finite sound notch, GD ripple →<br/>AM envelope (× decimation)"]
     end
 
     VIS --> AGC["IF AGC<br/>peak detector on the sync tip →<br/>carrier normalised to tip = 1.0"]
@@ -137,6 +137,14 @@ The TLAs, for anyone whose shelf lacks a 1980s TV service manual:
 
 - **IF** - intermediate frequency: the SDRs capture the whole modulated channel
   at a low centre frequency, exactly what a set's tuner hands its IF strip.
+- **SAW** - surface acoustic wave filter: the one fixed component that shaped a
+  set's IF response from the late 70s on. Its curve - flank, chroma shoulder,
+  sound notch, group-delay ripple - is most of a set's RF personality, which is
+  why ours is a swappable template (`--if saw80|saw90|flat`).
+- **VSB** - vestigial sideband: TV AM keeps the full upper sideband but only a
+  1.25 MHz vestige of the lower. The receiver's *Nyquist flank* puts the carrier
+  at exactly -6 dB so each sideband pair sums back to flat video - and once that
+  flank exists, where the carrier sits on it is load-bearing (hence AFC, later).
 - **AGC** - automatic gain control: levels the received signal so the rest of
   the chain sees a constant amplitude regardless of signal strength. Ours
   peak-detects the sync tip (the carrier peak, under negative modulation) and
@@ -187,9 +195,24 @@ relied on to keep their left edge on screen), and
 single image). PNGs are encoded fast (uncompressed) rather than small - this is a
 research tool that throws most of them away. The old default look is exactly
 `--gamma 1.5 --overscan -1 --readout-gamma 1 --eht-sag 0 --line-pull 0 --bcl 0
---agc adaptive` (adaptive mode also flips the contrast/saturation defaults
-back to their pre-AGC values and sidelines the peak-white limiter, which
-needs absolute levels).
+--agc adaptive --if flat` (adaptive mode also flips the contrast/saturation
+defaults back to their pre-AGC values and sidelines the peak-white limiter,
+which needs absolute levels).
+
+The carrier reaches the detector through a set's IF curve, not an ideal
+filter: `--if saw80` (the default) realises an early-80s single-SAW receiver
+response as one complex-coefficient FIR applied straight to the real IF - the
+Nyquist flank through the carrier (so the vestigial-sideband pairs sum back to
+flat video), the vestige cutoff, chroma a few dB down on the shoulder rolling
+toward the sound notch, and that notch deliberately FINITE (`--sound-notch-db`,
+default 26: an intercarrier set needs sound carrier left at the detector, and
+the residue is a real 6 MHz beat in the video), plus the SAW's signature
+group-delay ripple (`--gd-ripple`, default ±50 ns: faint pre/post-ringing next
+to sharp edges). Being one-sided, the same taps delete the real capture's
+negative-frequency carrier image - the job the Hilbert stage did - at the cost
+of exactly the two real convolutions the old symmetric low-pass pair spent.
+`--if saw90` is a 90s set (flat through chroma, -40 dB notch, near-clean
+phase); `--if flat` keeps the ideal pre-SAW chain, bit-for-bit.
 
 Levels are absolute, the way a receiver actually knows them: an IF AGC
 (`--agc sync-tip`, the default) peak-detects the carrier's sync tip - under
@@ -345,8 +368,8 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
   sync edge. Capturing the raw ADC at 20 MS/s (vision ~3 MHz, chroma mid-band)
   removed both: the chroma SNR matches the RX888's and the skew is gone. The one
   wrinkle of real samples - the carrier's negative-frequency mirror - is deleted
-  by forming the analytic signal (`demod::Hilbert`) before the envelope, so a
-  single demodulator serves both radios.
+  by a one-sided front end (the SAW IF's complex taps; `demod::Hilbert` in
+  `--if flat`), so a single demodulator serves both radios.
 - **Optimisation.** ✅ The hot paths are profiled and tuned - LUTs for the
   screen's per-sample `exp` and the gun-gamma `pow`, an across-output FIR
   microkernel, fast PNG encode, auto-decimation. Parked next: a `std::simd`
@@ -354,8 +377,7 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
 - **Multi-threading.** ✅ `render` runs a 3-stage stdexec pipeline (front-end |
   decode | screen), default-on, bit-identical to serial, bounded-memory
   (`--no-threads` for serial). The colour decode is front-end-bound today (the
-  analytic signal + FIR low-pass), so further speed lives in the DSP loops, not
-  the screen.
+  vision-IF FIR), so further speed lives in the DSP loops, not the screen.
 - **Live mode.** The whole point: decode a live RF stream off the SDR, not just
   finite corpus files. The graph is bounded-memory and block-driven for exactly
   this.
@@ -408,9 +430,10 @@ Explorer tarball is the likely route.
 
 **Direction for future DSP perf: reach for `std::simd`, not more intrinsics.**
 `std::simd` is the target; the hand-AVX2 above is a stop-gap to *delete*, so don't
-extend it for modest wins. When the toolchain (GCC 16+) lands, the natural sweep,
-easiest first: the **`demod::Hilbert` deinterleave/interleave glue** (pure data
-movement - shuffle/permute, no `simd.math`, so it ports immediately), then
-`convolve_strip`, then `envelope_magnitude` (its `sqrt` waits on `simd.math`). The
-Hilbert glue (~⅓ of that already-fast stage) was prototyped as hand-AVX2 and
-deliberately *not* landed for exactly this reason - it's a `std::simd` job.
+extend it for modest wins. When the toolchain (GCC 16+) lands, the natural sweep:
+`convolve_strip` (now the whole front end - the SAW IF is two real convolutions
+through it), then `envelope_magnitude` (its `sqrt` waits on `simd.math`). The
+**`demod::Hilbert` deinterleave/interleave glue** (pure data movement -
+shuffle/permute, no `simd.math`) was prototyped as hand-AVX2 and deliberately
+*not* landed; it only runs in `--if flat` now, so it has dropped to the bottom
+of the list.
