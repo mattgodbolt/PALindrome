@@ -149,10 +149,10 @@ display that will decode at ~2.2; `1` writes raw linear light, the old
 double-gamma'd look), `--overscan` (default 0.06: the nominal active picture,
 cropped that fraction behind the bezel, fills the frame as on a real set —
 blanking lives off-screen; negative restores the old full-scan framing),
-`--h-shift`/`--v-shift` (the centring pots on a real set's back panel: shift
-the picture right/down as a fraction of the line/field — consoles often hug
-the left of the nominal active region, so a small positive `--h-shift`
-re-centres them), and
+`--h-shift`/`--v-shift` (the centring adjustments — internal service pots on
+a real set, so the factory-default framing should be right without them: the
+default visible window starts ~1 µs before active video, the framing consoles
+relied on to keep their left edge on screen), and
 `--frame-stride` (write a PNG every Nth field as `<stem>_NNNN.png` instead of a
 single image). PNGs are encoded fast (uncompressed) rather than small — this is a
 research tool that throws most of them away. The old default look is exactly

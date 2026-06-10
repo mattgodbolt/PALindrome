@@ -72,12 +72,13 @@ KNOBS = [
               "like a real set. Negative = the old full-scan framing with blanking visible."),
     dict(name="h_shift", flag="--h-shift", label="H shift (centring)",
          min=-0.05, max=0.05, step=0.001, default=0.0,
-         help="Horizontal centring pot: + moves the picture right (fraction of a line; ~0.001 is about one output "
-              "pixel). Consoles often hug the left of the nominal active region - shift right to share the slack "
-              "between both edges."),
+         help="Horizontal centring: + moves the picture right (fraction of a line; ~0.001 is about one output "
+              "pixel). On a real set this was an internal service adjustment - the factory default framing should "
+              "be right without it, so treat this as the service screwdriver, not a viewing control."),
     dict(name="v_shift", flag="--v-shift", label="V shift (centring)",
          min=-0.05, max=0.05, step=0.001, default=0.0,
-         help="Vertical centring pot: + moves the picture down (fraction of a field)."),
+         help="Vertical centring: + moves the picture down (fraction of a field). An internal service adjustment, "
+              "as the H shift."),
     dict(name="eht_sag", flag="--eht-sag", label="EHT sag",
          min=0.0, max=0.25, step=0.005, default=0.06,
          help="How much the final-anode voltage sags under a sustained full-white load. The raster breathes "

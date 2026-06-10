@@ -68,10 +68,10 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "Line-output loading: width stretch after a full-white line (verticals bend next to bright content; "
               "0 disables)"))
           .add_argument(lyra::opt(h_shift_, "x")["--h-shift"](
-              "Horizontal centring pot: shifts the picture right by this fraction of a line (use it to centre a "
-              "source whose active video doesn't fill the nominal box, e.g. consoles)"))
+              "Horizontal centring (an internal service adjustment on a real set; factory default 0 should be "
+              "right): shifts the picture right by this fraction of a line"))
           .add_argument(lyra::opt(v_shift_, "x")["--v-shift"](
-              "Vertical centring pot: shifts the picture down by this fraction of a field"))
+              "Vertical centring (internal service adjustment): shifts the picture down by this fraction of a field"))
           .add_argument(lyra::opt(colour_)["--colour"]["--color"]("Decode PAL colour (RGB)"))
           .add_argument(lyra::opt(saturation_, "x")["--saturation"]("Colour: chroma gain into the gun matrix"))
           .add_argument(lyra::opt(contrast_, "x")["--contrast"]("Readout white point (AGC-relative; the contrast pot)"))
@@ -193,8 +193,14 @@ int RenderCommand::run() const {
       std::println(std::cerr, "render: --overscan must be below 0.5 (got {:g})", overscan_);
       return 1;
     }
-    constexpr double kActiveHLo = 10.5 / 64.0; // line blanking: sync + back porch
-    constexpr double kActiveHHi = 62.5 / 64.0; // the 1.5 us front porch before the next sync
+    // The visible window sits ~1 us EARLIER in the line than the textbook
+    // active region (10.5..62.5 us): an average set's sweep reached the tube
+    // face while the line was still blanked, so the left edge showed a sliver
+    // of blanking-black before active video began — the factory framing that
+    // consoles (whose content hugs the start of active) relied on to keep
+    // their left edge on screen, with no adjustment needed.
+    constexpr double kActiveHLo = 9.5 / 64.0;
+    constexpr double kActiveHHi = 61.5 / 64.0;
     constexpr double kActiveVLo = 25.0 / 312.5; // the vertical interval's blanked lines
     constexpr double kActiveVHi = 1.0;
     const double crop_h = 0.5 * overscan_ * (kActiveHHi - kActiveHLo);
