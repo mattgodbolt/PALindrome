@@ -18,7 +18,10 @@ analog machine, not a DSP textbook. The current state:
   PAL-D channel — burst-locked crystal, PAL-switch ident, 1H comb), and paints the
   beam onto a phosphor screen modelled as an analog set — a rotated deflection
   yoke (straight scanlines), a Gaussian beam spot, and an electron gun whose
-  cutoff is set by the DC-restored black level.
+  cutoff is set by the DC-restored black level. The defaults are
+  period-faithful: tube gamma 2.6, overscan framing, EHT sag and beam-current
+  limiting under load, an ident-driven colour killer, an APC that pulls the
+  crystal — with the modern conveniences kept behind flags.
   Interlace falls out of the half-line field offset; `--frame-stride` dumps a
   per-field PNG sequence.
 - **`tools/inspect_capture.py`** — fast capture QC: predicts whether a clip is
@@ -117,15 +120,36 @@ flowchart TD
 
     VIS -->|envelope| SEP["SyncSeparator<br/>AGC + slice → 1-bit sync"]
     VIS -->|picture rail| SCR
-    VIS -->|picture rail| CH["ChromaDecoder (colour)<br/>4.43 MHz band-pass → crystal demod →<br/>per-line burst rotation + PAL switch →<br/>1H comb → Y/U/V"]
+    VIS -->|picture rail| CH["ChromaDecoder (colour)<br/>4.43 MHz band-pass → crystal demod<br/>(APC pulls the crystal) →<br/>per-line burst rotation + PAL switch →<br/>ident → colour killer → 1H comb → Y/U/V"]
     SEP -->|sync bit| HS["HorizontalSweep<br/>pulse-width gate + AFC flywheel<br/>→ h_phase, line_start"]
     SEP -->|sync bit| VS["VerticalSync<br/>integrator + field flywheel<br/>→ v_phase, field_start"]
     HS -->|timing rail| CH
-    HS -->|timing rail| SCR["Screen (CRT)<br/>gun drive (DC-restored black) →<br/>RGB matrix + yoke shear + Gaussian splat →<br/>phosphor decay → frame"]
+    HS -->|timing rail| SCR["Screen (CRT)<br/>gun drive (DC-restored black, gamma 2.6) →<br/>RGB matrix + yoke shear + Gaussian splat →<br/>beam load feeds back: EHT sag,<br/>line pull, beam-current limiter →<br/>phosphor decay → frame"]
     VS -->|timing rail| SCR
     CH -->|Y/U/V| SCR
-    SCR --> PNG["PNG / per-field sequence"]
+    SCR --> PNG["readout camera encode →<br/>PNG / per-field sequence"]
 ```
+
+The TLAs, for anyone whose shelf lacks a 1980s TV service manual:
+
+- **IF** — intermediate frequency: the SDRs capture the whole modulated channel
+  at a low centre frequency, exactly what a set's tuner hands its IF strip.
+- **AGC** — automatic gain control: levels the received signal so the rest of
+  the chain sees a constant amplitude regardless of signal strength.
+- **APC** — automatic phase control: the burst phase detector that pulls the
+  4.43 MHz reference (here, the crystal itself) into lock with the colourburst.
+- **ACC** — automatic colour control: gain levelling for the chroma path,
+  referenced to the burst, so saturation doesn't ride the signal strength.
+- **ident** — the 7.8 kHz half-line-rate component of the swinging burst that
+  tells the decoder which PAL line phase it's on; doubles as the colour
+  killer's "this really is PAL" verdict.
+- **1H** — one horizontal line period (64 µs): the "1H delay line" is the glass
+  block that delays chroma exactly one line so adjacent lines can be averaged.
+- **EHT** — extra-high tension: the final-anode supply (~25 kV) that
+  accelerates the beam into the phosphor. It's poorly regulated, so beam
+  current loads it down — the raster breathes on bright scenes.
+- **NCO** — numerically controlled oscillator: the digital stand-in for an
+  oscillator (here, the crystal the APC pulls).
 
 Every stage is a streaming block (`prepare` / `process(span)→span`, state carried
 across calls), so the output is independent of how the input is chunked — a
@@ -142,7 +166,8 @@ that keeps the 4.43 MHz subcarrier below ~0.7·Nyquist — RX888 32 MS/s → /2,
 AirSpy 20 MS/s → /1; pass a number to override), `--carrier`, `--cutoff`,
 `--sync-cutoff` (the narrow low-pass on the sync-detection branch), and the CRT
 knobs `--persistence` (phosphor decay, in field periods), `--beam-sigma`
-(beam-spot vertical size, in rows), `--gamma` (the electron-gun curve, default
+(beam-spot size, in scanline pitches; `--beam-sigma-x` sets the horizontal
+size separately, in output columns), `--gamma` (the electron-gun curve, default
 2.6 — a real tube), `--readout-gamma` (the "camera" between the phosphor and
 the PNG: the framebuffer is linear light, so the readout encodes it for a
 display that will decode at ~2.2; `1` writes raw linear light, the old
@@ -156,7 +181,7 @@ relied on to keep their left edge on screen), and
 `--frame-stride` (write a PNG every Nth field as `<stem>_NNNN.png` instead of a
 single image). PNGs are encoded fast (uncompressed) rather than small — this is a
 research tool that throws most of them away. The old default look is exactly
-`--gamma 1.5 --overscan -1 --readout-gamma 1`.
+`--gamma 1.5 --overscan -1 --readout-gamma 1 --eht-sag 0 --line-pull 0 --bcl 0`.
 
 The set protects itself, too: `--bcl` (default 0.7) is the beam-current
 limiter — when the average beam load exceeds it, the set pulls its own
@@ -236,6 +261,8 @@ second after lock, the saturation-control time constant of a real set. A
 burst-free transmission (or a source that suppresses its colourburst) decodes
 as clean monochrome. `--no-killer` disables it (the old paint-anything
 behaviour); `render` prints the killer gate state with the colour diagnostics.
+(For a game that deliberately defeated this circuit — by attacking the ident's
+parity rather than the burst — see `docs/Firetrack_BW_Trick.md`.)
 Note for the current sub-second corpus clips: the switch-on ramp spans most of
 the clip, so the saturation visibly swells through a looped playback (and
 snaps at the loop seam) — that's the power-on behaviour, not noise, and it
@@ -260,9 +287,9 @@ tell you whether the sync chain is healthy.
 ### `tools/tune.py` — dialling the knobs
 
 `tools/tune.py corpus/wb3_airspy` serves a web page with a slider for every
-decode/CRT/colour knob (envelope cutoff, sync LP, persistence, beam sigma, gun
-gamma, the horizontal/vertical hold PI loops, and the colour controls —
-colour on/off, saturation, contrast, burst gate, retrace blanking, 1H comb) plus
+decode/CRT/colour knob — from the envelope cutoff through the hold loops, the
+CRT (gamma, overscan, centring, beam spot) and the colour controls to the era
+physics (EHT sag, beam limiter, killer, APC pull) — plus
 a frame scrubber and play button. Moving a slider re-runs `render` and the page scrubs the per-field PNG
 sequence it produces. It binds `0.0.0.0` by default so you can drive it from
 another machine (`--host`, `--port`, `--binary` to override); it's
@@ -290,26 +317,21 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
   by forming the analytic signal (`demod::Hilbert`) before the envelope, so a
   single demodulator serves both radios.
 - **Optimisation.** ✅ The hot paths are profiled and tuned — LUTs for the
-  screen's per-sample `exp`, an across-output FIR microkernel, fast PNG encode,
-  auto-decimation. Parked next: a fast gun-gamma `pow` (the last per-sample
-  transcendental, on the critical path to real-time) and a `std::simd` rewrite of
-  the DSP loops (see the SIMD note).
+  screen's per-sample `exp` and the gun-gamma `pow`, an across-output FIR
+  microkernel, fast PNG encode, auto-decimation. Parked next: a `std::simd`
+  rewrite of the DSP loops (see the SIMD note).
 - **Multi-threading.** ✅ `render` runs a 3-stage stdexec pipeline (front-end |
   decode | screen), default-on, bit-identical to serial, bounded-memory
-  (`--no-threads` for serial). It's screen-stage-bound today; real-time wants the
-  screen stage shrunk (the gun-`pow` LUT) and/or its scatter banded across threads.
+  (`--no-threads` for serial). The colour decode is front-end-bound today (the
+  analytic signal + FIR low-pass), so further speed lives in the DSP loops, not
+  the screen.
 - **Live mode.** The whole point: decode a live RF stream off the SDR, not just
   finite corpus files. The graph is bounded-memory and block-driven for exactly
   this.
 
 ## Backlog
 
-Smaller things noted in passing, not yet scheduled:
-
-- **Fast gun-gamma `pow`.** With `--gamma ≠ 1` the electron-gun curve calls
-  `std::pow` per sample in the screen deposit (~0.4s of a colour render) — the
-  last un-LUT'd transcendental and the threaded pipeline's bottleneck stage. LUT
-  or fast-`pow` it (its own PR); it's what unlocks real-time for `render`.
+Remaining workpieces are tracked as GitHub issues on this repo.
 
 ## Notes
 
