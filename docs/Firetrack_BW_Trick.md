@@ -149,6 +149,14 @@ Hardware Guide for the BBC Microcomputer*, chapter 3):
 So: the subcarrier is a free-running crystal, and the PAL V-switch - the
 thing that alternates the burst's swing - **toggles once per CRTC hsync**.
 
+(A provenance aside, from stardot t=15045: the Beeb's encoder circuit closely
+follows a design Richard Russell devised at the BBC's Designs Department in
+1976 and, by his account and a colleague's recollection, shared with Acorn.
+The thread also notes that two resistors in the Acorn version compensate for
+the NAND gates that gate the subcarrier idling high, rather than mid-level,
+when the chroma is disabled - the burst gating is built from exactly this
+kind of switched-gate plumbing.)
+
 Now stretch one line per frame:
 
 - The frame contains an **even** number of hsyncs (312) spread over an **odd**
@@ -196,11 +204,18 @@ invisible to everything except the ident path - which is the whole trick.
 
 ## Would it work on every TV?
 
-No direct period evidence either way was found (the most likely sources are
-two stardot.org.uk threads - [t=637](https://stardot.org.uk/forums/viewtopic.php?t=637),
-[t=15045](https://stardot.org.uk/forums/viewtopic.php?t=15045) - which are
-members-only and not web-archived, so they remain unread; the game's
-instructions carry no compatibility caveat). But the mechanism says exactly which TV-side
+No direct period evidence either way has been found. The two most promising
+stardot.org.uk threads have now been read (with a member's help) and neither
+discusses the trick's reliability:
+[t=637](https://stardot.org.uk/forums/viewtopic.php?t=637) is about the
+sideways-RAM enhanced version (extra worlds, and the hold-E-while-loading
+trick to enable them), though it does reproduce the game manual's control
+table, confirming the F5 = B&W assignment and the hold-as-you-start
+instruction from the primary source;
+[t=15045](https://stardot.org.uk/forums/viewtopic.php?t=15045) concerns the
+encoder's design provenance (see below) rather than its behaviour on
+different sets. The game's instructions carry no compatibility caveat. So
+the question stays open - the strongest candidate sources are now checked. But the mechanism says exactly which TV-side
 parameters decide the outcome, and they are all in the **ident/killer path**,
 not the burst gate or ACC, since the burst itself is normal:
 
@@ -250,10 +265,12 @@ black-and-white, and the fast-ident set that shrugs it off.
 - [Nick Pelling interview (beebgames.com)](https://www.beebgames.com/interviews/nick-pelling/):
   calls Firetrack his best technical achievement; silent on the B&W mode
 - stardot.org.uk threads [t=637](https://stardot.org.uk/forums/viewtopic.php?t=637)
-  ("Firetrack enhanced version") and
-  [t=15045](https://stardot.org.uk/forums/viewtopic.php?t=15045) - the forum
-  is up but both threads are members-only and not web-archived; the
-  TV-dependence evidence remains unobtained
+  ("Firetrack enhanced version": the SWR extra worlds, plus the manual's
+  control table confirming F5 = B&W) and
+  [t=15045](https://stardot.org.uk/forums/viewtopic.php?t=15045) ("Beeb PAL
+  encoder mystery solved?": the encoder's 1976 BBC Designs Department
+  provenance) - members-only, read 2026-06-09; neither bears on
+  TV-dependence, which remains unevidenced either way
 - [BeebWiki: Cycle stretching](https://beebwiki.mdfs.net/Cycle_stretching) and
   the [jsbeeb timing notes](https://xania.org/201405/jsbeeb-getting-the-timings-right-cpu) -
   the 1 MHz-bus stretch behaviour behind the calibration analysis
