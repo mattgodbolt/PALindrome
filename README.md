@@ -5,41 +5,41 @@ Convert to and from PAL with a variety of techniques to try and capture that aut
 ## Where we're at
 
 PALindrome ingests a lossless RF/IQ master of a real PAL source (captured off a
-console via an SDR) and decodes it the way a 1980s television would — as an
+console via an SDR) and decodes it the way a 1980s television would - as an
 analog machine, not a DSP textbook. The current state:
 
-- **Capture** from an RX888 or an AirSpy R2 — both real-sampled IF (the AirSpy
+- **Capture** from an RX888 or an AirSpy R2 - both real-sampled IF (the AirSpy
   in its raw 20 MS/s mode), saved as SigMF masters under `corpus/`. Both decode
   through the same pipeline.
-- **`demod`** — AM-demodulates the vision carrier to a WAV for inspection.
-- **`render`** — a **working sync-locked decode, in colour** (`--colour`) or
+- **`demod`** - AM-demodulates the vision carrier to a WAV for inspection.
+- **`render`** - a **working sync-locked decode, in colour** (`--colour`) or
   monochrome: a streaming video graph that separates sync, locks horizontal and
   vertical timebases with flywheel PLLs, decodes the PAL chroma (a faithful
-  PAL-D channel — burst-locked crystal, PAL-switch ident, 1H comb), and paints the
-  beam onto a phosphor screen modelled as an analog set — a rotated deflection
+  PAL-D channel - burst-locked crystal, PAL-switch ident, 1H comb), and paints the
+  beam onto a phosphor screen modelled as an analog set - a rotated deflection
   yoke (straight scanlines), a Gaussian beam spot, and an electron gun whose
   cutoff is set by the DC-restored black level. The defaults are
   period-faithful: tube gamma 2.6, overscan framing, EHT sag and beam-current
   limiting under load, an ident-driven colour killer, an APC that pulls the
-  crystal — with the modern conveniences kept behind flags.
+  crystal - with the modern conveniences kept behind flags.
   Interlace falls out of the half-line field offset; `--frame-stride` dumps a
   per-field PNG sequence.
-- **`tools/inspect_capture.py`** — fast capture QC: predicts whether a clip is
+- **`tools/inspect_capture.py`** - fast capture QC: predicts whether a clip is
   decodable (carrier/sideband reach, line-comb SNR) and flags near-carrier ghost
   spurs, before you sink time into a full decode.
-- **`tools/tune.py`** — a web UI (slider per knob, frame scrubber) that shells
+- **`tools/tune.py`** - a web UI (slider per knob, frame scrubber) that shells
   out to `render` so you can dial the decode/CRT/colour knobs in live. It lives
-  outside the C++ core — the decoder stays a plain CLI with no webserver in it.
-- **`sync`** — a diagnostic that slices the composite and reports the pulse-width
+  outside the C++ core - the decoder stays a plain CLI with no webserver in it.
+- **`sync`** - a diagnostic that slices the composite and reports the pulse-width
   distribution, line-sync jitter, vertical field structure, and the locks the
   timebases settle on. This is the microscope the decode was built with.
 
-The picture is a clean, recognisable image — true blacks, straight geometry,
-filled scanlines — and **in colour** (`render --colour`): a PAL-D chroma channel
+The picture is a clean, recognisable image - true blacks, straight geometry,
+filled scanlines - and **in colour** (`render --colour`): a PAL-D chroma channel
 recovers U/V off the burst and drives an RGB phosphor triad. Levels are period-
 correct (an IF-AGC white reference, ACC chroma referenced to the luma, retrace
 blanking), and the RGB matrix matches the TDA3561A datasheet. Both SDRs decode
-colour with the same default burst gate — the AirSpy's old per-SDR skew was a
+colour with the same default burst gate - the AirSpy's old per-SDR skew was a
 10 MS/s near-Nyquist artifact, gone now it captures the channel at 20 MS/s.
 
 ## Capturing reference clips
@@ -52,7 +52,7 @@ git LFS.
 
 ### RX888 (real-sampled IF)
 
-`tools/capture_corpus.py` drives `rx888_stream` (the matt-main fork — see below).
+`tools/capture_corpus.py` drives `rx888_stream` (the matt-main fork - see below).
 Real samples, Nyquist `fs/2`; at 32 MSps the whole stack (vision IF ~3.6 MHz,
 chroma +4.43, sound +6.0) fits with room to spare. Carriers are absolute IF bins
 in the `rx888:*` metadata.
@@ -74,12 +74,12 @@ front-end-heavy gain. Flags: `--sample-rate`, `--frequency`, `--vhf-lna`,
 
 `tools/capture_airspy.py` drives `airspy_rx` (stock firmware, no FX3 juggling) in
 its **raw real** mode (`-t 3`): the chip's untouched ADC stream, real-sampled at
-**20 MS/s** — twice the 10 MS/s of the firmware's complex-baseband mode, and
+**20 MS/s** - twice the 10 MS/s of the firmware's complex-baseband mode, and
 before its decimation filter. The extra rate is what makes PAL **colour**
 decodable: at 10 MS/s the 4.43 MHz subcarrier sits at 0.886·Nyquist (its upper
 sideband clips, the 2·fSC demod image folds into the chroma); at 20 MS/s it's
 comfortably mid-band. Real samples carry a mirror of the carrier at minus-its-
-frequency, so we tune the vision carrier to ~3 MHz IF (chroma ~7.4, sound ~9 —
+frequency, so we tune the vision carrier to ~3 MHz IF (chroma ~7.4, sound ~9 -
 the whole channel fits below the 10 MHz Nyquist) where the mirror clears the
 chroma low-pass, and the decoder forms the analytic signal to delete it. Same
 real-IF convention as the RX888: carriers are absolute IF bins in `airspy:*`.
@@ -98,13 +98,13 @@ Needs `airspy_rx` (from `airspy-tools`) on `$PATH` and `python3` + `numpy` (+
 **Gain 9, not higher.** Counter-intuitively, a front-end-heavy gain (≥13)
 overdrives the AirSpy into an intermodulation product: a coherent, video-bearing
 *ghost* of the vision carrier ~fs/70 away, ~17 dB down. It beats into the AM
-envelope as drifting vertical bars and renders the decode unrecognisable — all
+envelope as drifting vertical bars and renders the decode unrecognisable - all
 while the ADC clip percentage reads 0%. `inspect_capture.py` flags it; `g9`
 clears it with the best line-comb SNR.
 
 ## Decoding
 
-### `render` — the picture
+### `render` - the picture
 
 `palindrome render corpus/wb3 -o /tmp/wb3.png` decodes a recording to a PNG.
 The signal flows through a streaming, branching video graph modelled on the
@@ -132,27 +132,27 @@ flowchart TD
 
 The TLAs, for anyone whose shelf lacks a 1980s TV service manual:
 
-- **IF** — intermediate frequency: the SDRs capture the whole modulated channel
+- **IF** - intermediate frequency: the SDRs capture the whole modulated channel
   at a low centre frequency, exactly what a set's tuner hands its IF strip.
-- **AGC** — automatic gain control: levels the received signal so the rest of
+- **AGC** - automatic gain control: levels the received signal so the rest of
   the chain sees a constant amplitude regardless of signal strength.
-- **APC** — automatic phase control: the burst phase detector that pulls the
+- **APC** - automatic phase control: the burst phase detector that pulls the
   4.43 MHz reference (here, the crystal itself) into lock with the colourburst.
-- **ACC** — automatic colour control: gain levelling for the chroma path,
+- **ACC** - automatic colour control: gain levelling for the chroma path,
   referenced to the burst, so saturation doesn't ride the signal strength.
-- **ident** — the 7.8 kHz half-line-rate component of the swinging burst that
+- **ident** - the 7.8 kHz half-line-rate component of the swinging burst that
   tells the decoder which PAL line phase it's on; doubles as the colour
   killer's "this really is PAL" verdict.
-- **1H** — one horizontal line period (64 µs): the "1H delay line" is the glass
+- **1H** - one horizontal line period (64 µs): the "1H delay line" is the glass
   block that delays chroma exactly one line so adjacent lines can be averaged.
-- **EHT** — extra-high tension: the final-anode supply (~25 kV) that
+- **EHT** - extra-high tension: the final-anode supply (~25 kV) that
   accelerates the beam into the phosphor. It's poorly regulated, so beam
-  current loads it down — the raster breathes on bright scenes.
-- **NCO** — numerically controlled oscillator: the digital stand-in for an
+  current loads it down - the raster breathes on bright scenes.
+- **NCO** - numerically controlled oscillator: the digital stand-in for an
   oscillator (here, the crystal the APC pulls).
 
 Every stage is a streaming block (`prepare` / `process(span)→span`, state carried
-across calls), so the output is independent of how the input is chunked — a
+across calls), so the output is independent of how the input is chunked - a
 tested invariant, because the target is live RF, not finite files. The whole
 graph is a `video::Decoder` composite node. `render` pumps it 64K-sample blocks
 and, by default, runs the stages as a **threaded pipeline**: the front-end,
@@ -162,29 +162,29 @@ shape). It's built on stdexec (`std::execution` / P2300) FIFO stages and is
 bit-identical to the serial path; `--no-threads` forces serial decode.
 
 Flags: `--width`, `--height`, `--decimate` (`0` = auto: the largest decimation
-that keeps the 4.43 MHz subcarrier below ~0.7·Nyquist — RX888 32 MS/s → /2,
+that keeps the 4.43 MHz subcarrier below ~0.7·Nyquist - RX888 32 MS/s → /2,
 AirSpy 20 MS/s → /1; pass a number to override), `--carrier`, `--cutoff`,
 `--sync-cutoff` (the narrow low-pass on the sync-detection branch), and the CRT
 knobs `--persistence` (phosphor decay, in field periods), `--beam-sigma`
 (beam-spot size, in scanline pitches; `--beam-sigma-x` sets the horizontal
 size separately, in output columns), `--gamma` (the electron-gun curve, default
-2.6 — a real tube), `--readout-gamma` (the "camera" between the phosphor and
+2.6 - a real tube), `--readout-gamma` (the "camera" between the phosphor and
 the PNG: the framebuffer is linear light, so the readout encodes it for a
 display that will decode at ~2.2; `1` writes raw linear light, the old
 double-gamma'd look), `--overscan` (default 0.06: the nominal active picture,
-cropped that fraction behind the bezel, fills the frame as on a real set —
+cropped that fraction behind the bezel, fills the frame as on a real set -
 blanking lives off-screen; negative restores the old full-scan framing),
-`--h-shift`/`--v-shift` (the centring adjustments — internal service pots on
+`--h-shift`/`--v-shift` (the centring adjustments - internal service pots on
 a real set, so the factory-default framing should be right without them: the
 default visible window starts ~1 µs before active video, the framing consoles
 relied on to keep their left edge on screen), and
 `--frame-stride` (write a PNG every Nth field as `<stem>_NNNN.png` instead of a
-single image). PNGs are encoded fast (uncompressed) rather than small — this is a
+single image). PNGs are encoded fast (uncompressed) rather than small - this is a
 research tool that throws most of them away. The old default look is exactly
 `--gamma 1.5 --overscan -1 --readout-gamma 1 --eht-sag 0 --line-pull 0 --bcl 0`.
 
 The set protects itself, too: `--bcl` (default 0.7) is the beam-current
-limiter — when the average beam load exceeds it, the set pulls its own
+limiter - when the average beam load exceeds it, the set pulls its own
 contrast down until the load settles at the threshold, so a sustained bright
 scene dims rather than cooking the tube (0 = an unprotected set). The
 companion peak-white limiter needs the absolute level reference of the gated
@@ -192,7 +192,7 @@ AGC and lands with it.
 
 The set is also load-aware: the beam is the EHT supply's load, so a bright
 picture sags the final-anode voltage (`--eht-sag`, default 0.06 at a sustained
-full-white load, time constant `--eht-tc` fields) and the raster breathes —
+full-white load, time constant `--eht-tc` fields) and the raster breathes -
 grows about its centre (deflection goes as 1/sqrt(EHT)), dims slightly (light
 is V times I) and defocuses (`--eht-focus`: spot growth at full sag) on bright
 scenes, recovering on dark ones. Separately `--line-pull` models the
@@ -206,29 +206,29 @@ The horizontal hold is a true dual-time-constant flywheel, as a TDA2593-era
 set's line oscillator: fast acquisition gains pull in until a coincidence
 detector sees the sync edges landing where the oscillator predicts, then a
 deliberately slow locked loop (~250 Hz bandwidth) takes over, so single-edge
-noise barely moves the line — at the price of the authentic slow-tracking
+noise barely moves the line - at the price of the authentic slow-tracking
 artifacts (flagging on phase steps, gradual recentring). `--h-kp`/`--h-ki` set
 the locked gains, `--h-acq-kp`/`--h-acq-ki` the acquisition ones; passing
 `--h-kp 1 --h-acq-kp 1 --h-acq-ki 1e-5` restores the old snap-to-every-edge
 direct triggering exactly.
 
 For colour, add `--colour`: it decodes the chroma and writes an RGB PNG.
-`--saturation` is the chroma gain (a fraction of the luma white — the colour pot)
+`--saturation` is the chroma gain (a fraction of the luma white - the colour pot)
 and `--contrast` the white point; `--burst-lo`/`--burst-hi` place the burst gate
 and `--h-blank` the retrace blanking, as h_phase windows (the defaults suit both
-the RX888 and the AirSpy raw 20 MS/s capture — a bare `--colour` decodes either).
+the RX888 and the AirSpy raw 20 MS/s capture - a bare `--colour` decodes either).
 `--uv-bandwidth` and `--band-lo`/`--band-hi` size the post-demod U/V low-pass and
 the chroma band-pass. `--comb-mode` chooses where the 1H line-pair comb sits,
 spanning the eras of PAL hardware: `off` (a "PAL-S" simple set, no delay line),
-`delay-line` (the PAL-D comb on the modulated chroma — sum→U, difference→V —
+`delay-line` (the PAL-D comb on the modulated chroma - sum→U, difference→V -
 before demodulation, as the TDA3561A's external glass delay line does, but with
 the delay adapting to the measured line length, a convenience no glass block
 had), `glass` (the same comb at the real geometry: a fixed 283.5-subcarrier-
-cycle / 63.943 µs block, so a source off the nominal line rate — the SMS corpus
-runs ~0.35 µs long — pairs chroma displaced along the line: colour edges ghost
+cycle / 63.943 µs block, so a source off the nominal line rate - the SMS corpus
+runs ~0.35 µs long - pairs chroma displaced along the line: colour edges ghost
 and shimmer with extra cross-colour, the off-spec misregistration of a real
 PAL-D set), or `post` (the default:
-demodulate first, then average the recovered baseband U/V — a DSP-era
+demodulate first, then average the recovered baseband U/V - a DSP-era
 convenience, robust to an off-nominal source line rate that the fixed glass
 geometry is not). `--no-delay-line` is an alias for `--comb-mode off`. The subcarrier is a fixed 4.43361875 MHz crystal (override with
 `--subcarrier`); the per-line burst rotation tracks the source's offset from it,
@@ -237,38 +237,38 @@ that APC reference locks: 10 is a modern fast loop that chases per-line drift, s
 the comb modes look alike; raising it toward a period-faithful slow reference
 stops the loop chasing, and `delay-line`'s structural sum/difference then
 suppresses Hanover bars that `post` (de-rotating each line against a now-lagging
-reference) can't — the experiment that makes the comb placement matter. Range
+reference) can't - the experiment that makes the comb placement matter. Range
 [2, 100]: below ~2 the loop tracks the ±45° burst swing, above ~100 it can't pull
 in an off-nominal source.
 
 The APC also **pulls the crystal**, as a real burst phase detector pulls the
 4.43 MHz crystal itself: the per-line drift of the burst reference is folded
-into the NCO, clamped to a catching range (`--apc-catch`, default 500 Hz —
-TDA3561A spec 500–700 Hz; `--apc-pull` sets the loop rate). A source inside
+into the NCO, clamped to a catching range (`--apc-catch`, default 500 Hz -
+TDA3561A spec 500-700 Hz; `--apc-pull` sets the loop rate). A source inside
 the range is tracked exactly (no intra-line hue ramp, and `render` reports the
-measured pull — both SDRs agree the SMS crystal sits ~3 Hz low); a source
+measured pull - both SDRs agree the SMS crystal sits ~3 Hz low); a source
 beyond it pins at the rail, the reference can't track the residual, and the
-killer drops the colour — the authentic off-spec failure, where the old
+killer drops the colour - the authentic off-spec failure, where the old
 fixed-crystal + per-line-rotation scheme would lock anything. `--apc-catch 0`
 restores the fixed crystal exactly.
 
 A **colour killer** gates the chroma, as the TDA3561A's ident/killer does: the
 verdict is the ident signal (does the burst's ±45° swing sense agree with the
-PAL-switch bistable line after line — something noise can't fake), the mute is
+PAL-switch bistable line after line - something noise can't fake), the mute is
 hard (no identification → a grey picture, never noise painted as colour), and
-switch-ON is deliberately slow — colour pops in and fades up over ~a tenth of a
+switch-ON is deliberately slow - colour pops in and fades up over ~a tenth of a
 second after lock, the saturation-control time constant of a real set. A
 burst-free transmission (or a source that suppresses its colourburst) decodes
 as clean monochrome. `--no-killer` disables it (the old paint-anything
 behaviour); `render` prints the killer gate state with the colour diagnostics.
-(For a game that deliberately defeated this circuit — by attacking the ident's
-parity rather than the burst — see `docs/Firetrack_BW_Trick.md`.)
+(For a game that deliberately defeated this circuit - by attacking the ident's
+parity rather than the burst - see `docs/Firetrack_BW_Trick.md`.)
 Note for the current sub-second corpus clips: the switch-on ramp spans most of
 the clip, so the saturation visibly swells through a looped playback (and
-snaps at the loop seam) — that's the power-on behaviour, not noise, and it
+snaps at the loop seam) - that's the power-on behaviour, not noise, and it
 disappears into the first fraction of a second once captures are longer.
 
-### `demod` — composite envelope to WAV (inspection)
+### `demod` - composite envelope to WAV (inspection)
 
 `palindrome demod corpus/wb3 -o /tmp/wb3.wav` AM-demodulates the vision carrier
 and writes the recovered composite envelope as a WAV (peak-normalised,
@@ -276,20 +276,20 @@ sync-to-the-bottom, slowed so it opens at audio rates in Audacity). A
 debugging/inspection tool. Flags: `--carrier`, `--cutoff`, `--decimate`,
 `--slowdown`.
 
-### `sync` — the timebase microscope
+### `sync` - the timebase microscope
 
 `palindrome sync corpus/wb3` slices the composite and reports the pulse-width
 histogram (line-sync vs the vertical-interval broad/equalising pulses), the
 line-sync spacing jitter, the vertical field structure (broad-pulse runs, field
-period), and the horizontal/vertical locks. No picture — just the numbers that
+period), and the horizontal/vertical locks. No picture - just the numbers that
 tell you whether the sync chain is healthy.
 
-### `tools/tune.py` — dialling the knobs
+### `tools/tune.py` - dialling the knobs
 
 `tools/tune.py corpus/wb3_airspy` serves a web page with a slider for every
-decode/CRT/colour knob — from the envelope cutoff through the hold loops, the
+decode/CRT/colour knob - from the envelope cutoff through the hold loops, the
 CRT (gamma, overscan, centring, beam spot) and the colour controls to the era
-physics (EHT sag, beam limiter, killer, APC pull) — plus
+physics (EHT sag, beam limiter, killer, APC pull) - plus
 a frame scrubber and play button. Moving a slider re-runs `render` and the page scrubs the per-field PNG
 sequence it produces. It binds `0.0.0.0` by default so you can drive it from
 another machine (`--host`, `--port`, `--binary` to override); it's
@@ -302,21 +302,21 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
   the rotated deflection yoke (straight scanlines), a Gaussian beam splat (filled
   scanlines), the electron-gun gamma, per-field snapshots, and a web-slider tuner
   (`tools/tune.py`) for dialling the knobs in.
-- **Colour — the PAL bit.** ✅ Done (`render --colour`): a fixed 4.43 MHz crystal
+- **Colour - the PAL bit.** ✅ Done (`render --colour`): a fixed 4.43 MHz crystal
   LO, per-line back-porch burst measurement, the class-aware PAL ± line rotation
   with a self-resolving V-switch (bistable + ident), the 1H delay-line comb, ACC
   chroma referenced to the luma white, an IF-AGC white reference, retrace
-  blanking, and the RGB phosphor matrix — a faithful PAL-D path matching the
+  blanking, and the RGB phosphor matrix - a faithful PAL-D path matching the
   TDA3561A datasheet (`docs/TDA3561A.md`). Both SDRs decode with the same default
   burst gate. The AirSpy used to need a hand-tuned gate because at 10 MS/s the
-  4.43 MHz chroma sat at 0.886·Nyquist — its upper sideband clipped and the
+  4.43 MHz chroma sat at 0.886·Nyquist - its upper sideband clipped and the
   front-end group delay there was *dispersive*, shifting the burst ~2 µs vs the
   sync edge. Capturing the raw ADC at 20 MS/s (vision ~3 MHz, chroma mid-band)
   removed both: the chroma SNR matches the RX888's and the skew is gone. The one
-  wrinkle of real samples — the carrier's negative-frequency mirror — is deleted
+  wrinkle of real samples - the carrier's negative-frequency mirror - is deleted
   by forming the analytic signal (`demod::Hilbert`) before the envelope, so a
   single demodulator serves both radios.
-- **Optimisation.** ✅ The hot paths are profiled and tuned — LUTs for the
+- **Optimisation.** ✅ The hot paths are profiled and tuned - LUTs for the
   screen's per-sample `exp` and the gun-gamma `pow`, an across-output FIR
   microkernel, fast PNG encode, auto-decimation. Parked next: a `std::simd`
   rewrite of the DSP loops (see the SIMD note).
@@ -341,10 +341,10 @@ All third-party deps (Catch2, nlohmann_json, Lyra, lodepng, and NVIDIA stdexec
 for the threaded render pipeline) come in via CPM, pinned by tag or commit, no
 system packages required. To prefer system-installed
 copies (find_package first, fall back to CPM fetch) configure with
-`-DCPM_USE_LOCAL_PACKAGES=ON` — that's CPM's own switch, and we use it directly
+`-DCPM_USE_LOCAL_PACKAGES=ON` - that's CPM's own switch, and we use it directly
 rather than wrapping it.
 
-### SIMD — non-standard now, `std::simd` later
+### SIMD - non-standard now, `std::simd` later
 
 Two DSP hot paths are hand-vectorised. Both are deliberately non-portable
 stop-gaps, meant to become `std::simd` once the toolchain is there:
@@ -354,14 +354,14 @@ stop-gaps, meant to become `std::simd` once the toolchain is there:
   named vector accumulators across the tap loop, hiding the FMA-latency chain a
   single-accumulator dot product stalls on. It's guarded by
   `#if defined(__AVX2__) && defined(__FMA__)`; without those (non-x86, or no
-  AVX2) the scalar `dsp::convolve` — a plain `std::fmaf` dot — is the fallback.
+  AVX2) the scalar `dsp::convolve` - a plain `std::fmaf` dot - is the fallback.
   Both sum taps in natural order, so the intrinsic and scalar paths are
   bit-identical and the result stays chunking-invariant.
 - **The AM envelope (`demod::envelope_magnitude`)** uses a per-function
   `[[gnu::optimize("-fno-math-errno", "-fno-trapping-math")]]` so the `sqrt`
   lowers to a packed `vsqrtps` without the errno/trap guards. ODR-safe
   (anonymous-namespace, single definition) and the precision loss is bounded and
-  measured — but `[[gnu::optimize]]` is a GCC debug-only feature.
+  measured - but `[[gnu::optimize]]` is a GCC debug-only feature.
 
 x86-only intrinsics and a GCC-only attribute are both where we don't want to
 stay. Plan, when we pick it up: rewrite both in `std::simd` so the lanes are
@@ -372,14 +372,14 @@ Blockers found (2026-05): `std::simd`'s `convolve` is validated working on GCC
 on trunk (gated behind GSI-HPC's `VIR_PATCH_MATH`); libc++ ships no `<simd>` at
 all, so Clang has no path. The magnitude's `sqrt` would stay scalar (or
 `std::experimental::simd`) until `simd.math` lands. Also needs GCC 16+ in the
-build, which Ubuntu 25.10 / the toolchain PPA don't package — a Compiler
+build, which Ubuntu 25.10 / the toolchain PPA don't package - a Compiler
 Explorer tarball is the likely route.
 
 **Direction for future DSP perf: reach for `std::simd`, not more intrinsics.**
 `std::simd` is the target; the hand-AVX2 above is a stop-gap to *delete*, so don't
 extend it for modest wins. When the toolchain (GCC 16+) lands, the natural sweep,
 easiest first: the **`demod::Hilbert` deinterleave/interleave glue** (pure data
-movement — shuffle/permute, no `simd.math`, so it ports immediately), then
+movement - shuffle/permute, no `simd.math`, so it ports immediately), then
 `convolve_strip`, then `envelope_magnitude` (its `sqrt` waits on `simd.math`). The
 Hilbert glue (~⅓ of that already-fast stage) was prototyped as hand-AVX2 and
-deliberately *not* landed for exactly this reason — it's a `std::simd` job.
+deliberately *not* landed for exactly this reason - it's a `std::simd` job.
