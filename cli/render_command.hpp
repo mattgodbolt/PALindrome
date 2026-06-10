@@ -43,10 +43,17 @@ private:
   double bcl_tc_{0.5}; // BCL response, field periods
   double h_shift_{0.0}; // horizontal centring pot: + moves the picture right (h_phase units)
   double v_shift_{0.0}; // vertical centring pot: + moves the picture down (v_phase units)
+  // Levels: the front-end AGC scheme and the controls that hang off it.
+  // Defaults are PROVISIONAL, tuned so the under-modulated SMS corpus fills
+  // the range out of the box; level-set against more sources per issue #46
+  // (broadcast-standard modulation wants contrast ~1.0, saturation ~0.17).
+  std::string agc_mode_{"sync-tip"}; // "sync-tip" (absolute levels) | "adaptive" (legacy trackers)
+  double slice_depth_{0.08}; // sync slice below the AGC'd tip (sync-tip mode)
+  double pwl_{1.25}; // peak-white limiter ceiling, ×standard white drive (0 disables)
   // Colour decode (PAL-D chroma channel). Off => a grey render.
   bool colour_{false};
-  double saturation_{0.17}; // chroma gain (fraction of white reference)
-  double contrast_{0.85}; // readout white point (AGC-relative)
+  double saturation_{0.085}; // chroma gain (fraction of white reference)
+  double contrast_{1.6}; // the contrast pot: video gain pre-gamma (sync-tip mode)
   double h_blank_{0.16}; // retrace blanking end, h_phase
   double subcarrier_{0.0}; // subcarrier crystal Hz; 0 => textbook 4.43361875 MHz
   double uv_bandwidth_{0.0}; // post-demod U/V low-pass corner Hz; 0 => decoder default

@@ -41,10 +41,31 @@ struct ScreenConfig {
   // colour-difference signals into the matrix before the per-gun gamma.
   bool colour = false;
   double saturation = 1.0;
-  // Contrast: the readout white point, as a fraction of the AGC-tracked peak
-  // luma. 1.0 puts tracked white at full scale; lower dims, higher clips into
-  // white. The analog of the contrast pot in front of a set's IF AGC.
+  // Contrast: the video-amplifier gain ahead of the gun - the front-panel pot.
+  // With absolute levels (tracked_white = false) it scales the gun drive
+  // (pre-gamma) and the chroma with it; 1.0 maps a broadcast-standard
+  // full-white drive to the readout white point, higher pushes whites toward
+  // the peak-white limiter and clipping, exactly as turning the pot up does.
+  // In tracked_white mode it keeps its old meaning: the readout white point as
+  // a fraction of the tracked peak (the autocontrast's only remaining knob).
   double contrast = 1.0;
+  // Levels. The default is the period scheme: the front-end AGC holds the sync
+  // tip at 1.0, black is the clamped back porch, and WHITE IS GEOMETRY - System
+  // I puts blanking at 0.76 and peak white at 0.20 of the tip, so a standard
+  // full-white line drives the gun by a known 0.56 and the readout white point
+  // is a constant. A source that under-modulates (console RF modulators)
+  // renders dim, and the contrast pot - not an automatic - brings it back.
+  // tracked_white = true restores the modern convenience this replaced:
+  // fast-attack/slow-release peak trackers that stretch whatever arrives to
+  // full scale (an autocontrast no real set had).
+  bool tracked_white = false;
+  // Peak-white limiter (the TDA3561A's): when any gun's drive exceeds
+  // pwl_threshold × the standard white drive, the contrast is pulled down fast
+  // until it doesn't, recovering slowly when clear - and its engagement is
+  // delayed by one line, so a single bright line (an abrupt colour-to-white
+  // test pattern) never triggers it. Needs absolute levels: ignored when
+  // tracked_white (no absolute reference to limit against). 0 disables.
+  double pwl_threshold = 1.25;
   // Readout transfer: the "camera" between the phosphor and the PNG. The
   // framebuffer is linear light; a PNG viewed on an sRGB display gets the
   // monitor's ~2.2 decode applied, so an authentic tube gamma needs the
@@ -161,8 +182,9 @@ public:
   // Diagnostic: the per-unit EHT (1 = unloaded; sustained full white sags it
   // toward 1 - eht_sag).
   [[nodiscard]] double eht() const noexcept { return eht_; }
-  // Diagnostic: the combined video gain the limiters are applying (1 = none).
-  [[nodiscard]] double limiter_gain() const noexcept { return video_gain_; }
+  // Diagnostic: the combined gain the limiters are applying (1 = none). The
+  // contrast pot is excluded - this reports protection, not the user's setting.
+  [[nodiscard]] double limiter_gain() const noexcept { return bcl_gain_ * pwl_gain_; }
 
   // The frame as latched by the most recent FieldEvent::latch(): the phosphor
   // and white reference as they stood at that boundary, quantised now. Falls
@@ -177,12 +199,15 @@ private:
 
   ScreenConfig cfg_;
   std::size_t channels_; // 1 (grey) or 3 (RGB), from cfg_.colour
-  // IF-style AGC: a fast-attack, slow-release peak tracker on the luma gun drive,
-  // advanced every sample. It sets the readout white point the way a real set's
-  // IF AGC fixes the carrier-to-drive mapping — causal, no per-frame statistic.
-  double white_ref_ = 0.0; // tracked peak luma gun output (readout white)
-  double white_drive_ = 0.0; // tracked peak luma drive (chroma reference, pre-gamma)
-  double agc_release_; // per-sample release factor (multi-field time constant)
+  // The white references. Absolute mode (the default): both are constants from
+  // the System I geometry, set once in the ctor - the readout white point and
+  // the chroma reference never move with picture content. Tracked mode: a
+  // fast-attack, slow-release peak tracker on the luma gun drive, advanced
+  // every sample (the modern autocontrast the absolute scheme replaced).
+  bool tracking_; // cfg_.tracked_white (set in the ctor)
+  double white_ref_ = 0.0; // peak luma gun output mapped to readout white
+  double white_drive_ = 0.0; // peak luma drive (chroma reference, pre-gamma)
+  double agc_release_; // tracked mode: per-sample release factor (multi-field)
   double phosphor_gain_; // steady-state accumulation of a per-frame re-deposit
   // Phosphor framebuffer. The beam ADDS charge (no per-sample decay); the whole
   // buffer is faded by field_decay_ once per field, at the field boundary. This
@@ -271,16 +296,20 @@ private:
   double tilt_eff_ = 0.0;
   float bright_eff_ = 1.0f; // light ∝ V·I: the per-line EHT brightness factor
   // Beam-current limiting (see ScreenConfig): bcl_state_ smooths the per-line
-  // load and bcl_gain_ integrates against the threshold; video_gain_ scales
-  // the gun drive (and the chroma with it — it is the contrast control).
-  // (A peak-white limiter — the TDA3561A's one-line-delayed output ceiling —
-  // belongs here too, but needs an ABSOLUTE white reference to act against:
-  // every content-statistical reference either ratchets or misfires on
-  // legitimately bright lines. It lands with the gated AGC (issue #36),
-  // which is what makes levels absolute.)
+  // load and bcl_gain_ integrates against the threshold. The peak-white
+  // limiter senses the per-line peak gun drive (post-matrix, pre-gamma) and
+  // pulls its own gain when the delayed-engagement condition holds. Both act
+  // through video_gain_ - the contrast stage - alongside the pot itself:
+  // video_gain_ = contrast_gain_ × bcl_gain_ × pwl_gain_, refreshed per line.
   bool limiting_ = false; // the beam-current limiter enabled (set in the ctor)
   double bcl_state_ = 0.0; // smoothed average load
   double bcl_gain_ = 1.0; // BCL gain: integral feedback, settles measured load AT the threshold
+  bool pwl_on_ = false; // peak-white limiter enabled (absolute levels only)
+  double pwl_level_ = 0.0; // drive ceiling: pwl_threshold × standard white drive
+  double pwl_gain_ = 1.0; // PWL gain: pulled fast while over, slow recovery
+  bool pwl_armed_ = false; // previous line exceeded (the one-line delay)
+  double pwl_line_peak_ = 0.0; // this line's peak gun drive
+  double contrast_gain_ = 1.0; // the pot: cfg_.contrast (absolute), 1 (tracked)
   double video_gain_ = 1.0; // the per-line gain applied to the drive
   void start_line(); // finalize the line load, update eht_, refresh the mapping
 

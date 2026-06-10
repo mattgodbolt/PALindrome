@@ -37,8 +37,10 @@ analog machine, not a DSP textbook. The current state:
 The picture is a clean, recognisable image - true blacks, straight geometry,
 filled scanlines - and **in colour** (`render --colour`): a PAL-D chroma channel
 recovers U/V off the burst and drives an RGB phosphor triad. Levels are period-
-correct (an IF-AGC white reference, ACC chroma referenced to the luma, retrace
-blanking), and the RGB matrix matches the TDA3561A datasheet. Both SDRs decode
+correct and ABSOLUTE: a sync-tip IF AGC normalises the carrier, white is the
+broadcast standard's geometry (not a measurement of picture content), the ACC
+references chroma to it, blanking hides the retrace, and the RGB matrix matches
+the TDA3561A datasheet. Both SDRs decode
 colour with the same default burst gate - the AirSpy's old per-SDR skew was a
 10 MS/s near-Nyquist artifact, gone now it captures the channel at 20 MS/s.
 
@@ -118,9 +120,10 @@ flowchart TD
       VIS["analytic (Hilbert) →<br/>mix carrier to baseband → FIR LP →<br/>AM envelope (× decimation)"]
     end
 
-    VIS -->|envelope| SEP["SyncSeparator<br/>AGC + slice → 1-bit sync"]
-    VIS -->|picture rail| SCR
-    VIS -->|picture rail| CH["ChromaDecoder (colour)<br/>4.43 MHz band-pass → crystal demod<br/>(APC pulls the crystal) →<br/>per-line burst rotation + PAL switch →<br/>ident → colour killer → 1H comb → Y/U/V"]
+    VIS --> AGC["IF AGC<br/>peak detector on the sync tip →<br/>carrier normalised to tip = 1.0"]
+    AGC -->|envelope| SEP["SyncSeparator<br/>fixed-depth slice → 1-bit sync"]
+    AGC -->|picture rail| SCR
+    AGC -->|picture rail| CH["ChromaDecoder (colour)<br/>4.43 MHz band-pass → crystal demod<br/>(APC pulls the crystal) →<br/>per-line burst rotation + PAL switch →<br/>ident → colour killer → 1H comb → Y/U/V"]
     SEP -->|sync bit| HS["HorizontalSweep<br/>pulse-width gate + AFC flywheel<br/>→ h_phase, line_start"]
     SEP -->|sync bit| VS["VerticalSync<br/>integrator + field flywheel<br/>→ v_phase, field_start"]
     HS -->|timing rail| CH
@@ -135,7 +138,9 @@ The TLAs, for anyone whose shelf lacks a 1980s TV service manual:
 - **IF** - intermediate frequency: the SDRs capture the whole modulated channel
   at a low centre frequency, exactly what a set's tuner hands its IF strip.
 - **AGC** - automatic gain control: levels the received signal so the rest of
-  the chain sees a constant amplitude regardless of signal strength.
+  the chain sees a constant amplitude regardless of signal strength. Ours
+  peak-detects the sync tip (the carrier peak, under negative modulation) and
+  holds it at 1.0, which is what makes every level downstream absolute.
 - **APC** - automatic phase control: the burst phase detector that pulls the
   4.43 MHz reference (here, the crystal itself) into lock with the colourburst.
 - **ACC** - automatic colour control: gain levelling for the chroma path,
@@ -181,14 +186,37 @@ relied on to keep their left edge on screen), and
 `--frame-stride` (write a PNG every Nth field as `<stem>_NNNN.png` instead of a
 single image). PNGs are encoded fast (uncompressed) rather than small - this is a
 research tool that throws most of them away. The old default look is exactly
-`--gamma 1.5 --overscan -1 --readout-gamma 1 --eht-sag 0 --line-pull 0 --bcl 0`.
+`--gamma 1.5 --overscan -1 --readout-gamma 1 --eht-sag 0 --line-pull 0 --bcl 0
+--pwl 0 --agc adaptive --contrast 0.85 --saturation 0.17`.
+
+Levels are absolute, the way a receiver actually knows them: an IF AGC
+(`--agc sync-tip`, the default) peak-detects the carrier's sync tip - under
+negative modulation the tip IS peak carrier - and holds it at 1.0, so the
+sync separator slices at a fixed depth below it (`--slice-depth`, default
+0.08: inside both broadcast sync, 0.24 deep, and the much shallower sync of
+console RF modulators), black is the clamped back porch, and white is the
+transmission standard's GEOMETRY - System I puts blanking at 76% and peak
+white at 20% of the tip - not a measurement of whatever the picture happens
+to contain. `--contrast` is then the real pot: video gain ahead of the gun.
+The SMS corpus under-modulates (its white only reaches ~50% carrier), so a
+period set shows it dim and the default ships with the pot turned up
+(`--contrast 1.6`, provisional until more sources exist to level-set
+against); broadcast-standard modulation wants 1.0. `--agc adaptive` restores
+the old scheme - per-stage trackers that stretch whatever arrives to full
+range (an autocontrast no real set had), with `--contrast` back at its old
+readout meaning and `--sync-level` placing the adaptive slice. `render`
+prints the front-end gain it settled on.
 
 The set protects itself, too: `--bcl` (default 0.7) is the beam-current
 limiter - when the average beam load exceeds it, the set pulls its own
 contrast down until the load settles at the threshold, so a sustained bright
-scene dims rather than cooking the tube (0 = an unprotected set). The
-companion peak-white limiter needs the absolute level reference of the gated
-AGC and lands with it.
+scene dims rather than cooking the tube (0 = an unprotected set). Its
+companion `--pwl` (default 1.25) is the TDA3561A's peak-white limiter: when
+any gun's drive exceeds that multiple of standard white for more than a line
+(one line of grace, so an abrupt colour-to-white test pattern never trips
+it), the contrast is pulled down fast until the peak sits at the ceiling,
+recovering slowly when the overdrive clears. Crank `--contrast` up to watch
+it push back.
 
 The set is also load-aware: the beam is the EHT supply's load, so a bright
 picture sags the final-anode voltage (`--eht-sag`, default 0.06 at a sustained
@@ -213,8 +241,9 @@ the locked gains, `--h-acq-kp`/`--h-acq-ki` the acquisition ones; passing
 direct triggering exactly.
 
 For colour, add `--colour`: it decodes the chroma and writes an RGB PNG.
-`--saturation` is the chroma gain (a fraction of the luma white - the colour pot)
-and `--contrast` the white point; `--burst-lo`/`--burst-hi` place the burst gate
+`--saturation` is the chroma gain (a fraction of the standard white drive - the
+colour pot; it rides the contrast pot, as the TDA3561A gangs all three outputs,
+so the default suits `--contrast 1.6`); `--burst-lo`/`--burst-hi` place the burst gate
 and `--h-blank` the retrace blanking, as h_phase windows (the defaults suit both
 the RX888 and the AirSpy raw 20 MS/s capture - a bare `--colour` decodes either).
 `--uv-bandwidth` and `--band-lo`/`--band-hi` size the post-demod U/V low-pass and

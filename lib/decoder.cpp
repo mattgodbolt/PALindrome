@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 #include <span>
 
 namespace palindrome::video {
@@ -20,12 +21,24 @@ template<class C>
   c.sample_rate_hz = rate;
   return c;
 }
+
+// One switch picks the level scheme everywhere: the separator's slice mode
+// must match whether the AGC is in the chain (a fixed slice needs the tip held
+// at 1.0), so it's stamped here rather than left as an independent knob.
+[[nodiscard]] SyncSeparatorConfig with_mode(SyncSeparatorConfig c, AgcMode mode) {
+  c.adaptive = mode == AgcMode::adaptive;
+  return c;
+}
 } // namespace
 
 Decoder::Decoder(const DecoderConfig &cfg) :
-    colour_{cfg.colour}, sync_lp_{dsp::lowpass_kernel(kSyncLpTaps, cfg.sample_rate_hz, cfg.sync_lp_cutoff_hz)},
-    sep_{with_rate(cfg.sep, cfg.sample_rate_hz)}, hsweep_{with_rate(cfg.hsweep, cfg.sample_rate_hz)},
-    vsync_{with_rate(cfg.vsync, cfg.sample_rate_hz)}, chroma_{with_rate(cfg.chroma, cfg.sample_rate_hz)},
+    colour_{cfg.colour},
+    agc_{cfg.agc_mode == AgcMode::sync_tip ? std::optional<Agc>{std::in_place, with_rate(cfg.agc, cfg.sample_rate_hz)}
+                                           : std::nullopt},
+    sync_lp_{dsp::lowpass_kernel(kSyncLpTaps, cfg.sample_rate_hz, cfg.sync_lp_cutoff_hz)},
+    sep_{with_mode(with_rate(cfg.sep, cfg.sample_rate_hz), cfg.agc_mode)},
+    hsweep_{with_rate(cfg.hsweep, cfg.sample_rate_hz)}, vsync_{with_rate(cfg.vsync, cfg.sample_rate_hz)},
+    chroma_{with_rate(cfg.chroma, cfg.sample_rate_hz)},
     screen_{ScreenConfig{.width = cfg.width,
         .height = cfg.height,
         .sample_rate_hz = cfg.sample_rate_hz,
@@ -36,6 +49,8 @@ Decoder::Decoder(const DecoderConfig &cfg) :
         .colour = cfg.colour,
         .saturation = cfg.saturation,
         .contrast = cfg.contrast,
+        .tracked_white = cfg.agc_mode == AgcMode::adaptive,
+        .pwl_threshold = cfg.pwl_threshold,
         .readout_gamma = cfg.readout_gamma,
         .h_blank = cfg.h_blank,
         // Register the picture: in colour it lags the timing rails by the chroma
@@ -53,6 +68,8 @@ Decoder::Decoder(const DecoderConfig &cfg) :
         .bcl_tc_fields = cfg.bcl_tc_fields}} {}
 
 void Decoder::prepare(std::size_t max_in) {
+  if (agc_)
+    agc_->prepare(max_in);
   sync_lp_.prepare(max_in);
   sep_.prepare(max_in);
   hsweep_.prepare(max_in);
@@ -62,6 +79,12 @@ void Decoder::prepare(std::size_t max_in) {
 }
 
 void Decoder::decode_into(DecodedBlock &out, std::span<const float> envelope) {
+  // The IF AGC normalises the carrier first - every branch below (sync slice,
+  // picture rail, chroma) sees the same absolute levels, exactly as the gain
+  // stage sits ahead of the detector fan-out in a real IF strip. Absent in
+  // adaptive mode, where the per-stage trackers do their own levelling.
+  if (agc_)
+    envelope = agc_->process(envelope);
   // The branch: the envelope fans to a narrow sync low-pass (whose sliced sync
   // bit feeds both timebases) and, untouched, to the picture rail. In colour the
   // chroma decoder is a third branch off the envelope (it needs the horizontal
