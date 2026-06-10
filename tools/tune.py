@@ -47,10 +47,11 @@ KNOBS = [
          min=0.3, max=6.0, step=0.1, default=1.6,
          help="How long the phosphor glows, in field periods (~20 ms each). Higher blends more fields together "
               "(smoother, averages noise, but smears motion); lower is sharper but flickers. ~1 ≈ roughly the last field."),
-    dict(name="beam_sigma", flag="--beam-sigma", label="Beam sigma (rows)",
-         min=0.0, max=2.5, step=0.05, default=1.1,
-         help="Vertical size of the electron-beam spot, in output rows. Bigger fills the gaps between scanlines "
-              "(softer); smaller gives crisp, visible scanlines (sharper but gappy). 0 = a single-pixel hit."),
+    dict(name="beam_sigma", flag="--beam-sigma", label="Beam sigma (pitches)",
+         min=0.0, max=1.2, step=0.02, default=0.52,
+         help="Vertical size of the electron-beam spot, in scanline pitches (raster-relative: output height and "
+              "overscan don't change the physical spot). Bigger fills the gaps between scanlines (softer); smaller "
+              "gives crisp, visible scanlines (sharper but gappy). 0 = a single-pixel hit."),
     dict(name="beam_sigma_x", flag="--beam-sigma-x", label="Beam sigma (cols)",
          min=0.0, max=2.5, step=0.05, default=1.1,
          help="Horizontal size of the beam spot, in output columns. Smaller is sharper horizontally; too small "
@@ -69,6 +70,32 @@ KNOBS = [
          min=-0.01, max=0.15, step=0.01, default=0.06,
          help="Fraction of the nominal active picture cropped behind the bezel (half per side), filling the frame "
               "like a real set. Negative = the old full-scan framing with blanking visible."),
+    dict(name="h_shift", flag="--h-shift", label="H shift (centring)",
+         min=-0.05, max=0.05, step=0.001, default=0.0,
+         help="Horizontal centring: + moves the picture right (fraction of a line; ~0.001 is about one output "
+              "pixel). On a real set this was an internal service adjustment - the factory default framing should "
+              "be right without it, so treat this as the service screwdriver, not a viewing control."),
+    dict(name="v_shift", flag="--v-shift", label="V shift (centring)",
+         min=-0.05, max=0.05, step=0.001, default=0.0,
+         help="Vertical centring: + moves the picture down (fraction of a field). An internal service adjustment, "
+              "as the H shift."),
+    dict(name="eht_sag", flag="--eht-sag", label="EHT sag",
+         min=0.0, max=0.25, step=0.005, default=0.06,
+         help="How much the final-anode voltage sags under a sustained full-white load. The raster breathes "
+              "(grows ~sag/2), dims and defocuses on bright scenes, recovering on dark ones. 0 = perfectly "
+              "regulated supply (no breathing)."),
+    dict(name="eht_tc", flag="--eht-tc", label="EHT time constant (fields)",
+         min=0.25, max=10.0, step=0.25, default=2.0,
+         help="How quickly the EHT sags and recovers, in field periods (~20 ms each) - the aquadag reservoir "
+              "and supply regulation. Shorter breathes snappily on scene cuts; longer is a heavier, slower wallow."),
+    dict(name="eht_focus", flag="--eht-focus", label="EHT focus loss",
+         min=0.0, max=1.0, step=0.05, default=0.3,
+         help="How much the beam spot grows at full EHT sag (the focus electrode tracks the sagging EHT "
+              "imperfectly). Bright scenes go soft as well as large."),
+    dict(name="line_pull", flag="--line-pull", label="Line pull",
+         min=0.0, max=0.02, step=0.0005, default=0.003,
+         help="Line-output stage loading: a line carrying lots of white scans slightly wider, so vertical edges "
+              "bend next to bright content. 0 disables."),
     dict(name="saturation", flag="--saturation", label="Saturation",
          min=0.0, max=0.5, step=0.01, default=0.17,
          help="Colour intensity: the chroma gain as a fraction of the luma white reference (the colour pot). 0 = "

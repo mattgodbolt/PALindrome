@@ -30,7 +30,7 @@ Decoder::Decoder(const DecoderConfig &cfg) :
         .height = cfg.height,
         .sample_rate_hz = cfg.sample_rate_hz,
         .persistence_fields = cfg.persistence_fields,
-        .beam_sigma_rows = cfg.beam_sigma_rows,
+        .beam_sigma = cfg.beam_sigma,
         .beam_sigma_cols = cfg.beam_sigma_cols,
         .gamma = cfg.gamma,
         .colour = cfg.colour,
@@ -44,7 +44,11 @@ Decoder::Decoder(const DecoderConfig &cfg) :
         .h_window_lo = cfg.h_window_lo,
         .h_window_hi = cfg.h_window_hi,
         .v_window_lo = cfg.v_window_lo,
-        .v_window_hi = cfg.v_window_hi}} {}
+        .v_window_hi = cfg.v_window_hi,
+        .eht_sag = cfg.eht_sag,
+        .eht_tc_fields = cfg.eht_tc_fields,
+        .eht_focus = cfg.eht_focus,
+        .line_pull = cfg.line_pull}} {}
 
 void Decoder::prepare(std::size_t max_in) {
   sync_lp_.prepare(max_in);

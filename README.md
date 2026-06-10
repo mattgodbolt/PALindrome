@@ -148,11 +148,27 @@ the PNG: the framebuffer is linear light, so the readout encodes it for a
 display that will decode at ~2.2; `1` writes raw linear light, the old
 double-gamma'd look), `--overscan` (default 0.06: the nominal active picture,
 cropped that fraction behind the bezel, fills the frame as on a real set —
-blanking lives off-screen; negative restores the old full-scan framing), and
+blanking lives off-screen; negative restores the old full-scan framing),
+`--h-shift`/`--v-shift` (the centring adjustments — internal service pots on
+a real set, so the factory-default framing should be right without them: the
+default visible window starts ~1 µs before active video, the framing consoles
+relied on to keep their left edge on screen), and
 `--frame-stride` (write a PNG every Nth field as `<stem>_NNNN.png` instead of a
 single image). PNGs are encoded fast (uncompressed) rather than small — this is a
 research tool that throws most of them away. The old default look is exactly
 `--gamma 1.5 --overscan -1 --readout-gamma 1`.
+
+The set is also load-aware: the beam is the EHT supply's load, so a bright
+picture sags the final-anode voltage (`--eht-sag`, default 0.06 at a sustained
+full-white load, time constant `--eht-tc` fields) and the raster breathes —
+grows about its centre (deflection goes as 1/sqrt(EHT)), dims slightly (light
+is V times I) and defocuses (`--eht-focus`: spot growth at full sag) on bright
+scenes, recovering on dark ones. Separately `--line-pull` models the
+line-output stage's per-line loading: a line carrying a lot of white scans
+slightly wider, so vertical edges bend next to bright content. Zeroing
+`--eht-sag` and `--line-pull` gives the perfectly regulated supply (and the
+old behaviour); `--beam-sigma` is specified in scanline pitches, so the spot
+is a property of the raster and survives `--height`/`--overscan` changes.
 
 The horizontal hold is a true dual-time-constant flywheel, as a TDA2593-era
 set's line oscillator: fast acquisition gains pull in until a coincidence

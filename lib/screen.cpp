@@ -22,14 +22,25 @@ Screen::Screen(const ScreenConfig &cfg) :
   // (no fade); 64 fields is already far longer than any real phosphor.
   if (!(cfg_.persistence_fields > 0.0 && cfg_.persistence_fields <= 64.0))
     throw std::invalid_argument{"Screen: persistence_fields must be in (0, 64]"};
-  if (!(cfg_.beam_sigma_rows >= 0.0))
-    throw std::invalid_argument{"Screen: beam_sigma_rows must be non-negative"};
+  if (!(cfg_.beam_sigma >= 0.0))
+    throw std::invalid_argument{"Screen: beam_sigma must be non-negative"};
   if (!(cfg_.nominal_line_hz > cfg_.field_hz))
     throw std::invalid_argument{"Screen: nominal_line_hz must exceed field_hz"};
   if (!(cfg_.h_window_lo < cfg_.h_window_hi && cfg_.v_window_lo < cfg_.v_window_hi))
     throw std::invalid_argument{"Screen: scan windows need lo < hi"};
   if (!(cfg_.readout_gamma > 0.0))
     throw std::invalid_argument{"Screen: readout_gamma must be positive"};
+  if (!(cfg_.eht_sag >= 0.0 && cfg_.eht_sag < 0.5))
+    throw std::invalid_argument{"Screen: eht_sag must be in [0, 0.5)"};
+  // Lower bound keeps the per-line integrator step alpha = 1/(tc * lines per
+  // field) at or below 1, so eht_ stays a convex combination and can't ring
+  // (the same guard VerticalSync places on its integrator).
+  if (!(cfg_.eht_tc_fields * cfg_.nominal_line_hz / cfg_.field_hz >= 1.0))
+    throw std::invalid_argument{"Screen: eht_tc_fields too small (the integrator step would exceed 1)"};
+  if (!(cfg_.eht_focus >= 0.0 && cfg_.eht_focus <= 1.0))
+    throw std::invalid_argument{"Screen: eht_focus must be in [0, 1]"};
+  if (!(cfg_.line_pull >= 0.0 && cfg_.line_pull < 0.1))
+    throw std::invalid_argument{"Screen: line_pull must be in [0, 0.1)"};
   // Decay per sample so that brightness falls by 1/e over persistence_fields
   // field periods: tau_samples = persistence * (sample_rate / field_hz).
   const double tau_samples = cfg_.persistence_fields * cfg_.sample_rate_hz / cfg_.field_hz;
@@ -70,13 +81,41 @@ Screen::Screen(const ScreenConfig &cfg) :
   // sampling-beat stripe). The horizontal sigma defaults to the vertical, so the
   // spot is round unless beam_sigma_cols is set. The weights depend only on the
   // beam centre's sub-pixel fraction, so each axis tabulates per fraction bin.
-  const double sigma_cols = cfg_.beam_sigma_cols < 0.0 ? cfg_.beam_sigma_rows : cfg_.beam_sigma_cols;
-  splat_radius_y_ = dsp::splat_radius_for(cfg_.beam_sigma_rows);
-  splat_radius_x_ = dsp::splat_radius_for(sigma_cols);
-  gauss_stride_y_ = 2 * splat_radius_y_ + 1;
-  gauss_stride_x_ = 2 * splat_radius_x_ + 1;
-  gauss_lut_y_ = dsp::gaussian_splat_lut(cfg_.beam_sigma_rows, splat_radius_y_, kGaussBins);
-  gauss_lut_x_ = dsp::gaussian_splat_lut(sigma_cols, splat_radius_x_, kGaussBins);
+  // beam_sigma is in scanline pitches (the raster's per-field line spacing on
+  // the output), so the spot keeps its physical size whatever the output
+  // height or overscan window: pitch_rows = y_scale_ / lines-per-field.
+  const double lines_per_field = cfg_.nominal_line_hz / cfg_.field_hz;
+  const double pitch_rows = y_scale_ / lines_per_field;
+  const double sigma_rows = cfg_.beam_sigma * pitch_rows;
+  const double sigma_cols = cfg_.beam_sigma_cols < 0.0 ? sigma_rows : cfg_.beam_sigma_cols;
+  // Focus classes: class 0 is nominal focus, the last is the spot at full EHT
+  // sag (grown by eht_focus). One class when the mechanism is off.
+  const std::size_t classes = (cfg_.eht_sag > 0.0 && cfg_.eht_focus > 0.0) ? kFocusClasses : 1;
+  const auto build = [&](double sigma) {
+    SplatLut l;
+    l.radius = dsp::splat_radius_for(sigma);
+    l.stride = 2 * l.radius + 1;
+    l.lut = dsp::gaussian_splat_lut(sigma, l.radius, kGaussBins);
+    return l;
+  };
+  for (std::size_t c = 0; c < classes; ++c) {
+    const double grow = classes == 1 ? 1.0 : 1.0 + cfg_.eht_focus * static_cast<double>(c) / (kFocusClasses - 1);
+    y_classes_.push_back(build(sigma_rows * grow));
+    x_classes_.push_back(build(sigma_cols * grow));
+  }
+  splat_radius_y_ = y_classes_[0].radius;
+  splat_radius_x_ = x_classes_[0].radius;
+  gauss_stride_y_ = y_classes_[0].stride;
+  gauss_stride_x_ = x_classes_[0].stride;
+  gauss_lut_y_ = y_classes_[0].lut.data();
+  gauss_lut_x_ = x_classes_[0].lut.data();
+  loading_ = cfg_.eht_sag > 0.0 || cfg_.line_pull > 0.0;
+  // The per-line effective mapping starts unloaded (eht_ = 1, no pull).
+  x_scale_eff_ = x_scale_;
+  x_off_eff_ = -cfg_.h_window_lo * x_scale_;
+  y_scale_eff_ = y_scale_;
+  y_off_eff_ = -cfg_.v_window_lo * y_scale_;
+  tilt_eff_ = yoke_tilt_rows_;
   // Gun gamma table: drive^gamma sampled over [0, kGunDriveMax], read with linear
   // interpolation. Linear at gamma 1.0, so leave the table empty and skip the pow.
   if (cfg_.gamma != 1.0) {
@@ -148,6 +187,56 @@ constexpr double kGv = -0.581;
 constexpr double kBu = 2.032;
 } // namespace
 
+// A new line begins: finalize the completed line's beam load, integrate the
+// EHT, and refresh the per-line effective mapping (deflection growth about the
+// picture centre, the previous line's width pull, the focus class and the
+// brightness factor). Runs at line rate, keyed off the per-sample line_start
+// flag, so it is chunking- and thread-invariant like the rest of the stage.
+void Screen::start_line() {
+  const double load = line_load_n_ > 0 && white_ref_ > 0.0
+                          ? std::min(1.5, static_cast<double>(line_load_sum_) /
+                                              (static_cast<double>(line_load_n_ * channels_) * white_ref_))
+                          : 0.0;
+  line_load_sum_ = 0.0f;
+  line_load_n_ = 0;
+  prev_line_load_ = load;
+  if (cfg_.eht_sag <= 0.0 && cfg_.line_pull <= 0.0)
+    return;
+
+  double defl = 1.0;
+  if (cfg_.eht_sag > 0.0) {
+    const double lines_per_field = cfg_.nominal_line_hz / cfg_.field_hz;
+    const double alpha = 1.0 / (cfg_.eht_tc_fields * lines_per_field);
+    eht_ += alpha * ((1.0 - cfg_.eht_sag * load) - eht_);
+    defl = 1.0 / std::sqrt(eht_); // deflection sensitivity rises as EHT sags
+    bright_eff_ = static_cast<float>(eht_); // light ∝ V·I
+    // Focus: the spot grows toward the full-sag class as the EHT sags.
+    if (y_classes_.size() > 1) {
+      const double sag = std::clamp((1.0 - eht_) / cfg_.eht_sag, 0.0, 1.0);
+      const auto c = static_cast<std::size_t>(sag * static_cast<double>(y_classes_.size() - 1) + 0.5);
+      splat_radius_y_ = y_classes_[c].radius;
+      splat_radius_x_ = x_classes_[c].radius;
+      gauss_stride_y_ = y_classes_[c].stride;
+      gauss_stride_x_ = x_classes_[c].stride;
+      gauss_lut_y_ = y_classes_[c].lut.data();
+      gauss_lut_x_ = x_classes_[c].lut.data();
+    }
+  }
+  const double pull = 1.0 + cfg_.line_pull * prev_line_load_;
+
+  // Fold the growth (about the frame centre) into the same mul-add shape the
+  // deposit uses: x = (h - off)*xs + xo and y = v*ys - tilt*h + yo.
+  const double cx = 0.5 * static_cast<double>(cfg_.width);
+  const double cy = 0.5 * static_cast<double>(cfg_.height);
+  const double xs = x_scale_ * defl * pull;
+  x_scale_eff_ = xs;
+  x_off_eff_ = -cfg_.h_window_lo * xs + cx * (1.0 - defl * pull);
+  const double ys = y_scale_ * defl;
+  y_scale_eff_ = ys;
+  y_off_eff_ = -cfg_.v_window_lo * ys + cy * (1.0 - defl);
+  tilt_eff_ = yoke_tilt_rows_ * defl;
+}
+
 void Screen::process(std::span<const ChromaSample> picture, std::span<const BeamSample> hbeam,
     std::span<const VSample> vbeam, const FieldCallback &on_field) {
   const std::size_t n = std::min({picture.size(), hbeam.size(), vbeam.size()});
@@ -162,7 +251,7 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // the two fields paint alternate lines a field apart, so at readout one
     // field's lines have faded once relative to the other (a 3:1 line-to-line
     // ripple at persistence 0.9). It's invisible only because the beam splat
-    // (beam_sigma_rows) is wide enough to spread each line's charge across its
+    // (beam_sigma) is wide enough to spread each line's charge across its
     // neighbours, blending the fields. Shrink the beam past that and the comb
     // shows. The fix is to fade once per FRAME (every two fields) so both fields
     // paint before any decay — which needs the decay/snapshot aligned to a frame
@@ -173,6 +262,8 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
       for (float &b: bright_)
         b *= field_decay_;
     }
+    if (hbeam[i].line_start)
+      start_line();
 
     // Gun drives: luma sets the Y term; the matrix adds the colour difference.
     // Each gun cuts off at zero, then takes its gamma. Grey = the luma gun alone.
@@ -202,12 +293,24 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
       gun_rgb[2] = gun(drive + kBu * u);
     }
 
+    // The beam current is this line's load on the EHT supply (summed before
+    // the brightness factor — sagging volts dim the light, not the current);
+    // light ∝ V·I applies the per-line EHT factor to the deposit. Skipped
+    // entirely when no loading mechanism is enabled: the off path costs zero.
+    if (loading_) {
+      line_load_sum_ += gun_rgb[0] + gun_rgb[1] + gun_rgb[2];
+      ++line_load_n_;
+      gun_rgb[0] *= bright_eff_;
+      gun_rgb[1] *= bright_eff_;
+      gun_rgb[2] *= bright_eff_;
+    }
+
     // Horizontal beam position. The spot has a real width, so the deposit spreads
     // over the columns under the Gaussian, centred on the sub-pixel position; the
     // normalised weights depend only on xf's fractional part, so look up the bin.
     // picture_h_offset_ shifts the picture back onto the sweep to register colour
     // with mono (sync timing — blanking, yoke — still uses the raw h_phase).
-    const double xf = (static_cast<double>(hbeam[i].h_phase) - picture_h_offset_ - cfg_.h_window_lo) * x_scale_;
+    const double xf = (static_cast<double>(hbeam[i].h_phase) - picture_h_offset_) * x_scale_eff_ + x_off_eff_;
     const double xf_floor = std::floor(xf);
     const auto base_col = static_cast<std::ptrdiff_t>(xf_floor) - static_cast<std::ptrdiff_t>(splat_radius_x_);
     auto bin_x = static_cast<std::size_t>((xf - xf_floor) * static_cast<double>(kGaussBins));
@@ -216,8 +319,8 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     const auto *cweights = &gauss_lut_x_[bin_x * gauss_stride_x_];
 
     // Yoke shear: un-creep the vertical so the scanline is flat (see header).
-    const auto yc = (static_cast<double>(vbeam[i].v_phase) - cfg_.v_window_lo) * y_scale_ -
-                    yoke_tilt_rows_ * static_cast<double>(hbeam[i].h_phase);
+    const auto yc = static_cast<double>(vbeam[i].v_phase) * y_scale_eff_ -
+                    tilt_eff_ * static_cast<double>(hbeam[i].h_phase) + y_off_eff_;
 
     // Gaussian beam spot, centred on the sheared sub-pixel row. The normalised
     // weights depend only on yc's fractional part, so look up the matching bin.

@@ -224,7 +224,7 @@ TEST_CASE("Screen snapshots a field before fading it, exactly once per field_sta
       .height = 8,
       .sample_rate_hz = kRate,
       .persistence_fields = persistence,
-      .beam_sigma_rows = 0.0,
+      .beam_sigma = 0.0,
       .gamma = 1.0};
   const float field_decay = static_cast<float>(std::exp(-1.0 / persistence));
 
@@ -274,7 +274,7 @@ TEST_CASE("Screen snapshots a field before fading it, exactly once per field_sta
 }
 
 TEST_CASE("Screen latch defers quantisation without changing the boundary frame") {
-  const video::ScreenConfig cfg{.width = 8, .height = 8, .sample_rate_hz = kRate, .beam_sigma_rows = 0.0, .gamma = 1.0};
+  const video::ScreenConfig cfg{.width = 8, .height = 8, .sample_rate_hz = kRate, .beam_sigma = 0.0, .gamma = 1.0};
   video::Screen screen{cfg};
 
   // Before any latch, latched_frame() falls back to the live snapshot.
@@ -331,7 +331,7 @@ TEST_CASE("Screen scan windows remap the beam (overscan) and the readout can enc
     return std::pair{std::size_t{9999}, std::size_t{9999}};
   };
 
-  video::ScreenConfig cfg{.width = 64, .height = 64, .sample_rate_hz = kRate, .beam_sigma_rows = 0.0, .gamma = 1.0};
+  video::ScreenConfig cfg{.width = 64, .height = 64, .sample_rate_hz = kRate, .beam_sigma = 0.0, .gamma = 1.0};
   CHECK(run_one(cfg, 0.5f, 0.5f).first == 32);
   cfg.h_window_lo = 0.25;
   cfg.h_window_hi = 0.75;
@@ -349,7 +349,7 @@ TEST_CASE("Screen scan windows remap the beam (overscan) and the readout can enc
     const video::ScreenConfig rc{.width = 8,
         .height = 8,
         .sample_rate_hz = kRate,
-        .beam_sigma_rows = 0.0,
+        .beam_sigma = 0.0,
         .gamma = 1.0,
         .readout_gamma = readout_gamma};
     video::Screen screen{rc};
@@ -377,6 +377,129 @@ TEST_CASE("Screen scan windows remap the beam (overscan) and the readout can enc
   };
   CHECK(std::abs(grey_ratio(1.0) - 0.5) < 0.02); // linear: half drive, half level
   CHECK(std::abs(grey_ratio(2.2) - std::pow(0.5, 1.0 / 2.2)) < 0.02); // encoded: brighter mids
+}
+
+TEST_CASE("beam sigma is raster-relative: the spot scales with the line pitch") {
+  // One bright sample mid-screen; the number of rows its splat touches must
+  // scale with the output height (the same physical spot on a denser raster),
+  // which is the point of specifying sigma in scanline pitches.
+  const auto lit_rows = [](std::size_t height) {
+    const video::ScreenConfig cfg{
+        .width = 32, .height = height, .sample_rate_hz = kRate, .beam_sigma = 0.5, .gamma = 1.0};
+    video::Screen screen{cfg};
+    const std::array pic{video::ChromaSample{.luma = 1.0f}, video::ChromaSample{.luma = 0.0f}};
+    const std::array hbeam{video::BeamSample{.h_phase = 0.10f}, video::BeamSample{.h_phase = 0.5f}};
+    const std::array vbeam{video::VSample{.v_phase = 0.5f}, video::VSample{.v_phase = 0.5f}};
+    screen.process(pic, hbeam, vbeam);
+    const auto frame = screen.snapshot();
+    std::size_t rows = 0;
+    for (std::size_t r = 0; r < height; ++r)
+      for (std::size_t c = 0; c < 32; ++c)
+        if (frame.pixels[r * 32 + c] > 0) {
+          ++rows;
+          break;
+        }
+    return rows;
+  };
+  const auto small = lit_rows(64);
+  const auto big = lit_rows(256);
+  CHECK(big >= 3 * small); // 4x the height => ~4x the rows (radius quantisation slack)
+}
+
+namespace {
+// Feed `lines` lines of synthetic beam data straight into a Screen: each line
+// opens with a back-porch sample at blanking level (0.3 — seeds/holds the DC
+// restore), then `active` samples at the given luma: 0.3 is true black (zero
+// drive) and 0.0 is full white (drive 0.3, which the AGC white tracker then
+// treats as full scale). Optionally one probe sample at (probe_h, probe_v).
+void feed_lines(video::Screen &screen, std::size_t lines, float luma, double probe_h = -1.0, double probe_v = 0.5) {
+  constexpr std::size_t kActive = 24;
+  std::vector<video::ChromaSample> pic;
+  std::vector<video::BeamSample> hbeam;
+  std::vector<video::VSample> vbeam;
+  for (std::size_t l = 0; l < lines; ++l) {
+    pic.clear();
+    hbeam.clear();
+    vbeam.clear();
+    // Back porch at BLANKING level (0.3 in these envelope units — sync would be
+    // 1.0): this is the black the DC restore clamps to, so active luma 0.3 is
+    // true black (no drive) and 0.0 is full white.
+    pic.push_back(video::ChromaSample{.luma = 0.3f});
+    hbeam.push_back(video::BeamSample{.h_phase = 0.10f, .line_start = true});
+    vbeam.push_back(video::VSample{.v_phase = 0.5f});
+    for (std::size_t k = 0; k < kActive; ++k) {
+      pic.push_back(video::ChromaSample{.luma = luma});
+      hbeam.push_back(video::BeamSample{.h_phase = 0.2f + 0.7f * static_cast<float>(k) / kActive});
+      vbeam.push_back(video::VSample{.v_phase = 0.5f});
+    }
+    if (probe_h >= 0.0 && l + 1 == lines) {
+      pic.push_back(video::ChromaSample{.luma = 0.0f}); // a white probe dot
+      hbeam.push_back(video::BeamSample{.h_phase = static_cast<float>(probe_h)});
+      vbeam.push_back(video::VSample{.v_phase = static_cast<float>(probe_v)});
+    }
+    screen.process(pic, hbeam, vbeam);
+  }
+}
+
+// The brightest pixel's (col, row) in a snapshot, searched over [row_lo,
+// row_hi) so a probe dot can be found away from the main scan's deposits.
+std::pair<std::size_t, std::size_t> peak_pixel(
+    const video::Screen &screen, std::size_t width, std::size_t row_lo, std::size_t row_hi) {
+  const auto frame = screen.snapshot();
+  std::size_t best = row_lo * width;
+  for (std::size_t i = row_lo * width; i < row_hi * width; ++i)
+    if (frame.pixels[i] > frame.pixels[best])
+      best = i;
+  return {best % width, best / width};
+}
+} // namespace
+
+TEST_CASE("EHT sags under beam load, recovers, and breathes the raster") {
+  constexpr double kSag = 0.08;
+  const video::ScreenConfig cfg{.width = 64,
+      .height = 256,
+      .sample_rate_hz = kRate,
+      .beam_sigma = 0.0,
+      .gamma = 1.0,
+      .eht_sag = kSag,
+      .eht_tc_fields = 1.0};
+  video::Screen loaded{cfg};
+
+  // Sustained white: the EHT integrates down toward 1 - sag (the time constant
+  // is 1 field = 312.5 nominal lines; 700 lines is > 2 tc).
+  feed_lines(loaded, 700, 0.0f);
+  CHECK(loaded.eht() < 1.0 - 0.7 * kSag);
+  CHECK(loaded.eht() > 1.0 - kSag - 1e-9);
+
+  // Breathing: a probe dot far from the vertical centre lands further out on
+  // the sagged set than on an unloaded one (deflection ~ 1/sqrt(EHT)).
+  video::Screen fresh{cfg};
+  feed_lines(fresh, 10, 0.3f, 0.5, 0.125); // dark lines: no load
+  feed_lines(loaded, 1, 0.0f, 0.5, 0.125); // still loaded
+  const auto fresh_row = peak_pixel(fresh, 64, 0, 100).second; // the probe lives near row 32
+  const auto loaded_row = peak_pixel(loaded, 64, 0, 100).second;
+  CHECK(fresh_row > loaded_row); // v=0.125 is above centre: growth pushes it UP (away from centre)
+  CHECK(fresh_row - loaded_row >= 2);
+
+  // Recovery: sustained black brings the EHT back up.
+  feed_lines(loaded, 700, 0.3f);
+  CHECK(loaded.eht() > 1.0 - 0.3 * kSag);
+}
+
+TEST_CASE("line pulling stretches the line after a bright one") {
+  const video::ScreenConfig cfg{
+      .width = 256, .height = 64, .sample_rate_hz = kRate, .beam_sigma = 0.0, .gamma = 1.0, .line_pull = 0.02};
+  // The probe sits at v = 0.125 (row ~8), away from the scan lines at v = 0.5
+  // (row 32), so the restricted peak search finds it and not the white line.
+  video::Screen dark{cfg};
+  feed_lines(dark, 4, 0.3f, 0.9, 0.125); // probe after dark lines: nominal position
+  video::Screen bright{cfg};
+  feed_lines(bright, 3, 0.3f);
+  feed_lines(bright, 1, 0.0f); // a full-white line loads the line-output stage...
+  feed_lines(bright, 1, 0.3f, 0.9, 0.125); // ...and the NEXT line scans wider
+  const auto x_dark = peak_pixel(dark, 256, 0, 16).first;
+  const auto x_bright = peak_pixel(bright, 256, 0, 16).first;
+  CHECK(x_bright > x_dark); // right of centre: the pull pushes it further right
 }
 
 TEST_CASE("ChromaDecoder is block-invariant (the streaming guarantee)") {

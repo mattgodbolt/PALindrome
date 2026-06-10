@@ -47,7 +47,9 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(width_, "px")["--width"]("Output image width"))
           .add_argument(lyra::opt(height_, "px")["--height"]("Output image height"))
           .add_argument(lyra::opt(persistence_, "fields")["--persistence"]("Phosphor persistence in field periods"))
-          .add_argument(lyra::opt(beam_sigma_, "rows")["--beam-sigma"]("Beam-spot vertical size in output rows"))
+          .add_argument(lyra::opt(beam_sigma_, "pitches")["--beam-sigma"](
+              "Beam-spot vertical sigma in scanline pitches (raster-relative, so --height/--overscan don't change "
+              "the spot; default 0.52 ~ the old 1.1 rows)"))
           .add_argument(lyra::opt(beam_sigma_x_, "cols")["--beam-sigma-x"](
               "Beam-spot horizontal size in output columns (<0 = match --beam-sigma, a round spot)"))
           .add_argument(
@@ -57,6 +59,19 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(overscan_, "x")["--overscan"](
               "Fraction of the active picture cropped behind the bezel (default 0.06); negative = the old "
               "full-scan framing, blanking on screen"))
+          .add_argument(lyra::opt(eht_sag_, "x")["--eht-sag"](
+              "EHT sag at a sustained full-white load (default 0.06: the raster breathes ~3%, dims and defocuses "
+              "on bright scenes; 0 = a perfectly regulated supply)"))
+          .add_argument(lyra::opt(eht_tc_, "fields")["--eht-tc"]("EHT sag/recovery time constant in field periods"))
+          .add_argument(lyra::opt(eht_focus_, "x")["--eht-focus"]("Spot growth at full EHT sag (focus mistracking)"))
+          .add_argument(lyra::opt(line_pull_, "x")["--line-pull"](
+              "Line-output loading: width stretch after a full-white line (verticals bend next to bright content; "
+              "0 disables)"))
+          .add_argument(lyra::opt(h_shift_, "x")["--h-shift"](
+              "Horizontal centring (an internal service adjustment on a real set; factory default 0 should be "
+              "right): shifts the picture right by this fraction of a line"))
+          .add_argument(lyra::opt(v_shift_, "x")["--v-shift"](
+              "Vertical centring (internal service adjustment): shifts the picture down by this fraction of a field"))
           .add_argument(lyra::opt(colour_)["--colour"]["--color"]("Decode PAL colour (RGB)"))
           .add_argument(lyra::opt(saturation_, "x")["--saturation"]("Colour: chroma gain into the gun matrix"))
           .add_argument(lyra::opt(contrast_, "x")["--contrast"]("Readout white point (AGC-relative; the contrast pot)"))
@@ -156,13 +171,17 @@ int RenderCommand::run() const {
   video::DecoderConfig dc{
       .sample_rate_hz = envelope_rate, .width = width_, .height = height_, .sync_lp_cutoff_hz = sync_cutoff_};
   dc.persistence_fields = persistence_;
-  dc.beam_sigma_rows = beam_sigma_;
+  dc.beam_sigma = beam_sigma_;
   dc.beam_sigma_cols = beam_sigma_x_;
   dc.gamma = gamma_;
   dc.colour = colour_;
   dc.saturation = saturation_;
   dc.contrast = contrast_;
   dc.readout_gamma = readout_gamma_;
+  dc.eht_sag = eht_sag_;
+  dc.eht_tc_fields = eht_tc_;
+  dc.eht_focus = eht_focus_;
+  dc.line_pull = line_pull_;
   dc.h_blank = h_blank_;
   // Overscan: map the nominal active picture box — the 52 us active line of
   // the 64 us period, and the picture lines after the vertical interval —
@@ -174,8 +193,14 @@ int RenderCommand::run() const {
       std::println(std::cerr, "render: --overscan must be below 0.5 (got {:g})", overscan_);
       return 1;
     }
-    constexpr double kActiveHLo = 10.5 / 64.0; // line blanking: sync + back porch
-    constexpr double kActiveHHi = 62.5 / 64.0; // the 1.5 us front porch before the next sync
+    // The visible window sits ~1 us EARLIER in the line than the textbook
+    // active region (10.5..62.5 us): an average set's sweep reached the tube
+    // face while the line was still blanked, so the left edge showed a sliver
+    // of blanking-black before active video began — the factory framing that
+    // consoles (whose content hugs the start of active) relied on to keep
+    // their left edge on screen, with no adjustment needed.
+    constexpr double kActiveHLo = 9.5 / 64.0;
+    constexpr double kActiveHHi = 61.5 / 64.0;
     constexpr double kActiveVLo = 25.0 / 312.5; // the vertical interval's blanked lines
     constexpr double kActiveVHi = 1.0;
     const double crop_h = 0.5 * overscan_ * (kActiveHHi - kActiveHLo);
@@ -185,6 +210,14 @@ int RenderCommand::run() const {
     dc.v_window_lo = kActiveVLo + crop_v;
     dc.v_window_hi = kActiveVHi - crop_v;
   }
+  // The centring pots: moving the WINDOW left shows content further left, i.e.
+  // the picture moves right — the H-shift adjustment on a real set's back
+  // panel, which is how a console picture that hugs one edge of the nominal
+  // active box gets centred. Applied to whichever framing is in effect.
+  dc.h_window_lo -= h_shift_;
+  dc.h_window_hi -= h_shift_;
+  dc.v_window_lo -= v_shift_;
+  dc.v_window_hi -= v_shift_;
   if (subcarrier_ > 0.0) // else the crystal default (textbook fsc)
     dc.chroma.subcarrier_hz = subcarrier_;
   if (uv_bandwidth_ > 0.0)
