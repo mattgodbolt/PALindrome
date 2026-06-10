@@ -10,7 +10,7 @@ decoder - ours in particular.
 
 The punchline up front: the trick does **not** suppress, attenuate, mis-time or
 detune the colour burst. The burst is normal, on time and at full amplitude on
-312 of every 313 line-slots. What Firetrack attacks is the **PAL switch (V)
+every picture line. What Firetrack attacks is the **PAL switch (V)
 parity**: it arranges for the burst's ±45° swing to invert its line parity once
 per frame, at 25 Hz, so the television's ident circuit - the thing that decides
 "this is PAL colour" - sees an ident signal that averages to zero, and the
@@ -60,15 +60,27 @@ carefully measured window.
 With the delay byte `&1f` (31 loops), the window between the two ULA writes is
 exactly **256 CPU cycles = 128 µs**. The game runs a 312-line non-interlaced
 MODE 2 frame (R0 = 127 → a 64 µs line; R4 = `&25`, R5 = `&08` → 38×8+8 = 312
-scan lines). During the 128 µs window the half-speed CRTC counts exactly 128
+scan lines; the frame routine rewrites R8 every frame with its interlace bits
+clear, overriding the init table's interlace-sync setting). During the 128 µs window the half-speed CRTC counts exactly 128
 characters - exactly **one horizontal total**. So each frame still contains
-312 hsyncs, but one line, hidden in the blanking just after vsync, lasts
-128 µs: **312 hsyncs spread over 313 line-times**. Because the stretch is
-exactly 2H, the hsync *phase* before and after is untouched - a television's
-line flywheel sees one missing pulse, not a phase step.
+312 hsyncs spread over **313 line-times**. The stretch is applied ~50 µs into
+the first vsync line (counting the instruction path from the vsync poll), so
+the whole stretched region lives *inside the vertical sync pulse*: the one
+CRTC hsync that falls within it is displaced by a few microseconds, not
+deleted, but the Beeb combines hsync and vsync with a plain NOR gate (no
+serrations), so that edge never reaches the television at all. What the TV's
+sync separator receives is a vsync pulse one line-slot longer than usual,
+with line syncs resuming afterwards exactly in phase - no phase step for the
+line flywheel to fight.
 
-"Experimentally determined" turns out to be literal - the game *calibrates*
-the delay at startup, timing a CPU loop against a 256 µs User VIA period:
+### What the calibration at &454D actually measures
+
+A fair challenge: every clock in a BBC Micro is a fixed division of the same
+16 MHz crystal, so what is there to calibrate against? The answer is that the
+routine measures a *constant* - but a constant that is genuinely awkward to
+derive on paper, and the shipped game only works because it was measured
+rather than computed. The game times a counting loop against a 256-tick
+(~256 µs) User VIA Timer 1 period:
 
 ```
 &454d 2c ff ff BIT &ffff                            # 4 cycles
@@ -82,10 +94,42 @@ the delay at startup, timing a CPU loop against a 256 µs User VIA period:
 &455c 8d db 22 STA &22db ; screen_tweak_delay_length # Use result to calibrate screen tweak
 ```
 
-The `ORA #&0f` quantises the result so the inserted time is a whole multiple
-of 64 µs - on a stock Model B, one line. The game even compensates its display
-geometry by one row when the tweak is active (`&23a4`, `&17d0`), and disables
-the tweak during stage transitions (`&45e1`/`&4609`).
+The loop's nominal body is 16 cycles - and the level7 annotation says "16
+cycles per loop" - but one of its instructions, `BIT &FE6D`, reads a User VIA
+register, and the VIAs live on the **1 MHz bus**: a 2 MHz CPU access to a
+1 MHz device is stretched by one or two cycles to synchronise the buses
+(Advanced User Guide p.443; BeebWiki "Cycle stretching"). Because a stretched
+access ends aligned to the 1 MHz grid and the loop body is an odd number of
+half-microseconds long, every iteration's VIA poll lands anti-phase and takes
+the full two-cycle stretch: **the loop self-locks to 18 cycles, not 16**.
+Run the arithmetic both ways and the difference is decisive:
+
+| loop model | X measured | after `ORA #&0f` | window | inserted time |
+|---|---|---|---|---|
+| 16 cycles (naive) | &23 | &2F | 384 cycles | 96 µs = 1.5 slots - broken sync |
+| 18 cycles (real) | &1F | **&1F** | 256 cycles | 64 µs = 1 slot - works |
+
+Only the real, fully-stretched timing reproduces the `&1F` that ships in the
+binary's static byte at `&22db`. An unstretched model would insert a slot and
+a half, leaving a permanent half-line phase step on every frame's hsync -
+visibly broken sync, not black-and-white. So "experimentally determined" is
+almost certainly literal in the strongest sense: the loop rate across the
+1 MHz bus is hard enough to predict that Pelling measured it at runtime
+instead of trusting cycle counting.
+
+The `ORA #&0f` is then *tolerance, not slot-alignment*: one count of X is 8
+cycles of window = 2 µs of inserted time, so a 16-wide bucket step is 32 µs -
+half a line-slot, not a whole one. The OR rounds the measured count up to the
+top of its bucket, absorbing up to 15 counts of shortfall; `&1F` (one
+inserted slot) sits exactly at the top of the working bucket, and the
+neighbouring buckets would not work at all (`&0F`/`&2F` insert a half-integer
+number of slots and break sync; `&3F` inserts two slots, which inverts parity
+twice per frame and leaves colour intact). Both the calibration and the
+128 µs window itself run with interrupts masked (`SEI` through the
+initialisation, the frame routine entered from the IRQ vector), so nothing
+can stretch the window. The game even compensates its display geometry by
+one row when the tweak is active (`&23a4`, `&17d0`), and disables the tweak
+during stage transitions (`&45e1`/`&4609`).
 
 ## Why one stretched line kills colour
 
@@ -105,15 +149,24 @@ Hardware Guide for the BBC Microcomputer*, chapter 3):
 So: the subcarrier is a free-running crystal, and the PAL V-switch - the
 thing that alternates the burst's swing - **toggles once per CRTC hsync**.
 
+(A provenance aside, from stardot t=15045: the Beeb's encoder circuit closely
+follows a design Richard Russell devised at the BBC's Designs Department in
+1976 and, by his account and a colleague's recollection, shared with Acorn.
+The thread also notes that two resistors in the Acorn version compensate for
+the NAND gates that gate the subcarrier idling high, rather than mid-level,
+when the chroma is disabled - the burst gating is built from exactly this
+kind of switched-gate plumbing.)
+
 Now stretch one line per frame:
 
 - The frame contains an **even** number of hsyncs (312) spread over an **odd**
-  number of 64 µs line-slots (313); the slot after vsync has no hsync and no
-  burst.
-- The television's line flywheel ticks straight through (the stretch is
-  exactly 2H), so on *its* continuous line grid the received burst-swing
-  sequence skips a slot and resumes **with inverted parity - every frame,
-  every 20 ms**.
+  number of 64 µs line-slots (313); the extra slot lives inside a vsync pulse
+  one slot longer than usual, where there is no burst anyway (the same region
+  broadcast PAL blanks).
+- The television's line timebase ticks straight through (composite sync shows
+  it a longer vsync and in-phase line syncs after - see above), so on *its*
+  continuous line grid the received burst-swing sequence skips a slot and
+  resumes **with inverted parity - every frame, every 20 ms**.
 - The set's own V-switch is a divide-by-two off its line flyback, phase-checked
   by the **ident detector**: the 7.8 kHz half-line-rate component of the
   swinging burst, compared against the local switch. With the transmitted
@@ -151,11 +204,18 @@ invisible to everything except the ident path - which is the whole trick.
 
 ## Would it work on every TV?
 
-No direct period evidence either way was found (the most likely sources are
-two stardot.org.uk threads - [t=637](https://stardot.org.uk/forums/viewtopic.php?t=637),
-[t=15045](https://stardot.org.uk/forums/viewtopic.php?t=15045) - unreachable at
-research time with the forum down for maintenance; the game's instructions
-carry no compatibility caveat). But the mechanism says exactly which TV-side
+No direct period evidence either way has been found. The two most promising
+stardot.org.uk threads have now been read (with a member's help) and neither
+discusses the trick's reliability:
+[t=637](https://stardot.org.uk/forums/viewtopic.php?t=637) is about the
+sideways-RAM enhanced version (extra worlds, and the hold-E-while-loading
+trick to enable them), though it does reproduce the game manual's control
+table, confirming the F5 = B&W assignment and the hold-as-you-start
+instruction from the primary source;
+[t=15045](https://stardot.org.uk/forums/viewtopic.php?t=15045) concerns the
+encoder's design provenance (see below) rather than its behaviour on
+different sets. The game's instructions carry no compatibility caveat. So
+the question stays open - the strongest candidate sources are now checked. But the mechanism says exactly which TV-side
 parameters decide the outcome, and they are all in the **ident/killer path**,
 not the burst gate or ACC, since the burst itself is normal:
 
@@ -178,10 +238,11 @@ not the burst gate or ACC, since the burst itself is normal:
 No capture is needed to study this; the signal is fully specified:
 
 - a 312-line non-interlaced PAL frame, burst with the ±45° per-line swing on
-  every line;
-- one inserted, burstless, hsync-less 64 µs slot immediately after vsync, with
-  the swing sequence resuming as if the slot did not exist - net effect, the
-  swing parity inverts once per frame.
+  every line outside the vertical interval;
+- a vertical sync pulse one 64 µs slot LONGER than usual (the stretch lives
+  inside vsync, not after it), with line syncs resuming in phase afterwards
+  and the swing sequence resuming as if the extra slot did not exist - net
+  effect, the swing parity inverts once per frame.
 
 Decoder-side, PALindrome's colour killer is already ident-driven with a
 configurable threshold and asymmetric ramps; the missing piece is a
@@ -203,12 +264,22 @@ black-and-white, and the fast-ident set that shrugs it off.
 - [Firetrack instructions (everygamegoing)](https://www.everygamegoing.com/litem/Firetrack/38365)
 - [Nick Pelling interview (beebgames.com)](https://www.beebgames.com/interviews/nick-pelling/):
   calls Firetrack his best technical achievement; silent on the B&W mode
-- stardot.org.uk threads [t=637](https://stardot.org.uk/forums/viewtopic.php?t=637) and
-  [t=15045](https://stardot.org.uk/forums/viewtopic.php?t=15045) - likely the
-  community discussion of this trick; unreachable (forum maintenance) at
-  research time, worth a revisit
+- stardot.org.uk threads [t=637](https://stardot.org.uk/forums/viewtopic.php?t=637)
+  ("Firetrack enhanced version": the SWR extra worlds, plus the manual's
+  control table confirming F5 = B&W) and
+  [t=15045](https://stardot.org.uk/forums/viewtopic.php?t=15045) ("Beeb PAL
+  encoder mystery solved?": the encoder's 1976 BBC Designs Department
+  provenance) - members-only, read 2026-06-09; neither bears on
+  TV-dependence, which remains unevidenced either way
+- [BeebWiki: Cycle stretching](https://beebwiki.mdfs.net/Cycle_stretching) and
+  the [jsbeeb timing notes](https://xania.org/201405/jsbeeb-getting-the-timings-right-cpu) -
+  the 1 MHz-bus stretch behaviour behind the calibration analysis
 
-Researched 2026-06-09. The disassembly excerpts are verbatim, including the
+Researched 2026-06-09; independently re-verified the same day (cycle counts
+recomputed from the disassembly, the stretched-loop model checked against
+hardware-validated emulator timing, and the in-vsync placement of the stretch
+worked through from the vsync poll's instruction path). The disassembly
+excerpts are verbatim, including the
 `;` labels and the `#` commentary (cycle counts and explanations), which are
 the level7 disassembler's own annotations, not this document's; the hardware
 quotes are from the cited manuals. The line-stretch arithmetic, the
