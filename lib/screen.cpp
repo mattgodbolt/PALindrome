@@ -32,8 +32,11 @@ Screen::Screen(const ScreenConfig &cfg) :
     throw std::invalid_argument{"Screen: readout_gamma must be positive"};
   if (!(cfg_.eht_sag >= 0.0 && cfg_.eht_sag < 0.5))
     throw std::invalid_argument{"Screen: eht_sag must be in [0, 0.5)"};
-  if (!(cfg_.eht_tc_fields > 0.0))
-    throw std::invalid_argument{"Screen: eht_tc_fields must be positive"};
+  // Lower bound keeps the per-line integrator step alpha = 1/(tc * lines per
+  // field) at or below 1, so eht_ stays a convex combination and can't ring
+  // (the same guard VerticalSync places on its integrator).
+  if (!(cfg_.eht_tc_fields * cfg_.nominal_line_hz / cfg_.field_hz >= 1.0))
+    throw std::invalid_argument{"Screen: eht_tc_fields too small (the integrator step would exceed 1)"};
   if (!(cfg_.eht_focus >= 0.0 && cfg_.eht_focus <= 1.0))
     throw std::invalid_argument{"Screen: eht_focus must be in [0, 1]"};
   if (!(cfg_.line_pull >= 0.0 && cfg_.line_pull < 0.1))

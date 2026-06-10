@@ -408,9 +408,10 @@ TEST_CASE("beam sigma is raster-relative: the spot scales with the line pitch") 
 
 namespace {
 // Feed `lines` lines of synthetic beam data straight into a Screen: each line
-// opens with a back-porch black sample (seeds/holds the DC restore) and then
-// `active` samples at the given luma (0.0 = white => gun drive 1, 0.3-ish =
-// black => no drive). Optionally a single probe sample at (probe_h, probe_v).
+// opens with a back-porch sample at blanking level (0.3 — seeds/holds the DC
+// restore), then `active` samples at the given luma: 0.3 is true black (zero
+// drive) and 0.0 is full white (drive 0.3, which the AGC white tracker then
+// treats as full scale). Optionally one probe sample at (probe_h, probe_v).
 void feed_lines(video::Screen &screen, std::size_t lines, float luma, double probe_h = -1.0, double probe_v = 0.5) {
   constexpr std::size_t kActive = 24;
   std::vector<video::ChromaSample> pic;
