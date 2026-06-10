@@ -73,6 +73,23 @@ struct ScreenConfig {
   double h_window_hi = 1.0;
   double v_window_lo = 0.0;
   double v_window_hi = 1.0;
+  // Beam loading — the places where picture content loads the set. The beam is
+  // the EHT supply's load: a bright picture drains the aquadag reservoir faster
+  // than the flyback tops it up, the final-anode voltage sags by eht_sag of its
+  // unloaded value (at a sustained full-white load) with a time constant of
+  // eht_tc_fields field periods, and three things follow, all period-visible:
+  // the raster GROWS about its centre (deflection ∝ 1/sqrt(EHT) — the breathing
+  // on scene cuts), the picture dims slightly (light ∝ V·I), and the spot
+  // defocuses (the focus electrode tracks EHT imperfectly; eht_focus is the
+  // fractional spot growth at full sag). Separately, line_pull is the
+  // line-rate loading of the line-output stage: a line carrying a lot of white
+  // scans slightly wider, so vertical edges bend next to bright content
+  // (line_pull = fractional width stretch after a full-white line).
+  // eht_sag = 0 disables the EHT mechanism; line_pull = 0 disables the pull.
+  double eht_sag = 0.0;
+  double eht_tc_fields = 2.0;
+  double eht_focus = 0.3;
+  double line_pull = 0.0;
 };
 
 // The picture tube. A join sink fed three aligned rails — the picture (luma +
@@ -132,6 +149,10 @@ public:
   // preserved). Const — snapshotting doesn't disturb the running sim, so the
   // per-field callback can call it at every field boundary.
   [[nodiscard]] Frame snapshot() const;
+
+  // Diagnostic: the per-unit EHT (1 = unloaded; sustained full white sags it
+  // toward 1 - eht_sag).
+  [[nodiscard]] double eht() const noexcept { return eht_; }
 
   // The frame as latched by the most recent FieldEvent::latch(): the phosphor
   // and white reference as they stood at that boundary, quantised now. Falls
@@ -201,11 +222,45 @@ private:
   // horizontal one over columns, each normalised to sum 1. Both depend only on
   // the spot centre's sub-pixel fraction along that axis, so each is tabulated per
   // fraction bin (a [bin][cell] table) instead of calling exp() per sample.
+  // EHT focus softening quantises the spot into kFocusClasses sizes, one table
+  // set per class, switched per LINE (the EHT moves on field timescales) — the
+  // per-sample deposit loop sees fixed pointers and strides within a line.
   static constexpr std::size_t kGaussBins = 4096;
-  std::size_t gauss_stride_y_ = 1; // 2*splat_radius_y_+1 (rows)
-  std::size_t gauss_stride_x_ = 1; // 2*splat_radius_x_+1 (columns)
-  std::vector<float> gauss_lut_y_; // kGaussBins * gauss_stride_y_, normalised (vertical)
-  std::vector<float> gauss_lut_x_; // kGaussBins * gauss_stride_x_, normalised (horizontal)
+  static constexpr std::size_t kFocusClasses = 8;
+  struct SplatLut {
+    std::size_t radius;
+    std::size_t stride; // 2*radius + 1
+    std::vector<float> lut; // kGaussBins * stride, normalised
+  };
+  std::vector<SplatLut> y_classes_; // class 0 = nominal focus, last = full sag
+  std::vector<SplatLut> x_classes_;
+  std::size_t gauss_stride_y_ = 1; // the ACTIVE class's geometry (this line)
+  std::size_t gauss_stride_x_ = 1;
+  const float *gauss_lut_y_ = nullptr; // the active class's tables
+  const float *gauss_lut_x_ = nullptr;
+
+  // Beam loading (see ScreenConfig). The per-line mean gun output, normalised
+  // by the AGC white, is the load; eht_ integrates it at line rate (a slow
+  // cross-sample accumulator, hence double). The per-line effective mapping
+  // below folds the deflection growth (1/sqrt(eht_)) and the previous line's
+  // width pull into the same mul-add shape the per-sample deposit already
+  // uses, so the hot loop is unchanged.
+  double eht_ = 1.0; // per-unit final-anode voltage; 1 = unloaded
+  bool loading_ = false; // any beam-loading mechanism enabled (set in the ctor)
+  // The line accumulator is float, not double: it sums one line (~1000 samples,
+  // values O(1)), so float error is ~1e-4 relative — and the per-sample double
+  // converts plus a serial double add chain cost ~9% of the deposit. The
+  // cross-line accumulator (eht_) stays double per the precision rule.
+  float line_load_sum_ = 0.0f;
+  std::size_t line_load_n_ = 0;
+  double prev_line_load_ = 0.0; // last completed line's mean load (drives the pull)
+  double x_scale_eff_ = 0.0; // per-line mapping: x = (h - off) * x_scale_eff_ + x_off_eff_
+  double x_off_eff_ = 0.0;
+  double y_scale_eff_ = 0.0; // per-line mapping: y = v * y_scale_eff_ - tilt_eff_ * h + y_off_eff_
+  double y_off_eff_ = 0.0;
+  double tilt_eff_ = 0.0;
+  float bright_eff_ = 1.0f; // light ∝ V·I: the per-line EHT brightness factor
+  void start_line(); // finalize the line load, update eht_, refresh the mapping
 
   // The electron-gun curve drive^gamma is the last un-LUT'd per-sample
   // transcendental; tabulate it over the drive domain (built once for cfg_.gamma)

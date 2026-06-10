@@ -35,6 +35,10 @@ private:
   double gamma_{2.6}; // electron-gun gamma (a real tube's curve; the source pre-corrects ~1/2.2)
   double readout_gamma_{2.2}; // the PNG "camera" encode; 1.0 = raw linear light
   double overscan_{0.06}; // fraction of the active picture cropped behind the bezel; < 0 = full scan
+  double eht_sag_{0.06}; // EHT sag at a sustained full-white load (0 disables)
+  double eht_tc_{2.0}; // EHT sag/recovery time constant, field periods
+  double eht_focus_{0.3}; // spot growth at full sag
+  double line_pull_{0.003}; // width stretch after a full-white line (0 disables)
   // Colour decode (PAL-D chroma channel). Off => a grey render.
   bool colour_{false};
   double saturation_{0.17}; // chroma gain (fraction of white reference)

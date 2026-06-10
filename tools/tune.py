@@ -70,6 +70,23 @@ KNOBS = [
          min=-0.01, max=0.15, step=0.01, default=0.06,
          help="Fraction of the nominal active picture cropped behind the bezel (half per side), filling the frame "
               "like a real set. Negative = the old full-scan framing with blanking visible."),
+    dict(name="eht_sag", flag="--eht-sag", label="EHT sag",
+         min=0.0, max=0.25, step=0.005, default=0.06,
+         help="How much the final-anode voltage sags under a sustained full-white load. The raster breathes "
+              "(grows ~sag/2), dims and defocuses on bright scenes, recovering on dark ones. 0 = perfectly "
+              "regulated supply (no breathing)."),
+    dict(name="eht_tc", flag="--eht-tc", label="EHT time constant (fields)",
+         min=0.25, max=10.0, step=0.25, default=2.0,
+         help="How quickly the EHT sags and recovers, in field periods (~20 ms each) - the aquadag reservoir "
+              "and supply regulation. Shorter breathes snappily on scene cuts; longer is a heavier, slower wallow."),
+    dict(name="eht_focus", flag="--eht-focus", label="EHT focus loss",
+         min=0.0, max=1.0, step=0.05, default=0.3,
+         help="How much the beam spot grows at full EHT sag (the focus electrode tracks the sagging EHT "
+              "imperfectly). Bright scenes go soft as well as large."),
+    dict(name="line_pull", flag="--line-pull", label="Line pull",
+         min=0.0, max=0.02, step=0.0005, default=0.003,
+         help="Line-output stage loading: a line carrying lots of white scans slightly wider, so vertical edges "
+              "bend next to bright content. 0 disables."),
     dict(name="saturation", flag="--saturation", label="Saturation",
          min=0.0, max=0.5, step=0.01, default=0.17,
          help="Colour intensity: the chroma gain as a fraction of the luma white reference (the colour pot). 0 = "

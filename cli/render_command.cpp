@@ -59,6 +59,14 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(overscan_, "x")["--overscan"](
               "Fraction of the active picture cropped behind the bezel (default 0.06); negative = the old "
               "full-scan framing, blanking on screen"))
+          .add_argument(lyra::opt(eht_sag_, "x")["--eht-sag"](
+              "EHT sag at a sustained full-white load (default 0.06: the raster breathes ~3%, dims and defocuses "
+              "on bright scenes; 0 = a perfectly regulated supply)"))
+          .add_argument(lyra::opt(eht_tc_, "fields")["--eht-tc"]("EHT sag/recovery time constant in field periods"))
+          .add_argument(lyra::opt(eht_focus_, "x")["--eht-focus"]("Spot growth at full EHT sag (focus mistracking)"))
+          .add_argument(lyra::opt(line_pull_, "x")["--line-pull"](
+              "Line-output loading: width stretch after a full-white line (verticals bend next to bright content; "
+              "0 disables)"))
           .add_argument(lyra::opt(colour_)["--colour"]["--color"]("Decode PAL colour (RGB)"))
           .add_argument(lyra::opt(saturation_, "x")["--saturation"]("Colour: chroma gain into the gun matrix"))
           .add_argument(lyra::opt(contrast_, "x")["--contrast"]("Readout white point (AGC-relative; the contrast pot)"))
@@ -165,6 +173,10 @@ int RenderCommand::run() const {
   dc.saturation = saturation_;
   dc.contrast = contrast_;
   dc.readout_gamma = readout_gamma_;
+  dc.eht_sag = eht_sag_;
+  dc.eht_tc_fields = eht_tc_;
+  dc.eht_focus = eht_focus_;
+  dc.line_pull = line_pull_;
   dc.h_blank = h_blank_;
   // Overscan: map the nominal active picture box — the 52 us active line of
   // the 64 us period, and the picture lines after the vertical interval —

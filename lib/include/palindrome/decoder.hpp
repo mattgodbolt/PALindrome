@@ -48,6 +48,10 @@ struct DecoderConfig {
   double saturation = 1.0;
   double contrast = 1.0; // readout white point (see ScreenConfig::contrast)
   double readout_gamma = 1.0; // the PNG "camera" encode (see ScreenConfig::readout_gamma)
+  double eht_sag = 0.0; // beam loading (see ScreenConfig): EHT sag at full white
+  double eht_tc_fields = 2.0; // sag/recovery time constant, field periods
+  double eht_focus = 0.3; // spot growth at full sag
+  double line_pull = 0.0; // per-line width stretch after a full-white line
   double h_blank = 0.16; // retrace blanking end, h_phase (see ScreenConfig::h_blank)
   // The scan window mapped to the frame (see ScreenConfig) — the driver derives
   // these from its overscan setting; [0,1]x[0,1] shows the whole scan.
