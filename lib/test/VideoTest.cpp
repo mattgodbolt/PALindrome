@@ -518,6 +518,12 @@ TEST_CASE("the beam-current limiter pulls sustained brightness to its threshold"
   feed_lines(screen, 900, 0.0f);
   CHECK(screen.limiter_gain() < 0.6);
   CHECK(screen.limiter_gain() > 0.4);
+  // A true steady state: thousands more white lines must NOT ratchet the gain
+  // further down (the failure mode of a reference that adapts to its own
+  // limiting — exactly what sank the first peak-white limiter design).
+  feed_lines(screen, 5000, 0.0f);
+  CHECK(screen.limiter_gain() < 0.6);
+  CHECK(screen.limiter_gain() > 0.4);
   // A dark picture releases it.
   feed_lines(screen, 900, 0.3f);
   CHECK(screen.limiter_gain() > 0.95);

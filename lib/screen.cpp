@@ -43,7 +43,8 @@ Screen::Screen(const ScreenConfig &cfg) :
     throw std::invalid_argument{"Screen: line_pull must be in [0, 0.1)"};
   if (!(cfg_.bcl_threshold >= 0.0 && cfg_.bcl_threshold <= 1.5))
     throw std::invalid_argument{"Screen: bcl_threshold must be in [0, 1.5] (0 disables)"};
-  if (!(cfg_.bcl_tc_fields * cfg_.nominal_line_hz / cfg_.field_hz >= 1.0))
+  // Only meaningful (and only used) when the limiter is enabled.
+  if (cfg_.bcl_threshold > 0.0 && !(cfg_.bcl_tc_fields * cfg_.nominal_line_hz / cfg_.field_hz >= 1.0))
     throw std::invalid_argument{"Screen: bcl_tc_fields too small (the integrator step would exceed 1)"};
 
   // Decay per sample so that brightness falls by 1/e over persistence_fields

@@ -270,11 +270,9 @@ private:
   double y_off_eff_ = 0.0;
   double tilt_eff_ = 0.0;
   float bright_eff_ = 1.0f; // light ∝ V·I: the per-line EHT brightness factor
-  // Beam-current / peak-white limiting (see ScreenConfig): both act on the
-  // video gain ahead of the gun, per line. bcl_state_ smooths the load;
-  // line_peak_ carries the line's peak gun output into the NEXT line's
-  // decision (the TDA3561A's one-line delay). limiter_eff_ multiplies the
-  // gun drive (and the chroma with it — it is the contrast control).
+  // Beam-current limiting (see ScreenConfig): bcl_state_ smooths the per-line
+  // load and bcl_gain_ integrates against the threshold; video_gain_ scales
+  // the gun drive (and the chroma with it — it is the contrast control).
   // (A peak-white limiter — the TDA3561A's one-line-delayed output ceiling —
   // belongs here too, but needs an ABSOLUTE white reference to act against:
   // every content-statistical reference either ratchets or misfires on
