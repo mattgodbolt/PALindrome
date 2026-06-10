@@ -357,7 +357,8 @@ int RenderCommand::run() const {
         decoder.killer_gain() < video::ChromaDecoder::kKillerSwitch ? " (COLOUR KILLED)" : "");
 
   if (decoder.limiter_gain() < 0.99)
-    std::println("beam limiter: video gain {:.3f}", decoder.limiter_gain());
+    std::println(
+        "limiters: protection gain {:.3f} (beam-current x peak-white, contrast pot excluded)", decoder.limiter_gain());
   if (decoder.agc_gain() > 0.0)
     std::println("AGC: front-end gain {:.3f}x (sync tip held at 1.0)", decoder.agc_gain());
   const double line_hz = decoder.line_omega() * envelope_rate;
