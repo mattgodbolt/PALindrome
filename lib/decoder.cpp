@@ -29,12 +29,17 @@ template<class C>
   c.adaptive = mode == AgcMode::adaptive;
   return c;
 }
+
+// The AGC stage exists only in sync-tip mode; adaptive levels bypass it.
+[[nodiscard]] std::optional<Agc> make_agc(const DecoderConfig &cfg) {
+  if (cfg.agc_mode != AgcMode::sync_tip)
+    return std::nullopt;
+  return Agc{with_rate(cfg.agc, cfg.sample_rate_hz)};
+}
 } // namespace
 
 Decoder::Decoder(const DecoderConfig &cfg) :
-    colour_{cfg.colour},
-    agc_{cfg.agc_mode == AgcMode::sync_tip ? std::optional<Agc>{std::in_place, with_rate(cfg.agc, cfg.sample_rate_hz)}
-                                           : std::nullopt},
+    colour_{cfg.colour}, agc_{make_agc(cfg)},
     sync_lp_{dsp::lowpass_kernel(kSyncLpTaps, cfg.sample_rate_hz, cfg.sync_lp_cutoff_hz)},
     sep_{with_mode(with_rate(cfg.sep, cfg.sample_rate_hz), cfg.agc_mode)},
     hsweep_{with_rate(cfg.hsweep, cfg.sample_rate_hz)}, vsync_{with_rate(cfg.vsync, cfg.sample_rate_hz)},

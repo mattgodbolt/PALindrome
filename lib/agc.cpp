@@ -8,15 +8,15 @@
 
 namespace palindrome::video {
 
-Agc::Agc(const AgcConfig &cfg) : cfg_{cfg} {
-  if (!(cfg_.sample_rate_hz > 0.0))
+Agc::Agc(const AgcConfig &cfg) {
+  if (!(cfg.sample_rate_hz > 0.0))
     throw std::invalid_argument{"Agc: sample_rate_hz must be positive"};
-  if (!(cfg_.nominal_field_hz > 0.0))
+  if (!(cfg.nominal_field_hz > 0.0))
     throw std::invalid_argument{"Agc: nominal_field_hz must be positive"};
-  if (!(cfg_.decay_fields > 0.0))
+  if (!(cfg.decay_fields > 0.0))
     throw std::invalid_argument{"Agc: decay_fields must be positive"};
-  const double samples_per_field = cfg_.sample_rate_hz / cfg_.nominal_field_hz;
-  release_ = std::exp(-1.0 / (cfg_.decay_fields * samples_per_field));
+  const double samples_per_field = cfg.sample_rate_hz / cfg.nominal_field_hz;
+  release_ = std::exp(-1.0 / (cfg.decay_fields * samples_per_field));
 }
 
 void Agc::prepare(std::size_t max_in) { out_.reserve(max_in); }

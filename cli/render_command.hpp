@@ -52,8 +52,12 @@ private:
   double pwl_{1.25}; // peak-white limiter ceiling, ×standard white drive (0 disables)
   // Colour decode (PAL-D chroma channel). Off => a grey render.
   bool colour_{false};
-  double saturation_{0.085}; // chroma gain (fraction of white reference)
-  double contrast_{1.6}; // the contrast pot: video gain pre-gamma (sync-tip mode)
+  // saturation/contrast default per --agc mode (negative = unset): sync-tip
+  // gets the pot-up SMS calibration (0.085 / 1.6), adaptive keeps the values
+  // every pre-AGC render used (0.17 / 0.85), so a bare --agc adaptive
+  // reproduces the legacy output exactly.
+  double saturation_{-1.0}; // chroma gain (fraction of white reference)
+  double contrast_{-1.0}; // the contrast pot: video gain pre-gamma (sync-tip mode)
   double h_blank_{0.16}; // retrace blanking end, h_phase
   double subcarrier_{0.0}; // subcarrier crystal Hz; 0 => textbook 4.43361875 MHz
   double uv_bandwidth_{0.0}; // post-demod U/V low-pass corner Hz; 0 => decoder default

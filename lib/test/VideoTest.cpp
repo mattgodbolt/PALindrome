@@ -18,6 +18,8 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
+#include <catch2/matchers/catch_matchers_range_equals.hpp>
 
 namespace video = palindrome::video;
 
@@ -73,8 +75,8 @@ std::vector<float> synth_colour_composite(std::size_t lines, std::size_t line_le
 
 // Run separator -> sweep over `env` fed in fixed-size chunks, returning the
 // full BeamSample stream. chunk == env.size() is the single-block reference.
-std::vector<video::BeamSample> run_chunked(std::span<const float> env, std::size_t chunk) {
-  video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate}};
+std::vector<video::BeamSample> run_chunked(std::span<const float> env, std::size_t chunk, bool adaptive) {
+  video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate, .adaptive = adaptive}};
   video::HorizontalSweep sweep{video::HorizontalSweepConfig{.sample_rate_hz = kRate}};
   sep.prepare(chunk);
   sweep.prepare(chunk);
@@ -92,16 +94,19 @@ std::vector<video::BeamSample> run_chunked(std::span<const float> env, std::size
 
 TEST_CASE("separator + sweep are block-invariant (the streaming guarantee)") {
   const auto env = synth_composite(40, 1028);
-  const auto whole = run_chunked(env, env.size());
 
-  // Feed the same signal in awkward block sizes that straddle line and pulse
-  // boundaries; the output must be bit-for-bit identical to the single call.
-  for (const std::size_t chunk: {std::size_t{1}, std::size_t{7}, std::size_t{333}, std::size_t{4096}}) {
-    const auto chunked = run_chunked(env, chunk);
-    REQUIRE(chunked.size() == whole.size());
-    for (std::size_t i = 0; i < whole.size(); ++i) {
-      CHECK(chunked[i].h_phase == whole[i].h_phase);
-      CHECK(chunked[i].line_start == whole[i].line_start);
+  // Both slicer modes: the fixed slice (a single bool of state) and the
+  // adaptive trackers (the peak_/floor_ double recurrences, where chunking
+  // bugs would actually live). Feed the same signal in awkward block sizes
+  // that straddle line and pulse boundaries; the output must be bit-for-bit
+  // identical to the single call.
+  const auto same_beam = [](const video::BeamSample &a, const video::BeamSample &b) {
+    return a.h_phase == b.h_phase && a.line_start == b.line_start;
+  };
+  for (const bool adaptive: {false, true}) {
+    const auto whole = run_chunked(env, env.size(), adaptive);
+    for (const std::size_t chunk: {std::size_t{1}, std::size_t{7}, std::size_t{333}, std::size_t{4096}}) {
+      CHECK_THAT(run_chunked(env, chunk, adaptive), Catch::Matchers::RangeEquals(whole, same_beam));
     }
   }
 }
@@ -145,9 +150,7 @@ TEST_CASE("Agc is block-invariant (the streaming guarantee)") {
       const auto out = agc.process(std::span{env}.subspan(off, n));
       chunked.insert(chunked.end(), out.begin(), out.end());
     }
-    REQUIRE(chunked.size() == whole.size());
-    for (std::size_t i = 0; i < whole.size(); ++i)
-      CHECK(chunked[i] == whole[i]); // per-sample recurrence: bit-exact
+    CHECK(chunked == whole); // per-sample recurrence: bit-exact
   }
 }
 

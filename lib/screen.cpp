@@ -334,9 +334,10 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
 
     // Gun drives: luma sets the Y term; the matrix adds the colour difference.
     // Each gun cuts off at zero, then takes its gamma. Grey = the luma gun alone.
-    // The limiter is the contrast control: it scales the drive ahead of the
-    // gun (video_gain_ is exactly 1.0 when no limiter is enabled, and the
-    // chroma follows automatically through the white_drive_ reference).
+    // video_gain_ is the contrast stage: the pot times the limiter gains (so
+    // unity only at contrast 1 with nothing limiting; in tracked mode the pot
+    // acts at the readout instead and this is the limiters alone). The chroma
+    // follows it through the white reference below.
     const double drive = video_gain_ * static_cast<double>(drive_of(picture[i].luma, hbeam[i].h_phase));
     const float luma_gun = gun(drive);
     // Tracked-white mode only: follow the peak luma gun (readout white) and the

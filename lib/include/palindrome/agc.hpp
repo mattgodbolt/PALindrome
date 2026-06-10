@@ -49,7 +49,8 @@ public:
   [[nodiscard]] double gain() const noexcept { return tip_ > 0.0 ? 1.0 / tip_ : 0.0; }
 
 private:
-  AgcConfig cfg_;
+  // The config collapses to one derived constant; nothing else is consulted
+  // after construction (the keyed-AGC rebuild in issue #37 may change that).
   double release_; // per-sample tip decay factor
   double tip_ = 0.0; // tracked carrier peak (the sync tip): slow accumulator
   bool seeded_ = false;

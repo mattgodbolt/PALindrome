@@ -187,7 +187,9 @@ relied on to keep their left edge on screen), and
 single image). PNGs are encoded fast (uncompressed) rather than small - this is a
 research tool that throws most of them away. The old default look is exactly
 `--gamma 1.5 --overscan -1 --readout-gamma 1 --eht-sag 0 --line-pull 0 --bcl 0
---pwl 0 --agc adaptive --contrast 0.85 --saturation 0.17`.
+--agc adaptive` (adaptive mode also flips the contrast/saturation defaults
+back to their pre-AGC values and sidelines the peak-white limiter, which
+needs absolute levels).
 
 Levels are absolute, the way a receiver actually knows them: an IF AGC
 (`--agc sync-tip`, the default) peak-detects the carrier's sync tip - under
