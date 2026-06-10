@@ -104,7 +104,7 @@ half-microseconds long, every iteration's VIA poll lands anti-phase and takes
 the full two-cycle stretch: **the loop self-locks to 18 cycles, not 16**.
 Run the arithmetic both ways and the difference is decisive:
 
-| loop model | X measured | after `ORA #&0F` | window | inserted time |
+| loop model | X measured | after `ORA #&0f` | window | inserted time |
 |---|---|---|---|---|
 | 16 cycles (naive) | &23 | &2F | 384 cycles | 96 µs = 1.5 slots - broken sync |
 | 18 cycles (real) | &1F | **&1F** | 256 cycles | 64 µs = 1 slot - works |
@@ -198,9 +198,9 @@ invisible to everything except the ident path - which is the whole trick.
 
 No direct period evidence either way was found (the most likely sources are
 two stardot.org.uk threads - [t=637](https://stardot.org.uk/forums/viewtopic.php?t=637),
-[t=15045](https://stardot.org.uk/forums/viewtopic.php?t=15045) - unreachable at
-research time with the forum down for maintenance; the game's instructions
-carry no compatibility caveat). But the mechanism says exactly which TV-side
+[t=15045](https://stardot.org.uk/forums/viewtopic.php?t=15045) - which are
+members-only and not web-archived, so they remain unread; the game's
+instructions carry no compatibility caveat). But the mechanism says exactly which TV-side
 parameters decide the outcome, and they are all in the **ident/killer path**,
 not the burst gate or ACC, since the burst itself is normal:
 
