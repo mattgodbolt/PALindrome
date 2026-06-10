@@ -70,6 +70,10 @@ KNOBS = [
          min=-0.01, max=0.15, step=0.01, default=0.06,
          help="Fraction of the nominal active picture cropped behind the bezel (half per side), filling the frame "
               "like a real set. Negative = the old full-scan framing with blanking visible."),
+    dict(name="bcl", flag="--bcl", label="Beam limiter (load)",
+         min=0.0, max=1.2, step=0.05, default=0.7,
+         help="Beam-current limiter: the average beam load above which the set pulls its own contrast down (tube "
+              "and supply protection). A sustained bright scene dims toward this level. 0 = no limiter."),
     dict(name="h_shift", flag="--h-shift", label="H shift (centring)",
          min=-0.05, max=0.05, step=0.001, default=0.0,
          help="Horizontal centring: + moves the picture right (fraction of a line; ~0.001 is about one output "

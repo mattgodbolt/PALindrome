@@ -52,6 +52,8 @@ struct DecoderConfig {
   double eht_tc_fields = 2.0; // sag/recovery time constant, field periods
   double eht_focus = 0.3; // spot growth at full sag
   double line_pull = 0.0; // per-line width stretch after a full-white line
+  double bcl_threshold = 0.0; // beam-current limiter: average-load threshold (0 = off)
+  double bcl_tc_fields = 0.5; // BCL response time constant
   double h_blank = 0.16; // retrace blanking end, h_phase (see ScreenConfig::h_blank)
   // The scan window mapped to the frame (see ScreenConfig) — the driver derives
   // these from its overscan setting; [0,1]x[0,1] shows the whole scan.
@@ -108,6 +110,7 @@ public:
   [[nodiscard]] double burst_amplitude() const noexcept { return chroma_.burst_amplitude(); }
   [[nodiscard]] double burst_swing_deg() const noexcept { return chroma_.burst_swing_deg(); }
   [[nodiscard]] double killer_gain() const noexcept { return chroma_.killer_gain(); }
+  [[nodiscard]] double limiter_gain() const noexcept { return screen_.limiter_gain(); }
 
 private:
   bool colour_;

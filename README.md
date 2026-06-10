@@ -158,6 +158,13 @@ single image). PNGs are encoded fast (uncompressed) rather than small — this i
 research tool that throws most of them away. The old default look is exactly
 `--gamma 1.5 --overscan -1 --readout-gamma 1`.
 
+The set protects itself, too: `--bcl` (default 0.7) is the beam-current
+limiter — when the average beam load exceeds it, the set pulls its own
+contrast down until the load settles at the threshold, so a sustained bright
+scene dims rather than cooking the tube (0 = an unprotected set). The
+companion peak-white limiter needs the absolute level reference of the gated
+AGC and lands with it.
+
 The set is also load-aware: the beam is the EHT supply's load, so a bright
 picture sags the final-anode voltage (`--eht-sag`, default 0.06 at a sustained
 full-white load, time constant `--eht-tc` fields) and the raster breathes —
