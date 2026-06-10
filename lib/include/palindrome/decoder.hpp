@@ -1,5 +1,6 @@
 #pragma once
 
+#include "palindrome/agc.hpp"
 #include "palindrome/chroma_decoder.hpp"
 #include "palindrome/fir.hpp"
 #include "palindrome/horizontal_sweep.hpp"
@@ -9,6 +10,7 @@
 #include "palindrome/video_types.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -33,6 +35,17 @@ struct DecoderConfig {
   SyncSeparatorConfig sep{};
   HorizontalSweepConfig hsweep{};
   VerticalSyncConfig vsync{};
+  // Level scheme (see AgcMode). sync_tip - the period default - engages the
+  // front-end AGC and absolute levels throughout: the separator's fixed-depth
+  // slice and the screen's geometry white. adaptive bypasses the AGC and
+  // restores the per-stage trackers (the separator's floor/peak, the screen's
+  // peak-white autocontrast) - the ctor stamps those stage flags from this one
+  // switch so the modes can't be half-mixed.
+  AgcMode agc_mode = AgcMode::sync_tip;
+  AgcConfig agc{}; // sample_rate_hz filled in at construction
+  // Peak-white limiter threshold (see ScreenConfig::pwl_threshold); only
+  // meaningful with sync_tip levels. 0 disables.
+  double pwl_threshold = 1.25;
   // Phosphor persistence, in field periods (see ScreenConfig). Higher evens out
   // the brightness between the two interlaced fields; lower sharpens motion.
   double persistence_fields = 1.2;
@@ -111,9 +124,12 @@ public:
   [[nodiscard]] double burst_swing_deg() const noexcept { return chroma_.burst_swing_deg(); }
   [[nodiscard]] double killer_gain() const noexcept { return chroma_.killer_gain(); }
   [[nodiscard]] double limiter_gain() const noexcept { return screen_.limiter_gain(); }
+  // AGC diagnostic: the front-end gain (1/tracked sync tip); 0 in adaptive mode.
+  [[nodiscard]] double agc_gain() const noexcept { return agc_ ? agc_->gain() : 0.0; }
 
 private:
   bool colour_;
+  std::optional<Agc> agc_; // engaged for sync_tip levels; absent in adaptive mode
   dsp::Fir sync_lp_; // narrow low-pass on the sync branch only (picture rail untouched)
   SyncSeparator sep_;
   HorizontalSweep hsweep_;

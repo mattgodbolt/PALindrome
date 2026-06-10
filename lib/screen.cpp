@@ -9,8 +9,22 @@
 
 namespace palindrome::video {
 
+namespace {
+// System I modulation geometry, as fractions of the AGC'd sync tip: blanking
+// at 0.76 of peak carrier, peak white at 0.20, so a broadcast-standard
+// full-white line drives the gun (0.76 - 0.20) = 0.56 above the clamped black.
+// This is the assumption a real set bakes into its video gain - it never
+// measures white, it trusts the transmitter's geometry. (B/G sets assume white
+// at 0.10 instead; a per-system knob if a non-UK corpus ever arrives.)
+constexpr double kSystemIWhiteDrive = 0.76 - 0.20;
+// Peak-white limiter recovery per line: the control capacitor's discharge -
+// gain returns from a deep limit over roughly half a field once the overdrive
+// clears. Attack is per-line (the charge path is fast by design).
+constexpr double kPwlRecover = 1.005;
+} // namespace
+
 Screen::Screen(const ScreenConfig &cfg) :
-    cfg_{cfg}, channels_{cfg.colour ? std::size_t{3} : std::size_t{1}},
+    cfg_{cfg}, channels_{cfg.colour ? std::size_t{3} : std::size_t{1}}, tracking_{cfg.tracked_white},
     bright_(cfg.width * cfg.height * (cfg.colour ? 3 : 1), 0.0f) {
   if (cfg_.width == 0 || cfg_.height == 0)
     throw std::invalid_argument{"Screen: width and height must be positive"};
@@ -46,6 +60,10 @@ Screen::Screen(const ScreenConfig &cfg) :
   // Only meaningful (and only used) when the limiter is enabled.
   if (cfg_.bcl_threshold > 0.0 && !(cfg_.bcl_tc_fields * cfg_.nominal_line_hz / cfg_.field_hz >= 1.0))
     throw std::invalid_argument{"Screen: bcl_tc_fields too small (the integrator step would exceed 1)"};
+  if (!(cfg_.contrast >= 0.0))
+    throw std::invalid_argument{"Screen: contrast must be non-negative"};
+  if (!(cfg_.pwl_threshold >= 0.0 && cfg_.pwl_threshold <= 4.0))
+    throw std::invalid_argument{"Screen: pwl_threshold must be in [0, 4] (0 disables)"};
 
   // Decay per sample so that brightness falls by 1/e over persistence_fields
   // field periods: tau_samples = persistence * (sample_rate / field_hz).
@@ -118,6 +136,19 @@ Screen::Screen(const ScreenConfig &cfg) :
   limiting_ = cfg_.bcl_threshold > 0.0;
   // The line-load sensor runs for any consumer: the EHT, the pull or a limiter.
   loading_ = cfg_.eht_sag > 0.0 || cfg_.line_pull > 0.0 || limiting_;
+  // Absolute levels: white is the standard's geometry, fixed at construction -
+  // the readout white point is the gun's output at a broadcast full-white
+  // drive, and the chroma scales against the same constant. The contrast pot
+  // is video gain ahead of the gun. Tracked mode leaves both at 0 to be
+  // tracked per sample, and the pot stays at the readout (its old meaning).
+  if (!tracking_) {
+    white_drive_ = kSystemIWhiteDrive;
+    white_ref_ = std::pow(kSystemIWhiteDrive, cfg_.gamma);
+    contrast_gain_ = cfg_.contrast;
+    pwl_on_ = cfg_.pwl_threshold > 0.0;
+    pwl_level_ = cfg_.pwl_threshold * kSystemIWhiteDrive;
+  }
+  video_gain_ = contrast_gain_;
   // The per-line effective mapping starts unloaded (eht_ = 1, no pull).
   x_scale_eff_ = x_scale_;
   x_off_eff_ = -cfg_.h_window_lo * x_scale_;
@@ -214,14 +245,27 @@ void Screen::start_line() {
     // gain — the loop contains the limiter (the sensor sees limited drive),
     // so this settles the measured average exactly at the threshold, as a
     // real BCL's negative feedback into the contrast stage does.
-    if (cfg_.bcl_threshold > 0.0) {
-      const double alpha = 1.0 / (cfg_.bcl_tc_fields * cfg_.nominal_line_hz / cfg_.field_hz);
-      bcl_state_ += alpha * (load - bcl_state_);
-      const double err = (bcl_state_ - cfg_.bcl_threshold) / cfg_.bcl_threshold;
-      bcl_gain_ = std::clamp(bcl_gain_ * (1.0 - 0.05 * err), 0.05, 1.0);
-    }
-    video_gain_ = bcl_gain_;
+    const double alpha = 1.0 / (cfg_.bcl_tc_fields * cfg_.nominal_line_hz / cfg_.field_hz);
+    bcl_state_ += alpha * (load - bcl_state_);
+    const double err = (bcl_state_ - cfg_.bcl_threshold) / cfg_.bcl_threshold;
+    bcl_gain_ = std::clamp(bcl_gain_ * (1.0 - 0.05 * err), 0.05, 1.0);
   }
+  if (pwl_on_) {
+    // Peak-white limiting: only active while the output exceeds the ceiling,
+    // and engagement is delayed by one line (pwl_armed_) so an abrupt
+    // colour-to-white transition never triggers it - the TDA3561A's exact
+    // behaviour. The pull is proportional (one line settles the peak to the
+    // ceiling); recovery is the control capacitor's slow discharge.
+    const bool over = pwl_line_peak_ > pwl_level_;
+    if (over && pwl_armed_)
+      pwl_gain_ = std::max(0.05, pwl_gain_ * (pwl_level_ / pwl_line_peak_));
+    else if (!over)
+      pwl_gain_ = std::min(1.0, pwl_gain_ * kPwlRecover);
+    pwl_armed_ = over;
+    pwl_line_peak_ = 0.0;
+  }
+  if (limiting_ || pwl_on_)
+    video_gain_ = contrast_gain_ * bcl_gain_ * pwl_gain_;
 
   if (cfg_.eht_sag <= 0.0 && cfg_.line_pull <= 0.0)
     return;
@@ -290,17 +334,19 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
 
     // Gun drives: luma sets the Y term; the matrix adds the colour difference.
     // Each gun cuts off at zero, then takes its gamma. Grey = the luma gun alone.
-    // The limiter is the contrast control: it scales the drive ahead of the
-    // gun (video_gain_ is exactly 1.0 when no limiter is enabled, and the
-    // chroma follows automatically through the white_drive_ reference).
+    // video_gain_ is the contrast stage: the pot times the limiter gains (so
+    // unity only at contrast 1 with nothing limiting; in tracked mode the pot
+    // acts at the readout instead and this is the limiters alone). The chroma
+    // follows it through the white reference below.
     const double drive = video_gain_ * static_cast<double>(drive_of(picture[i].luma, hbeam[i].h_phase));
     const float luma_gun = gun(drive);
-    // IF AGC: track the peak luma gun (readout white) and the peak luma drive (the
-    // chroma reference), fast up, slow down. Tracking drive ties the colour to the
-    // luma scale: U/V arrive normalised to the burst, so scaling them by the white
-    // drive makes saturation a bounded fraction of white, not a free multiplier.
-    white_ref_ = std::max(static_cast<double>(luma_gun), white_ref_ * agc_release_);
-    white_drive_ = std::max(drive, white_drive_ * agc_release_);
+    // Tracked-white mode only: follow the peak luma gun (readout white) and the
+    // peak luma drive (the chroma reference), fast up, slow down. In absolute
+    // mode both are geometry constants set in the ctor - nothing to advance.
+    if (tracking_) {
+      white_ref_ = std::max(static_cast<double>(luma_gun), white_ref_ * agc_release_);
+      white_drive_ = std::max(drive, white_drive_ * agc_release_);
+    }
     // Retrace blanking: the beam is off through sync, back porch and burst, the
     // line-blanking pulse of a real set. This is why the burst — a big subcarrier
     // sitting in the back porch — never paints a coloured bar; it's blanked, not
@@ -309,15 +355,27 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
       continue;
 
     // R/G/B guns: luma drive plus the colour difference, each cut off then gamma'd.
+    // Chroma is referenced to the white drive so saturation is a bounded fraction
+    // of white; in absolute mode the contrast stage (video_gain_) scales it along
+    // with the luma, as the TDA3561A's contrast control acts on all three outputs.
     float gun_rgb[3] = {luma_gun, 0.0f, 0.0f};
+    double peak_drive = drive;
     if (channels_ == 3) {
-      const double cs = cfg_.saturation * white_drive_; // chroma referenced to white
+      const double cs = cfg_.saturation * (tracking_ ? white_drive_ : white_drive_ * video_gain_);
       const double u = cs * static_cast<double>(picture[i].u);
       const double v = cs * static_cast<double>(picture[i].v);
-      gun_rgb[0] = gun(drive + kRv * v);
-      gun_rgb[1] = gun(drive + kGu * u + kGv * v);
-      gun_rgb[2] = gun(drive + kBu * u);
+      const double dr = drive + kRv * v;
+      const double dg = drive + kGu * u + kGv * v;
+      const double db = drive + kBu * u;
+      gun_rgb[0] = gun(dr);
+      gun_rgb[1] = gun(dg);
+      gun_rgb[2] = gun(db);
+      if (pwl_on_)
+        peak_drive = std::max({dr, dg, db});
     }
+    // The peak-white limiter senses the line's peak output drive (any gun).
+    if (pwl_on_)
+      pwl_line_peak_ = std::max(pwl_line_peak_, peak_drive);
 
     // The beam current is this line's load on the EHT supply (summed before
     // the brightness factor — sagging volts dim the light, not the current);
@@ -389,16 +447,19 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
 }
 
 Screen::Frame Screen::quantise(const std::vector<float> &bright, double white_ref) const {
-  // Scale by the AGC white reference (the steady-state phosphor brightness a
-  // tracked-white pixel reaches), one shared scale so hue is preserved. Contrast
-  // moves the white point; cells above it clip into white, as a real tube does —
-  // no per-frame statistic, so the exposure is causal and doesn't breathe.
+  // Scale by the white reference (the steady-state phosphor brightness a
+  // full-white pixel reaches), one shared scale so hue is preserved. Cells
+  // above it clip into white, as a real tube does - no per-frame statistic, so
+  // the exposure is causal and doesn't breathe. In absolute mode the camera is
+  // fixed (contrast already acted on the gun drive); in tracked mode the pot
+  // keeps its old readout meaning and scales here.
   const double white = white_ref * phosphor_gain_;
+  const double readout = tracking_ ? cfg_.contrast : 1.0;
   std::vector<std::uint8_t> pixels(bright.size());
   if (cfg_.readout_gamma == 1.0) {
     // Linear readout: the raw phosphor light, straight scale-and-quantise (the
     // buffer already holds the displayed charge; decay is applied per field).
-    const float scale = white > 0.0 ? static_cast<float>(255.0 * cfg_.contrast / white) : 0.0f;
+    const float scale = white > 0.0 ? static_cast<float>(255.0 * readout / white) : 0.0f;
     for (std::size_t idx = 0; idx < bright.size(); ++idx)
       pixels[idx] = static_cast<std::uint8_t>(std::clamp(bright[idx] * scale, 0.0f, 255.0f) + 0.5f);
   }
@@ -406,7 +467,7 @@ Screen::Frame Screen::quantise(const std::vector<float> &bright, double white_re
     // The "camera": encode the linear light for a display that will decode it
     // with readout_gamma, so the viewer sees the phosphor's light and not a
     // double-gamma'd version. Once per emitted frame, not per sample.
-    const float scale = white > 0.0 ? static_cast<float>(cfg_.contrast / white) : 0.0f;
+    const float scale = white > 0.0 ? static_cast<float>(readout / white) : 0.0f;
     const auto inv = static_cast<float>(1.0 / cfg_.readout_gamma);
     for (std::size_t idx = 0; idx < bright.size(); ++idx) {
       const float lit = std::clamp(bright[idx] * scale, 0.0f, 1.0f);

@@ -76,9 +76,21 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "right): shifts the picture right by this fraction of a line"))
           .add_argument(lyra::opt(v_shift_, "x")["--v-shift"](
               "Vertical centring (internal service adjustment): shifts the picture down by this fraction of a field"))
+          .add_argument(lyra::opt(agc_mode_, "mode")["--agc"](
+              "Level scheme: sync-tip (default - the IF AGC holds the sync tip at 1.0, white is the standard's "
+              "geometry) | adaptive (the legacy per-stage trackers, an autocontrast)"))
+          .add_argument(lyra::opt(slice_depth_, "x")["--slice-depth"](
+              "Sync slice depth below the AGC'd tip (sync-tip mode; default 0.08 sits inside both broadcast 0.24 "
+              "and shallow console-modulator sync)"))
+          .add_argument(lyra::opt(pwl_, "x")["--pwl"](
+              "Peak-white limiter ceiling as a multiple of standard white drive (default 1.25, the TDA3561A's; "
+              "0 disables; sync-tip mode only)"))
           .add_argument(lyra::opt(colour_)["--colour"]["--color"]("Decode PAL colour (RGB)"))
-          .add_argument(lyra::opt(saturation_, "x")["--saturation"]("Colour: chroma gain into the gun matrix"))
-          .add_argument(lyra::opt(contrast_, "x")["--contrast"]("Readout white point (AGC-relative; the contrast pot)"))
+          .add_argument(lyra::opt(saturation_, "x")["--saturation"](
+              "Colour: chroma gain into the gun matrix (default 0.085; 0.17 in --agc adaptive)"))
+          .add_argument(lyra::opt(contrast_, "x")["--contrast"](
+              "The contrast pot: video gain ahead of the gun (default 1.6, turned up for the under-modulated "
+              "SMS corpus; broadcast wants ~1.0). In --agc adaptive: the readout white point, default 0.85"))
           .add_argument(lyra::opt(h_blank_, "x")["--h-blank"]("Retrace blanking end (h_phase; ~0.21 at 10 MS/s)"))
           .add_argument(
               lyra::opt(subcarrier_, "hz")["--subcarrier"]("Colour: subcarrier crystal Hz (default 4.43361875 MHz)"))
@@ -100,7 +112,8 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(apc_catch_, "hz")["--apc-catch"](
               "Colour: APC crystal-pull catching range Hz (default 500, as a real crystal; 0 = fixed crystal)"))
           .add_argument(lyra::opt(apc_pull_, "x")["--apc-pull"]("Colour: APC pull rate (fraction of drift per line)"))
-          .add_argument(lyra::opt(sync_level_, "x")["--sync-level"]("Sync-separator slice level"))
+          .add_argument(
+              lyra::opt(sync_level_, "x")["--sync-level"]("Sync-separator slice level (--agc adaptive mode only)"))
           .add_argument(
               lyra::opt(h_kp_, "x")["--h-kp"]("Horizontal hold: locked (flywheel) AFC kp; 1.0 = direct triggering"))
           .add_argument(lyra::opt(h_ki_, "x")["--h-ki"]("Horizontal hold: locked AFC ki"))
@@ -174,13 +187,25 @@ int RenderCommand::run() const {
   // in blocks, so nothing ever materialises the whole envelope.
   video::DecoderConfig dc{
       .sample_rate_hz = envelope_rate, .width = width_, .height = height_, .sync_lp_cutoff_hz = sync_cutoff_};
+  if (agc_mode_ == "sync-tip")
+    dc.agc_mode = video::AgcMode::sync_tip;
+  else if (agc_mode_ == "adaptive")
+    dc.agc_mode = video::AgcMode::adaptive;
+  else {
+    std::println(std::cerr, "render: --agc must be sync-tip or adaptive");
+    return 1;
+  }
+  const bool adaptive = dc.agc_mode == video::AgcMode::adaptive;
   dc.persistence_fields = persistence_;
   dc.beam_sigma = beam_sigma_;
   dc.beam_sigma_cols = beam_sigma_x_;
   dc.gamma = gamma_;
   dc.colour = colour_;
-  dc.saturation = saturation_;
-  dc.contrast = contrast_;
+  // The pot defaults follow the level scheme (see render_command.hpp): the
+  // sync-tip values are the provisional SMS calibration, the adaptive ones
+  // are what every pre-AGC render used, so the legacy mode looks legacy.
+  dc.saturation = saturation_ >= 0.0 ? saturation_ : (adaptive ? 0.17 : 0.085);
+  dc.contrast = contrast_ >= 0.0 ? contrast_ : (adaptive ? 0.85 : 1.6);
   dc.readout_gamma = readout_gamma_;
   dc.eht_sag = eht_sag_;
   dc.eht_tc_fields = eht_tc_;
@@ -255,6 +280,8 @@ int RenderCommand::run() const {
       return 1;
     }
   }
+  dc.pwl_threshold = pwl_;
+  dc.sep.slice_depth = slice_depth_;
   dc.sep.sync_level = sync_level_;
   dc.hsweep.pll_kp = h_kp_;
   dc.hsweep.pll_ki = h_ki_;
@@ -330,7 +357,10 @@ int RenderCommand::run() const {
         decoder.killer_gain() < video::ChromaDecoder::kKillerSwitch ? " (COLOUR KILLED)" : "");
 
   if (decoder.limiter_gain() < 0.99)
-    std::println("beam limiter: video gain {:.3f}", decoder.limiter_gain());
+    std::println(
+        "limiters: protection gain {:.3f} (beam-current x peak-white, contrast pot excluded)", decoder.limiter_gain());
+  if (decoder.agc_gain() > 0.0)
+    std::println("AGC: front-end gain {:.3f}x (sync tip held at 1.0)", decoder.agc_gain());
   const double line_hz = decoder.line_omega() * envelope_rate;
   const double field_hz = decoder.field_omega() * envelope_rate;
   const auto what = frame_stride_ > 0 ? std::format("wrote {} frames {}_NNNN.png (every {} fields)", written,

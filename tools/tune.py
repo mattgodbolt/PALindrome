@@ -105,13 +105,32 @@ KNOBS = [
          help="Line-output stage loading: a line carrying lots of white scans slightly wider, so vertical edges "
               "bend next to bright content. 0 disables."),
     dict(name="saturation", flag="--saturation", label="Saturation",
-         min=0.0, max=0.5, step=0.01, default=0.17,
-         help="Colour intensity: the chroma gain as a fraction of the luma white reference (the colour pot). 0 = "
-              "monochrome; too high clips the guns and washes out luma detail into flat colour. ~0.2."),
+         min=0.0, max=0.5, step=0.005, default=0.085,
+         help="Colour intensity: the chroma gain as a fraction of the standard white drive (the colour pot). It "
+              "rides the contrast pot (both scale the guns, as the TDA3561A gangs them), so the default suits "
+              "contrast 1.6; broadcast levels at contrast 1.0 want ~0.17. 0 = monochrome."),
     dict(name="contrast", flag="--contrast", label="Contrast",
-         min=0.4, max=2.0, step=0.05, default=0.85,
-         help="Readout white point as a fraction of the AGC-tracked peak luma (the contrast pot). 1.0 puts tracked "
-              "white at full scale; lower dims, higher clips brights into white."),
+         min=0.4, max=3.0, step=0.05, default=1.6,
+         help="The contrast pot: video-amplifier gain ahead of the gun (pre-gamma). 1.0 maps a broadcast-standard "
+              "full white to the readout white point; the default is turned up because the SMS RF modulator "
+              "under-modulates (white at ~50% carrier, not the standard 20%). Too high pushes whites into the "
+              "peak-white limiter and clips. In AGC 'adaptive' it reverts to the old readout white point."),
+    dict(name="pwl", flag="--pwl", label="Peak-white limiter",
+         min=0.0, max=2.0, step=0.05, default=1.25,
+         help="Peak-white limiter ceiling as a multiple of the standard white drive (TDA3561A: limits when any gun "
+              "exceeds it for more than a line, by pulling the contrast down; recovers when clear). Crank the "
+              "contrast up to watch it fight back. 0 = no limiter."),
+    dict(name="agc", flag="--agc", choices=["sync-tip", "adaptive"], default=0,
+         label="Level scheme (AGC)",
+         help="sync-tip = the period scheme: the IF AGC holds the carrier's sync tip at 1.0 and every level is "
+              "absolute - white is the broadcast standard's geometry, so an under-modulated source renders dim "
+              "until the contrast pot brings it back. adaptive = the legacy per-stage trackers (an autocontrast "
+              "no real set had): each stage stretches whatever arrives to full range."),
+    dict(name="slice_depth", flag="--slice-depth", label="Sync slice depth",
+         min=0.02, max=0.30, step=0.005, default=0.08,
+         help="How far below the AGC'd sync tip the separator slices (sync-tip mode). Broadcast sync is 0.24 deep, "
+              "console modulators can run much shallower (the SMS: ~0.135) - 0.08 sits inside both. Too deep "
+              "misses shallow sync; too shallow lets noise on the tip chatter the slice."),
     dict(name="burst_lo", flag="--burst-lo", label="Burst gate start (h_phase)",
          min=0.06, max=0.24, step=0.005, default=0.11,
          help="Where the colour-burst measurement window opens, as a fraction of a line after sync. Per-capture: "
@@ -149,10 +168,10 @@ KNOBS = [
          help="How far into the line the beam stays blanked (sync + back porch + burst). Must clear the burst, or it "
               "paints a coloured bar down the left edge — so set it just past the burst-gate end (~0.16 for the RX888 "
               "corpus, ~0.21 for the AirSpy)."),
-    dict(name="sync_level", flag="--sync-level", label="Sync slice level",
+    dict(name="sync_level", flag="--sync-level", label="Sync slice level (adaptive)",
          min=0.5, max=0.95, step=0.01, default=0.85,
-         help="Where the separator decides 'sync pulse' vs picture, as a fraction of the white→sync-tip range. ~0.85 "
-              "sits inside the sync region. Too low catches dark picture as false sync; too high misses weak sync."),
+         help="AGC 'adaptive' mode only: where the separator slices, as a fraction of the tracked white→sync-tip "
+              "range. ~0.85 sits inside the sync region. In sync-tip mode the slice depth knob applies instead."),
     dict(name="h_kp", flag="--h-kp", label="H-hold kp (locked)",
          min=0.0, max=1.0, step=0.02, default=0.1,
          help="Horizontal hold (stops sideways tearing/slant), locked-loop proportional gain: how hard the line "

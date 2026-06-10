@@ -1,3 +1,4 @@
+#include "palindrome/agc.hpp"
 #include "palindrome/chroma_decoder.hpp"
 #include "palindrome/horizontal_sweep.hpp"
 #include "palindrome/phase.hpp"
@@ -17,6 +18,8 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
+#include <catch2/matchers/catch_matchers_range_equals.hpp>
 
 namespace video = palindrome::video;
 
@@ -72,8 +75,8 @@ std::vector<float> synth_colour_composite(std::size_t lines, std::size_t line_le
 
 // Run separator -> sweep over `env` fed in fixed-size chunks, returning the
 // full BeamSample stream. chunk == env.size() is the single-block reference.
-std::vector<video::BeamSample> run_chunked(std::span<const float> env, std::size_t chunk) {
-  video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate}};
+std::vector<video::BeamSample> run_chunked(std::span<const float> env, std::size_t chunk, bool adaptive) {
+  video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate, .adaptive = adaptive}};
   video::HorizontalSweep sweep{video::HorizontalSweepConfig{.sample_rate_hz = kRate}};
   sep.prepare(chunk);
   sweep.prepare(chunk);
@@ -91,18 +94,128 @@ std::vector<video::BeamSample> run_chunked(std::span<const float> env, std::size
 
 TEST_CASE("separator + sweep are block-invariant (the streaming guarantee)") {
   const auto env = synth_composite(40, 1028);
-  const auto whole = run_chunked(env, env.size());
 
-  // Feed the same signal in awkward block sizes that straddle line and pulse
-  // boundaries; the output must be bit-for-bit identical to the single call.
-  for (const std::size_t chunk: {std::size_t{1}, std::size_t{7}, std::size_t{333}, std::size_t{4096}}) {
-    const auto chunked = run_chunked(env, chunk);
-    REQUIRE(chunked.size() == whole.size());
-    for (std::size_t i = 0; i < whole.size(); ++i) {
-      CHECK(chunked[i].h_phase == whole[i].h_phase);
-      CHECK(chunked[i].line_start == whole[i].line_start);
+  // Both slicer modes: the fixed slice (a single bool of state) and the
+  // adaptive trackers (the peak_/floor_ double recurrences, where chunking
+  // bugs would actually live). Feed the same signal in awkward block sizes
+  // that straddle line and pulse boundaries; the output must be bit-for-bit
+  // identical to the single call.
+  const auto same_beam = [](const video::BeamSample &a, const video::BeamSample &b) {
+    return a.h_phase == b.h_phase && a.line_start == b.line_start;
+  };
+  for (const bool adaptive: {false, true}) {
+    const auto whole = run_chunked(env, env.size(), adaptive);
+    for (const std::size_t chunk: {std::size_t{1}, std::size_t{7}, std::size_t{333}, std::size_t{4096}}) {
+      CHECK_THAT(run_chunked(env, chunk, adaptive), Catch::Matchers::RangeEquals(whole, same_beam));
     }
   }
+}
+
+TEST_CASE("Agc normalises an arbitrary carrier scale to tip = 1.0") {
+  // The same composite at a wildly different capture level must come out at
+  // the same absolute levels: the sync tip at 1.0 and the picture levels at
+  // their true fractions of it - that's the whole point of the IF AGC.
+  const auto env = synth_composite(40, 1028);
+  auto scaled = env;
+  for (auto &s: scaled)
+    s *= 0.37f;
+
+  video::Agc agc{video::AgcConfig{.sample_rate_hz = kRate}};
+  agc.prepare(scaled.size());
+  const auto out = agc.process(scaled);
+
+  // Skip the first line (cold start charges on the first tip), then the tip
+  // must sit at 1.0 and blanking at its true 0.3 - absolute, not stretched.
+  float tip = 0.0f;
+  for (std::size_t k = 2 * 1028; k < out.size(); ++k)
+    tip = std::max(tip, out[k]);
+  CHECK(std::abs(tip - 1.0f) < 1e-3f);
+  // A blanking-level sample mid-line, far from sync and the white bar.
+  CHECK(std::abs(out[10 * 1028 + 300] - 0.3f) < 1e-3f);
+}
+
+TEST_CASE("Agc is block-invariant (the streaming guarantee)") {
+  const auto env = synth_composite(40, 1028);
+  video::Agc whole_agc{video::AgcConfig{.sample_rate_hz = kRate}};
+  whole_agc.prepare(env.size());
+  const auto whole_view = whole_agc.process(env);
+  const std::vector<float> whole(whole_view.begin(), whole_view.end());
+
+  for (const std::size_t chunk: {std::size_t{1}, std::size_t{7}, std::size_t{333}, std::size_t{4096}}) {
+    video::Agc agc{video::AgcConfig{.sample_rate_hz = kRate}};
+    agc.prepare(chunk);
+    std::vector<float> chunked;
+    for (std::size_t off = 0; off < env.size(); off += chunk) {
+      const std::size_t n = std::min(chunk, env.size() - off);
+      const auto out = agc.process(std::span{env}.subspan(off, n));
+      chunked.insert(chunked.end(), out.begin(), out.end());
+    }
+    CHECK(chunked == whole); // per-sample recurrence: bit-exact
+  }
+}
+
+TEST_CASE("Agc recovers after the carrier level drops") {
+  // Carrier fades to half strength mid-stream. The instant attack means the
+  // strong opening pins the gain low; recovery is the slow release, so right
+  // after the drop the output tip reads ~0.5, and within a few time constants
+  // it is back at 1.0. A short decay keeps the test brisk.
+  const auto strong = synth_composite(20, 1028);
+  auto weak = synth_composite(200, 1028);
+  for (auto &s: weak)
+    s *= 0.5f;
+
+  video::Agc agc{video::AgcConfig{.sample_rate_hz = kRate, .decay_fields = 0.1}};
+  agc.prepare(std::max(strong.size(), weak.size()));
+  (void)agc.process(strong);
+  const auto out = agc.process(weak);
+
+  float early_tip = 0.0f;
+  for (std::size_t k = 0; k < 1028; ++k)
+    early_tip = std::max(early_tip, out[k]);
+  CHECK(early_tip < 0.6f); // still levelled for the strong carrier
+  float late_tip = 0.0f;
+  for (std::size_t k = out.size() - 5 * 1028; k < out.size(); ++k)
+    late_tip = std::max(late_tip, out[k]);
+  CHECK(std::abs(late_tip - 1.0f) < 1e-2f); // released back to the new level
+}
+
+TEST_CASE("fixed slice: picture content cannot move the slice point") {
+  // SMS-like shallow modulation: tip 1.0, blanking 0.865 (sync only 0.135
+  // deep - well under the broadcast 0.24), active video either at blanking
+  // (dark) or at 0.53 (bright). The fixed slicer references only the AGC'd
+  // tip, so the sync bits must be IDENTICAL whatever the picture is doing -
+  // the adaptive floor tracker, by contrast, moves with the content.
+  const auto make = [](float active) {
+    std::vector<float> e(40 * 1028, 0.865f);
+    for (std::size_t l = 0; l < 40; ++l) {
+      const std::size_t base = l * 1028;
+      for (std::size_t k = 0; k < 1028; ++k) {
+        if (k < 73)
+          e[base + k] = 1.0f;
+        else if (k > 200)
+          e[base + k] = active;
+      }
+    }
+    return e;
+  };
+  const auto dark = make(0.865f);
+  const auto bright = make(0.53f);
+
+  video::SyncSeparator sep_dark{video::SyncSeparatorConfig{.sample_rate_hz = kRate}};
+  video::SyncSeparator sep_bright{video::SyncSeparatorConfig{.sample_rate_hz = kRate}};
+  sep_dark.prepare(dark.size());
+  sep_bright.prepare(bright.size());
+  const auto sync_dark = sep_dark.process(dark);
+  const auto sync_bright = sep_bright.process(bright);
+
+  REQUIRE(sync_dark.size() == sync_bright.size());
+  std::size_t pulses = 0;
+  for (std::size_t i = 0; i < sync_dark.size(); ++i) {
+    CHECK(sync_dark[i].sync == sync_bright[i].sync);
+    if (i > 0 && sync_dark[i].sync && !sync_dark[i - 1].sync)
+      ++pulses;
+  }
+  CHECK(pulses >= 39); // the shallow sync still slices: one pulse per line
 }
 
 TEST_CASE("HorizontalSweep flywheel: locks, rides a phase step slowly, re-acquires") {
@@ -220,12 +333,16 @@ TEST_CASE("Screen snapshots a field before fading it, exactly once per field_sta
   // persistence 2 fields => a per-field fade of exp(-1/persistence); gamma 1 keeps
   // the gun linear so the deposit is simple to reason about.
   const double persistence = 2.0;
+  // contrast 0.5 keeps the full-white deposit below the absolute white point
+  // (gun drive 0.5 < the System I 0.56), so no pixel clips and the fade is
+  // measurable in the quantised values.
   const video::ScreenConfig cfg{.width = 8,
       .height = 8,
       .sample_rate_hz = kRate,
       .persistence_fields = persistence,
       .beam_sigma = 0.0,
-      .gamma = 1.0};
+      .gamma = 1.0,
+      .contrast = 0.5};
   const float field_decay = static_cast<float>(std::exp(-1.0 / persistence));
 
   video::Screen screen{cfg};
@@ -346,11 +463,14 @@ TEST_CASE("Screen scan windows remap the beam (overscan) and the readout can enc
   // ratios, because a once-hit pixel doesn't reach the steady-state white the
   // readout normalises to.
   const auto grey_ratio = [&](double readout_gamma) {
+    // contrast 0.5: the brightest deposit (gun drive 0.5) stays below the
+    // absolute white point so neither level clips and the ratio is exact.
     const video::ScreenConfig rc{.width = 8,
         .height = 8,
         .sample_rate_hz = kRate,
         .beam_sigma = 0.0,
         .gamma = 1.0,
+        .contrast = 0.5,
         .readout_gamma = readout_gamma};
     video::Screen screen{rc};
     const std::array pic{
@@ -456,11 +576,14 @@ std::pair<std::size_t, std::size_t> peak_pixel(
 
 TEST_CASE("EHT sags under beam load, recovers, and breathes the raster") {
   constexpr double kSag = 0.08;
+  // The pot turned up so feed_lines' full white (drive 0.3) reaches the
+  // absolute white point (0.56) - a full-white line then registers load 1.0.
   const video::ScreenConfig cfg{.width = 64,
       .height = 256,
       .sample_rate_hz = kRate,
       .beam_sigma = 0.0,
       .gamma = 1.0,
+      .contrast = 0.56 / 0.3,
       .eht_sag = kSag,
       .eht_tc_fields = 1.0};
   video::Screen loaded{cfg};
@@ -503,11 +626,13 @@ TEST_CASE("line pulling stretches the line after a bright one") {
 }
 
 TEST_CASE("the beam-current limiter pulls sustained brightness to its threshold") {
+  // Pot up as in the EHT test: full white = load 1.0 against absolute levels.
   const video::ScreenConfig cfg{.width = 64,
       .height = 64,
       .sample_rate_hz = kRate,
       .beam_sigma = 0.0,
       .gamma = 1.0,
+      .contrast = 0.56 / 0.3,
       .bcl_threshold = 0.5,
       .bcl_tc_fields = 0.5};
   video::Screen screen{cfg};
@@ -527,6 +652,61 @@ TEST_CASE("the beam-current limiter pulls sustained brightness to its threshold"
   // A dark picture releases it.
   feed_lines(screen, 900, 0.3f);
   CHECK(screen.limiter_gain() > 0.95);
+}
+
+TEST_CASE("absolute levels: a dim source stays dim (no autocontrast)") {
+  // One line at a given drive; the brightest pixel read back. With absolute
+  // levels a half-drive line reads half the full-white level - the readout
+  // white is the System I geometry constant, not whatever arrived. The
+  // tracked (legacy) mode stretches each to its own peak, reading the same.
+  const auto peak_of = [](float luma, bool tracked) {
+    // width 64: feed_lines' 24 active samples land one per column, so the
+    // peak pixel holds exactly one deposit and the ratio is exact.
+    const video::ScreenConfig cfg{
+        .width = 64, .height = 32, .sample_rate_hz = kRate, .beam_sigma = 0.0, .gamma = 1.0, .tracked_white = tracked};
+    video::Screen screen{cfg};
+    feed_lines(screen, 1, luma);
+    const auto frame = screen.snapshot();
+    return static_cast<double>(*std::ranges::max_element(frame.pixels));
+  };
+  // Blanking is 0.3 in feed_lines' units, so luma -0.26 is a standard
+  // full-white drive (0.56) and 0.02 is exactly half of it.
+  const double full = peak_of(-0.26f, false);
+  const double half = peak_of(0.02f, false);
+  REQUIRE(full > 100.0);
+  CHECK(std::abs(half / full - 0.5) < 0.02);
+  // The autocontrast reads both at the same level - the behaviour replaced.
+  const double tracked_ratio = peak_of(0.02f, true) / peak_of(-0.26f, true);
+  CHECK(std::abs(tracked_ratio - 1.0) < 0.05);
+}
+
+TEST_CASE("peak-white limiter: one-line delay, pull to the ceiling, recovery") {
+  // Ceiling at 1.0 x standard white (drive 0.56); the over-white content
+  // drives 0.8. BCL off, so limiter_gain() reads the PWL gain alone.
+  const video::ScreenConfig cfg{
+      .width = 32, .height = 32, .sample_rate_hz = kRate, .beam_sigma = 0.0, .gamma = 1.0, .pwl_threshold = 1.0};
+  constexpr float kOverWhite = 0.3f - 0.8f; // luma for drive 0.8 > the 0.56 ceiling
+
+  // A single over-white line between dark ones must NOT engage it: the
+  // datasheet delays the start of limiting by one line period, so test
+  // patterns with abrupt colour-to-white transitions are left alone.
+  video::Screen flash{cfg};
+  feed_lines(flash, 5, 0.3f);
+  feed_lines(flash, 1, kOverWhite);
+  feed_lines(flash, 5, 0.3f);
+  CHECK(flash.limiter_gain() > 0.999);
+
+  // Sustained over-white pulls the gain so the peak settles AT the ceiling:
+  // gain -> 0.56 / 0.8 = 0.7.
+  video::Screen cooked{cfg};
+  feed_lines(cooked, 5, 0.3f);
+  feed_lines(cooked, 50, kOverWhite);
+  CHECK(cooked.limiter_gain() < 0.72);
+  CHECK(cooked.limiter_gain() > 0.65);
+
+  // Dark content lets the control capacitor discharge back to unity.
+  feed_lines(cooked, 400, 0.3f);
+  CHECK(cooked.limiter_gain() > 0.99);
 }
 
 TEST_CASE("ChromaDecoder is block-invariant (the streaming guarantee)") {
