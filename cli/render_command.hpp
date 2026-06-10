@@ -39,6 +39,8 @@ private:
   double eht_tc_{2.0}; // EHT sag/recovery time constant, field periods
   double eht_focus_{0.3}; // spot growth at full sag
   double line_pull_{0.003}; // width stretch after a full-white line (0 disables)
+  double h_shift_{0.0}; // horizontal centring pot: + moves the picture right (h_phase units)
+  double v_shift_{0.0}; // vertical centring pot: + moves the picture down (v_phase units)
   // Colour decode (PAL-D chroma channel). Off => a grey render.
   bool colour_{false};
   double saturation_{0.17}; // chroma gain (fraction of white reference)

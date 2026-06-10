@@ -67,6 +67,11 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(line_pull_, "x")["--line-pull"](
               "Line-output loading: width stretch after a full-white line (verticals bend next to bright content; "
               "0 disables)"))
+          .add_argument(lyra::opt(h_shift_, "x")["--h-shift"](
+              "Horizontal centring pot: shifts the picture right by this fraction of a line (use it to centre a "
+              "source whose active video doesn't fill the nominal box, e.g. consoles)"))
+          .add_argument(lyra::opt(v_shift_, "x")["--v-shift"](
+              "Vertical centring pot: shifts the picture down by this fraction of a field"))
           .add_argument(lyra::opt(colour_)["--colour"]["--color"]("Decode PAL colour (RGB)"))
           .add_argument(lyra::opt(saturation_, "x")["--saturation"]("Colour: chroma gain into the gun matrix"))
           .add_argument(lyra::opt(contrast_, "x")["--contrast"]("Readout white point (AGC-relative; the contrast pot)"))
@@ -199,6 +204,14 @@ int RenderCommand::run() const {
     dc.v_window_lo = kActiveVLo + crop_v;
     dc.v_window_hi = kActiveVHi - crop_v;
   }
+  // The centring pots: moving the WINDOW left shows content further left, i.e.
+  // the picture moves right — the H-shift adjustment on a real set's back
+  // panel, which is how a console picture that hugs one edge of the nominal
+  // active box gets centred. Applied to whichever framing is in effect.
+  dc.h_window_lo -= h_shift_;
+  dc.h_window_hi -= h_shift_;
+  dc.v_window_lo -= v_shift_;
+  dc.v_window_hi -= v_shift_;
   if (subcarrier_ > 0.0) // else the crystal default (textbook fsc)
     dc.chroma.subcarrier_hz = subcarrier_;
   if (uv_bandwidth_ > 0.0)

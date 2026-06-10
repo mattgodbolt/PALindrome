@@ -70,6 +70,14 @@ KNOBS = [
          min=-0.01, max=0.15, step=0.01, default=0.06,
          help="Fraction of the nominal active picture cropped behind the bezel (half per side), filling the frame "
               "like a real set. Negative = the old full-scan framing with blanking visible."),
+    dict(name="h_shift", flag="--h-shift", label="H shift (centring)",
+         min=-0.05, max=0.05, step=0.001, default=0.0,
+         help="Horizontal centring pot: + moves the picture right (fraction of a line; ~0.001 is about one output "
+              "pixel). Consoles often hug the left of the nominal active region - shift right to share the slack "
+              "between both edges."),
+    dict(name="v_shift", flag="--v-shift", label="V shift (centring)",
+         min=-0.05, max=0.05, step=0.001, default=0.0,
+         help="Vertical centring pot: + moves the picture down (fraction of a field)."),
     dict(name="eht_sag", flag="--eht-sag", label="EHT sag",
          min=0.0, max=0.25, step=0.005, default=0.06,
          help="How much the final-anode voltage sags under a sustained full-white load. The raster breathes "
