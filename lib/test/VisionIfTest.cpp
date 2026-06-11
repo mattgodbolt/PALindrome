@@ -66,18 +66,24 @@ Ripple measure(std::span<const float> env, std::size_t skip) {
   return {sum / static_cast<double>(body.size()), static_cast<double>(hi - lo) / 2.0};
 }
 
-Ripple run(
-    const demod::IfTemplate &shape, const std::vector<float> &x, double rate = kRate, double carrier = kCarrier) {
-  demod::VisionIf dut{rate, carrier, shape};
+// Response probes default to the envelope detector: it is carrier-phase
+// indifferent, so the measurement reads the FILTER, not the phase loop. The
+// quasi-sync tests skip further in: the phase lock spends its first few
+// thousand samples acquiring from a cold phasor.
+constexpr std::size_t kLockSkip = 20000;
+
+Ripple run(const demod::IfTemplate &shape, const std::vector<float> &x, double rate = kRate, double carrier = kCarrier,
+    demod::Detector det = demod::Detector::envelope, std::size_t skip = demod::kDefaultIfTaps) {
+  demod::VisionIf dut{rate, carrier, shape, det};
   dut.prepare(x.size());
-  return measure(dut.process(x), demod::kDefaultIfTaps);
+  return measure(dut.process(x), skip);
 }
 } // namespace
 
 TEST_CASE("VisionIf rejects bad parameters") {
   const auto t = demod::saw80_template();
-  CHECK_THROWS_AS(demod::VisionIf(kRate, kCarrier, t, 0), std::invalid_argument);
-  CHECK_THROWS_AS(demod::VisionIf(kRate, kCarrier, t, 256), std::invalid_argument); // even
+  CHECK_THROWS_AS(demod::VisionIf(kRate, kCarrier, t, demod::Detector::envelope, 0), std::invalid_argument);
+  CHECK_THROWS_AS(demod::VisionIf(kRate, kCarrier, t, demod::Detector::envelope, 256), std::invalid_argument); // even
   CHECK_THROWS_AS(demod::VisionIf(kRate, 0.0, t), std::invalid_argument);
   CHECK_THROWS_AS(demod::VisionIf(kRate, kRate / 2.0, t), std::invalid_argument);
   auto bad = t;
@@ -181,10 +187,14 @@ TEST_CASE("VisionIf realises the template at the RX888 geometry too") {
 }
 
 TEST_CASE("VisionIf decimation keeps exactly every Nth full-rate output") {
+  // Envelope detector: it is pointwise on the FIR outputs, so decimation is
+  // exactly stride-sampling. (Quasi-sync is not - its loop corrects once per
+  // OUTPUT sample, so the decimated lock takes a slightly different path.)
   const auto x = am_tone(40000, 312.5e3, 0.4);
   const auto t = demod::saw80_template();
-  demod::VisionIf full{kRate, kCarrier, t};
-  demod::VisionIf dec{kRate, kCarrier, t, demod::kDefaultIfTaps, palindrome::dsp::Window::Hamming, 4};
+  demod::VisionIf full{kRate, kCarrier, t, demod::Detector::envelope};
+  demod::VisionIf dec{
+      kRate, kCarrier, t, demod::Detector::envelope, demod::kDefaultIfTaps, palindrome::dsp::Window::Hamming, 4};
   full.prepare(x.size());
   dec.prepare(x.size());
   const auto whole = full.process(x);
@@ -195,21 +205,87 @@ TEST_CASE("VisionIf decimation keeps exactly every Nth full-rate output") {
 }
 
 TEST_CASE("VisionIf is bit-exact block-invariant") {
+  // Both detectors: the FIRs are feed-forward and the quasi-sync loop is a
+  // sample-order recurrence carried across calls, so == costs nothing.
   const auto x = am_tone(30000, 600.0e3, 0.5);
   const auto t = demod::saw80_template();
-  demod::VisionIf one{kRate, kCarrier, t};
-  one.prepare(x.size());
-  const auto all = one.process(x);
-  const std::vector<float> whole{all.begin(), all.end()};
+  for (const auto det: {demod::Detector::envelope, demod::Detector::quasi_sync}) {
+    demod::VisionIf one{kRate, kCarrier, t, det};
+    one.prepare(x.size());
+    const auto all = one.process(x);
+    const std::vector<float> whole{all.begin(), all.end()};
 
-  demod::VisionIf chunked{kRate, kCarrier, t};
-  chunked.prepare(x.size());
-  std::vector<float> pieces;
-  constexpr std::size_t kChunk = 337;
-  for (std::size_t at = 0; at < x.size(); at += kChunk) {
-    const auto n = std::min(kChunk, x.size() - at);
-    const auto out = chunked.process(std::span{x}.subspan(at, n));
-    pieces.insert(pieces.end(), out.begin(), out.end());
+    demod::VisionIf chunked{kRate, kCarrier, t, det};
+    chunked.prepare(x.size());
+    std::vector<float> pieces;
+    constexpr std::size_t kChunk = 337;
+    for (std::size_t at = 0; at < x.size(); at += kChunk) {
+      const auto n = std::min(kChunk, x.size() - at);
+      const auto out = chunked.process(std::span{x}.subspan(at, n));
+      pieces.insert(pieces.end(), out.begin(), out.end());
+    }
+    CHECK(pieces == whole);
   }
-  CHECK(pieces == whole); // feed-forward FIRs + pointwise magnitude: == is free
+}
+
+TEST_CASE("quasi-sync removes the envelope detector's VSB quadrature distortion") {
+  // The same flank-region AM tones whose asymmetric sidebands lift an envelope
+  // detector's mean by a few % (see the flank test): the quasi-sync detector
+  // takes only the in-phase product, so the mean must sit AT the carrier level
+  // and the ripple must still be depth * the 0.5 flank level.
+  for (const double mod_hz: {200.0e3, 312.5e3, 600.0e3}) {
+    const auto r = run(
+        demod::saw80_template(), am_tone(60000, mod_hz, 0.5), kRate, kCarrier, demod::Detector::quasi_sync, kLockSkip);
+    CHECK_THAT(r.mean, WithinAbs(0.5, 0.005));
+    CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.02));
+  }
+}
+
+TEST_CASE("quasi-sync is linear through overmodulation; the envelope folds") {
+  // Depth 1.3: the modulated carrier passes through zero. A product detector
+  // follows it negative; a magnitude can't, and rectifies the overshoot.
+  const auto x = am_tone(60000, 312.5e3, 1.3);
+  const auto qs = run(demod::saw80_template(), x, kRate, kCarrier, demod::Detector::quasi_sync, kLockSkip);
+  const auto env = run(demod::saw80_template(), x, kRate, kCarrier, demod::Detector::envelope, kLockSkip);
+  // Quasi-sync swings to ~0.5*(1 - 1.3) = -0.15; envelope folds at zero. The
+  // ripple metric ((max-min)/2) reads the difference directly.
+  CHECK_THAT(qs.amplitude, WithinRel(0.5 * 1.3, 0.03));
+  CHECK(env.amplitude < 0.55); // folded: (max - 0) / 2 at most ~0.5 + slop
+}
+
+TEST_CASE("quasi-sync acquires upright from any cold-start phase") {
+  // The worst case: the signal arrives exactly 180 degrees from the cold NCO.
+  // That point must be a repeller, not a second lock (a Costas-style
+  // sign-corrected error stabilises both - this is the regression that locked
+  // the RX888 corpus inverted and starved the sync slicer of every edge).
+  for (const double phase0: {0.0, 1.5, std::numbers::pi, 4.5}) {
+    std::vector<float> x(60000);
+    for (std::size_t k = 0; k < x.size(); ++k) {
+      const auto t = static_cast<double>(k) / kRate;
+      x[k] =
+          static_cast<float>((1.0 + 0.5 * std::cos(two_pi * 312.5e3 * t)) * std::cos(two_pi * kCarrier * t + phase0));
+    }
+    const auto r = run(demod::saw80_template(), x, kRate, kCarrier, demod::Detector::quasi_sync, kLockSkip);
+    CHECK_THAT(r.mean, WithinAbs(0.5, 0.005)); // +0.5, never -0.5: upright lock only
+    CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.02));
+  }
+}
+
+TEST_CASE("quasi-sync locks through a carrier-frequency error") {
+  // The signal arrives 300 Hz off the nominal carrier the NCO was built for
+  // (a believable metadata/scan error). The PI integrator must wind up and
+  // track it: after settling, the video is as clean as on-frequency.
+  constexpr double kOffset = 300.0;
+  std::vector<float> x(400000);
+  for (std::size_t k = 0; k < x.size(); ++k) {
+    const auto t = static_cast<double>(k) / kRate;
+    x[k] =
+        static_cast<float>((1.0 + 0.5 * std::cos(two_pi * 312.5e3 * t)) * std::cos(two_pi * (kCarrier + kOffset) * t));
+  }
+  demod::VisionIf dut{kRate, kCarrier, demod::saw80_template(), demod::Detector::quasi_sync};
+  dut.prepare(x.size());
+  // Skip half the clip: enough for the integrator to absorb the offset.
+  const auto r = measure(dut.process(x), x.size() / 2);
+  CHECK_THAT(r.mean, WithinAbs(0.5, 0.01));
+  CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.03));
 }

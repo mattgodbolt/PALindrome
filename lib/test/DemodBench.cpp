@@ -61,12 +61,23 @@ TEST_CASE("demod throughput (64k-sample blocks)") {
     return env.process(hilbert.process(input)).size();
   };
 
-  // The SAW-era front end (the default): one complex-tap FIR on the real IF +
-  // magnitude - more MACs than the flat chain but no serial recurrence, so the
-  // two should be a wash. Compare per-sample here, where the screen can't hide it.
-  BENCHMARK("SAW IF envelope path (VisionIf, saw80)") {
+  // The SAW-era front end: one complex-tap FIR on the real IF + a detector.
+  // Envelope is pure feed-forward (more MACs than the flat chain, no serial
+  // recurrence - a wash); quasi-sync (the default) adds the per-sample phase
+  // loop, a serial recurrence like the old mix. Compare per-sample here, where
+  // the screen can't hide it.
+  BENCHMARK("SAW IF path (VisionIf saw80, envelope)") {
     static demod::VisionIf vif = [] {
-      demod::VisionIf v{fs, carrier, demod::saw80_template()};
+      demod::VisionIf v{fs, carrier, demod::saw80_template(), demod::Detector::envelope};
+      v.prepare(block);
+      return v;
+    }();
+    return vif.process(input).size();
+  };
+
+  BENCHMARK("SAW IF path (VisionIf saw80, quasi-sync)") {
+    static demod::VisionIf vif = [] {
+      demod::VisionIf v{fs, carrier, demod::saw80_template(), demod::Detector::quasi_sync};
       v.prepare(block);
       return v;
     }();

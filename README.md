@@ -117,7 +117,7 @@ flowchart TD
     SIGMF["corpus sigmf-data<br/>real IF: RX888 32 MS/s /<br/>AirSpy raw 20 MS/s"] --> VIS
 
     subgraph vis["vision chain"]
-      VIS["SAW IF (one complex FIR on the real IF):<br/>Nyquist flank through the carrier, vestige<br/>cutoff, finite sound notch, GD ripple →<br/>AM envelope (× decimation)"]
+      VIS["SAW IF (one complex FIR on the real IF):<br/>Nyquist flank through the carrier, vestige<br/>cutoff, finite sound notch, GD ripple →<br/>detector: quasi-sync (NCO + phase lock)<br/>or envelope (× decimation)"]
     end
 
     VIS --> AGC["IF AGC<br/>peak detector on the sync tip →<br/>carrier normalised to tip = 1.0"]
@@ -213,6 +213,16 @@ negative-frequency carrier image - the job the Hilbert stage did - at the cost
 of exactly the two real convolutions the old symmetric low-pass pair spent.
 `--if saw90` is a 90s set (flat through chroma, -40 dB notch, near-clean
 phase); `--if flat` keeps the ideal pre-SAW chain, bit-for-bit.
+
+After the SAW comes the detector. `--detector quasi-sync` (the default) is
+the TDA-era product detector: an NCO at the carrier with a slow phase lock
+nulling the mean quadrature - the digital stand-in for the demodulator IC's
+high-Q tank - whose in-phase product is the video. It is linear through
+overmodulation (the output swings negative rather than folding) and free of
+the VSB quadrature distortion an envelope detector folds in on the flank's
+asymmetric sidebands. `--detector envelope` is the diode detector of the
+earlier sets: the magnitude, quadrature fold-through and rectified overshoots
+included. (`--if flat` is always the envelope - it's the legacy chain.)
 
 Levels are absolute, the way a receiver actually knows them: an IF AGC
 (`--agc sync-tip`, the default) peak-detects the carrier's sync tip - under
