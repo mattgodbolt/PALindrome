@@ -81,6 +81,11 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "lower sideband, chroma a few dB down, finite sound notch, group-delay ripple) | saw90 (a 90s set: "
               "flat through chroma, deeper notch, cleaner phase) | flat (the ideal symmetric low-pass, the pre-SAW "
               "front end)"))
+          .add_argument(lyra::opt(detector_, "mode")["--detector"](
+              "Vision detector (saw modes): quasi-sync (default - the TDA-era product detector: an NCO with a "
+              "slow phase lock on the carrier, linear through overmodulation and free of VSB quadrature "
+              "distortion) | envelope (a diode detector: the magnitude, with the quadrature fold-through of the "
+              "early sets)"))
           .add_argument(lyra::opt(sound_notch_db_, "db")["--sound-notch-db"](
               "IF sound rejection in dB, positive (saw modes; default from the template: 26 for saw80, 40 for "
               "saw90 - deliberately finite, the intercarrier residue is real; 0 removes the notch)"))
@@ -169,6 +174,14 @@ int RenderCommand::run() const {
     opts.if_mode = IfMode::flat;
   else {
     std::println(std::cerr, "render: --if must be saw80, saw90, or flat");
+    return 1;
+  }
+  if (detector_ == "quasi-sync")
+    opts.detector = palindrome::demod::Detector::quasi_sync;
+  else if (detector_ == "envelope")
+    opts.detector = palindrome::demod::Detector::envelope;
+  else {
+    std::println(std::cerr, "render: --detector must be quasi-sync or envelope");
     return 1;
   }
   // The flag sentinels (negative = "use the template's value") become absent

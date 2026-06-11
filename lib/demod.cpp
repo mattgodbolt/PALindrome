@@ -214,12 +214,32 @@ IfTemplate saw90_template() {
   };
 }
 
-VisionIf::VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &shape, std::size_t num_taps,
-    dsp::Window window, std::size_t decimation) :
-    VisionIf{if_taps(sample_rate_hz, carrier_hz, shape, num_taps, window), decimation} {}
+namespace {
+// Quasi-sync PI loop gains, per OUTPUT sample (decimation lowers the
+// correction rate, so the lock bandwidth in Hz - roughly kp * output_rate /
+// 2pi, a few kHz at video rates, the "high-Q tank" a TDA-era IC demodulator
+// recovered the carrier with - shrinks with it). ki lets the integrator
+// absorb a static carrier offset (metadata error) without a standing phase
+// error. Heavily overdamped, so the lock never rings.
+constexpr double kQsKp = 1.0e-3;
+constexpr double kQsKi = 1.0e-8;
+// Anti-windup bound on the integrator: ~10 kHz at video output rates, far
+// above any believable carrier-metadata error. On a carrier-free stretch
+// (live RF: tuning gaps, dropouts) the normalised error is unit-magnitude
+// noise and the integrator random-walks; unbounded, it could wander past the
+// loop's pull-in range and take the rest of the recording to crawl back.
+constexpr double kQsMaxFreq = 4.0e-3;
+} // namespace
 
-VisionIf::VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, std::size_t decimation) :
-    re_filter_{std::move(taps.first), decimation}, im_filter_{std::move(taps.second), decimation} {}
+VisionIf::VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &shape, Detector detector,
+    std::size_t num_taps, dsp::Window window, std::size_t decimation) :
+    VisionIf{if_taps(sample_rate_hz, carrier_hz, shape, num_taps, window), detector,
+        kTwoPi * carrier_hz * static_cast<double>(decimation) / sample_rate_hz, decimation} {}
+
+VisionIf::VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, Detector detector, double omega_per_output,
+    std::size_t decimation) :
+    re_filter_{std::move(taps.first), decimation}, im_filter_{std::move(taps.second), decimation}, detector_{detector},
+    step_{std::polar(1.0, -omega_per_output)} {}
 
 void VisionIf::prepare(std::size_t max_in) {
   re_filter_.prepare(max_in);
@@ -227,11 +247,50 @@ void VisionIf::prepare(std::size_t max_in) {
   out_.reserve(re_filter_.max_output_for(max_in));
 }
 
+void VisionIf::quasi_sync_detect(
+    restrict_ptr<const float> i, restrict_ptr<const float> q, restrict_ptr<float> out, std::size_t n) {
+  for (std::size_t k = 0; k < n; ++k) {
+    // Snapshot the double phasor down to float at the point of use; the video
+    // is per-sample flow, only the phase is the accumulator.
+    const auto pr = static_cast<float>(nco_.real());
+    const auto pim = static_cast<float>(nco_.imag());
+    const float yr = i[k] * pr - q[k] * pim;
+    const float yi = i[k] * pim + q[k] * pr;
+    out[k] = 2.0f * yr;
+    // Normalised quadrature error (the loop gain must not ride the signal
+    // level - the AGC sits downstream of us). Deliberately NOT sign-corrected
+    // by Re(y): an AM carrier never goes negative, and the plain sin(phase)
+    // error makes +I the only stable point with 180 degrees a repeller. A
+    // Costas-style sign flip would stabilise BOTH - the loop then locks
+    // inverted whenever the cold-start phase lands in the wrong half, which
+    // the RX888 corpus did.
+    const float mag = std::sqrt(yr * yr + yi * yi);
+    const double e = mag > 1e-12f ? static_cast<double>(yi / mag) : 0.0;
+    freq_ = std::clamp(freq_ + kQsKi * e, -kQsMaxFreq, kQsMaxFreq);
+    // Advance by the nominal carrier, then trim by the loop: a first-order
+    // rotation (1 - j*a) is exact enough for the tiny correction angle, and
+    // the renorm below absorbs its second-order magnitude drift - the same
+    // idiom as ComplexAmEnvelope's mix phasor.
+    const double a = kQsKp * e + freq_;
+    nco_ = dsp::cmul(nco_, step_);
+    nco_ = std::complex<double>{nco_.real() + a * nco_.imag(), nco_.imag() - a * nco_.real()};
+    if (++since_renorm_ >= 1024) {
+      nco_ /= std::abs(nco_);
+      since_renorm_ = 0;
+    }
+  }
+}
+
 std::span<const float> VisionIf::process(std::span<const float> in) {
   const auto i = re_filter_.process(in);
   const auto q = im_filter_.process(in);
   const std::size_t m = i.size();
-  envelope_magnitude(i.data(), q.data(), out_.write_n(m).data(), m);
+  const auto out = out_.write_n(m);
+  // No default: a new Detector fails to compile until it's handled here.
+  switch (detector_) {
+    case Detector::envelope: envelope_magnitude(i.data(), q.data(), out.data(), m); break;
+    case Detector::quasi_sync: quasi_sync_detect(i.data(), q.data(), out.data(), m); break;
+  }
   return out_.view();
 }
 

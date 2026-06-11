@@ -1,5 +1,6 @@
 #pragma once
 
+#include "palindrome/demod.hpp"
 #include "palindrome/sigmf.hpp"
 
 #include <cstddef>
@@ -52,11 +53,14 @@ void stream_ri16le_blocks(const std::filesystem::path &data_path,
 // replaced, kept verbatim as the legacy/comparison chain.
 enum class IfMode { saw80, saw90, flat };
 
-// Demod parameters that aren't carried in the recording itself.
+// Demod parameters that aren't carried in the recording itself. The detector
+// applies to the saw modes only: the flat chain is the legacy envelope
+// demodulator, kept verbatim.
 struct EnvelopeOptions {
   double cutoff_hz = 5.0e6; // baseband low-pass corner (flat mode only)
   std::size_t decimation = 1;
   IfMode if_mode = IfMode::flat;
+  demod::Detector detector = demod::Detector::quasi_sync; // saw modes' detector
   std::optional<double> sound_notch_db{}; // dB of IF sound rejection, overriding the template
   std::optional<double> gd_ripple_ns{}; // peak group-delay ripple ns, overriding the template
 };
