@@ -126,8 +126,10 @@ public:
   // The realised taps are normalised so the response *at the carrier* is exactly
   // the template's (0.5 for a standard flank) - the level-bearing point, since
   // the IF AGC downstream tracks the carrier peak. Throws std::invalid_argument
-  // on bad parameters (even num_taps, out-of-range carrier, a non-increasing
-  // shape table, non-positive widths).
+  // on bad parameters: even num_taps, out-of-range carrier, a non-increasing
+  // shape table, non-positive widths, decimation < 1, a template with no
+  // response at the carrier, or one that hasn't died away by Nyquist (the
+  // truncated curve would fold a carrier image onto the picture).
   VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &shape, std::size_t num_taps = kDefaultIfTaps,
       dsp::Window window = dsp::Window::Hamming, std::size_t decimation = 1);
 
