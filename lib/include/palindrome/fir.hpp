@@ -13,6 +13,10 @@ namespace palindrome::dsp {
 
 enum class Window { Hamming, Blackman };
 
+// The window's value at tap n of an m = num_taps - 1 span, for kernel designers
+// outside this file (e.g. the vision-IF template synthesis in demod).
+[[nodiscard]] double window_value(Window window, double n, double m);
+
 // A windowed-sinc low-pass kernel, normalised to unity DC gain. An odd
 // num_taps gives a symmetric (linear-phase) kernel with an integer group delay
 // of (num_taps - 1) / 2 samples. Throws std::invalid_argument if num_taps is 0

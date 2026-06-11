@@ -134,6 +134,8 @@ void convolve_strip(const float *taps, const float *window, float *y, std::size_
     y[k] = convolve(taps, window + d * k, n);
 }
 
+} // namespace
+
 double window_value(Window window, double n, double m) {
   if (m == 0.0)
     return 1.0; // single tap: the window is irrelevant
@@ -146,7 +148,6 @@ double window_value(Window window, double n, double m) {
   }
   std::unreachable();
 }
-} // namespace
 
 std::vector<float> lowpass_kernel(std::size_t num_taps, double sample_rate_hz, double cutoff_hz, Window window) {
   if (num_taps == 0)

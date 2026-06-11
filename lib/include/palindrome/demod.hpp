@@ -6,6 +6,7 @@
 #include <complex>
 #include <cstddef>
 #include <span>
+#include <utility>
 #include <vector>
 
 // RF demodulation building blocks. Each demodulator is a stateful, streaming
@@ -66,6 +67,88 @@ private:
   dsp::Fir q_filter_; // baseband low-pass, quadrature
   Buffer<float> mix_i_; // scratch: mixed I before filtering
   Buffer<float> mix_q_; // scratch: mixed Q before filtering
+  Buffer<float> out_; // owned envelope output, reused across calls
+};
+
+// Default tap count for the vision-IF template FIR (VisionIf). Longer than the
+// low-pass default: the template carries fine features (the sound notch, the
+// channel edge) that a 127-tap realisation would smear.
+inline constexpr std::size_t kDefaultIfTaps = 255;
+
+// One point of an IF response template: the response in dB (relative to the
+// passband's 0 dB) at a signed offset from the vision carrier.
+struct IfPoint {
+  double offset_hz;
+  double db;
+};
+
+// A receiver IF response - the SAW filter's curve - as a frequency-domain
+// template relative to the vision carrier. Three multiplied parts: the Nyquist
+// flank (linear in *voltage* through 0.5 at the carrier, so a DSB/VSB sideband
+// pair sums to exactly flat video after detection), a piecewise-linear-in-dB
+// shape table (zero outside its span - empty means 0 dB everywhere), and a
+// triangular-in-dB sound notch, kept deliberately finite: an intercarrier set
+// needs some sound carrier left, and the residue is what beats into the video.
+// Phase is a group-delay ripple (sinusoidal in frequency) about linear phase -
+// the SAW's characteristic edge-ringing imperfection.
+// Depths are DESIGN values: the windowed realisation smears fine features by
+// the window mainlobe (4*fs/num_taps wide), so the notch lands a few dB
+// shallower than specified, and shallower still at higher sample rates (at 255
+// taps: ~3 dB at 20 MS/s, ~5 dB at 32 MS/s) - era-plausible spread, not error.
+struct IfTemplate {
+  double flank_half_width_hz = 0.75e6;
+  std::vector<IfPoint> shape{};
+  double sound_notch_offset_hz = 6.0e6; // System I intercarrier sound, vision + 6 MHz
+  double sound_notch_db = -26.0;
+  double sound_notch_half_width_hz = 0.4e6;
+  double gd_ripple_ns = 50.0; // peak group-delay ripple about linear phase
+  double gd_ripple_period_hz = 1.0e6;
+};
+
+// Named set profiles. saw80: a typical early-80s single-SAW System I receiver -
+// chroma a few dB down on a shoulder rolling toward the sound notch, the notch a
+// -26 dB intercarrier shelf, ±50 ns group-delay ripple. saw90: a 90s set -
+// flat through chroma, deeper sound rejection (split-IF era), nearly clean phase.
+[[nodiscard]] IfTemplate saw80_template();
+[[nodiscard]] IfTemplate saw90_template();
+
+// The vision IF strip and envelope detector in one stage: a complex-coefficient
+// FIR realising an IfTemplate centred on the carrier, applied directly to the
+// real-sampled IF, then the magnitude. The complex taps are one-sided (every
+// negative-frequency bin is zero), so the filter subsumes the Hilbert (no
+// carrier image to fold) and the DC blocker (DC is in its stopband); being two
+// real convolutions on a real input, it costs about what the symmetric I/Q pair
+// did. The carrier never gets mixed to DC - the envelope doesn't care, and the
+// quasi-sync detector (which does) carries its own phase lock when it lands.
+class VisionIf {
+public:
+  // carrier_hz: the vision carrier's absolute IF, in (0, sample_rate_hz / 2).
+  // The realised taps are normalised so the response *at the carrier* is exactly
+  // the template's (0.5 for a standard flank) - the level-bearing point, since
+  // the IF AGC downstream tracks the carrier peak. Throws std::invalid_argument
+  // on bad parameters: even num_taps, out-of-range carrier, a non-increasing
+  // shape table, non-positive widths, decimation < 1, a template with no
+  // response at the carrier, or one that hasn't died away by Nyquist (the
+  // truncated curve would fold a carrier image onto the picture).
+  VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &shape, std::size_t num_taps = kDefaultIfTaps,
+      dsp::Window window = dsp::Window::Hamming, std::size_t decimation = 1);
+
+  void prepare(std::size_t max_in);
+
+  // Demodulate `in` (real IF) to the composite envelope, one output sample per
+  // decimation() inputs. The returned span is owned by the stage, valid until
+  // the next process() call.
+  [[nodiscard]] std::span<const float> process(std::span<const float> in);
+
+  [[nodiscard]] std::size_t max_output_for(std::size_t n_in) const noexcept { return re_filter_.max_output_for(n_in); }
+  [[nodiscard]] std::size_t input_multiple() const noexcept { return re_filter_.input_multiple(); }
+  [[nodiscard]] std::size_t decimation() const noexcept { return re_filter_.decimation(); }
+
+private:
+  VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, std::size_t decimation);
+
+  dsp::Fir re_filter_; // the complex kernel's real part over the real input
+  dsp::Fir im_filter_; // ... and its imaginary part
   Buffer<float> out_; // owned envelope output, reused across calls
 };
 

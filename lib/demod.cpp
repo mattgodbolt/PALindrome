@@ -10,6 +10,8 @@
 #include <numbers>
 #include <span>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 namespace palindrome::demod {
 
@@ -63,7 +65,175 @@ void envelope_magnitude(
 namespace {
 constexpr double kTwoPi = 2.0 * std::numbers::pi;
 constexpr double kDcPole = 0.9999; // complex DC-blocker feedback, matching dsp::DcBlocker
+
+// The template's voltage response at a signed offset from the carrier: the
+// voltage-linear Nyquist flank times the dB shape table times the dB notch.
+double template_voltage(const IfTemplate &t, double rel_hz) {
+  const double flank = std::clamp(0.5 * (1.0 + rel_hz / t.flank_half_width_hz), 0.0, 1.0);
+  if (flank == 0.0)
+    return 0.0;
+  double db = 0.0;
+  if (!t.shape.empty()) {
+    if (rel_hz < t.shape.front().offset_hz || rel_hz > t.shape.back().offset_hz)
+      return 0.0; // outside the table's span the channel has ended: true stopband
+    for (std::size_t i = 1; i < t.shape.size(); ++i) {
+      const auto &[lo_hz, lo_db] = t.shape[i - 1];
+      const auto &[hi_hz, hi_db] = t.shape[i];
+      if (rel_hz <= hi_hz) {
+        db = lo_db + (hi_db - lo_db) * (rel_hz - lo_hz) / (hi_hz - lo_hz);
+        break;
+      }
+    }
+  }
+  const double dip = std::max(0.0, 1.0 - std::abs(rel_hz - t.sound_notch_offset_hz) / t.sound_notch_half_width_hz);
+  db += t.sound_notch_db * dip;
+  return flank * std::pow(10.0, db / 20.0);
+}
+
+// The ripple's phase at an offset from the carrier: group delay tau(f) =
+// ripple * cos(2*pi*f/period) about linear phase, so phase = -2*pi * integral
+// of tau, which is -ripple*period*sin(2*pi*f/period). Zero at the carrier, so
+// the ripple never moves the level-bearing carrier response.
+double ripple_phase(const IfTemplate &t, double rel_hz) {
+  if (t.gd_ripple_ns == 0.0)
+    return 0.0;
+  return -t.gd_ripple_ns * 1e-9 * t.gd_ripple_period_hz * std::sin(kTwoPi * rel_hz / t.gd_ripple_period_hz);
+}
+
+// The realised complex kernel's response at an absolute frequency (direct DFT
+// of the taps; design-time only).
+std::complex<double> taps_response_at(
+    std::span<const double> re, std::span<const double> im, double f_hz, double sample_rate_hz) {
+  std::complex<double> acc{0.0, 0.0};
+  for (std::size_t n = 0; n < re.size(); ++n)
+    acc +=
+        std::complex<double>{re[n], im[n]} * std::polar(1.0, -kTwoPi * f_hz * static_cast<double>(n) / sample_rate_hz);
+  return acc;
+}
+
+// Synthesise the one-sided complex kernel realising `shape` around carrier_hz:
+// frequency sampling over the N DFT bins (every bin above Nyquist - the negative
+// frequencies - stays zero, which is what subsumes the Hilbert), an inverse DFT,
+// a window, and a final normalisation pinning the response at the carrier to the
+// template's own value, since that is the point the IF AGC levels against.
+std::pair<std::vector<float>, std::vector<float>> if_taps(
+    double sample_rate_hz, double carrier_hz, const IfTemplate &shape, std::size_t num_taps, dsp::Window window) {
+  if (num_taps < 3 || num_taps % 2 == 0)
+    throw std::invalid_argument{"VisionIf: num_taps must be odd and at least 3"};
+  if (!(carrier_hz > 0.0) || !(carrier_hz < sample_rate_hz / 2.0))
+    throw std::invalid_argument{"VisionIf: carrier must be in (0, sample_rate / 2)"};
+  if (!(shape.flank_half_width_hz > 0.0) || !(shape.sound_notch_half_width_hz > 0.0) ||
+      !(shape.gd_ripple_period_hz > 0.0))
+    throw std::invalid_argument{"VisionIf: template widths and ripple period must be positive"};
+  for (std::size_t i = 1; i < shape.shape.size(); ++i)
+    if (shape.shape[i].offset_hz <= shape.shape[i - 1].offset_hz)
+      throw std::invalid_argument{"VisionIf: shape table offsets must be strictly increasing"};
+  // The curve must have died away by Nyquist. Truncating it mid-shoulder puts a
+  // cliff in the frequency sampling whose windowed interpolation bleeds straight
+  // across into the negative-frequency bins - a near-full-strength carrier image
+  // folding onto the picture, with no other symptom (measured -4.8 dB worst case
+  // for a 16 MS/s rate that can't hold the template). -40 dB is comfortably
+  // below anything the picture would show.
+  if (template_voltage(shape, sample_rate_hz / 2.0 - carrier_hz) > 0.01)
+    throw std::invalid_argument{"VisionIf: the template does not fit below Nyquist at this sample rate/carrier - the "
+                                "truncated curve would fold a carrier image onto the picture"};
+
+  const auto n_taps = num_taps;
+  const auto nd = static_cast<double>(n_taps);
+  const double centre = (nd - 1.0) / 2.0;
+  std::vector<std::complex<double>> bins(n_taps);
+  for (std::size_t k = 0; k < n_taps; ++k) {
+    const double f = static_cast<double>(k) * sample_rate_hz / nd;
+    if (f > sample_rate_hz / 2.0)
+      continue; // negative-frequency bin: zero keeps the kernel one-sided
+    const double a = template_voltage(shape, f - carrier_hz);
+    if (a == 0.0)
+      continue;
+    // Ripple about linear phase; the linear part centres the impulse response.
+    bins[k] = std::polar(a, ripple_phase(shape, f - carrier_hz) - kTwoPi * f * centre / sample_rate_hz);
+  }
+
+  std::vector<double> re(n_taps);
+  std::vector<double> im(n_taps);
+  for (std::size_t n = 0; n < n_taps; ++n) {
+    std::complex<double> acc{0.0, 0.0};
+    for (std::size_t k = 0; k < n_taps; ++k) {
+      if (bins[k] == std::complex<double>{0.0, 0.0})
+        continue;
+      acc += bins[k] * std::polar(1.0, kTwoPi * static_cast<double>(k * n % n_taps) / nd);
+    }
+    const double w = dsp::window_value(window, static_cast<double>(n), nd - 1.0);
+    re[n] = acc.real() / nd * w;
+    im[n] = acc.imag() / nd * w;
+  }
+
+  const double target = template_voltage(shape, 0.0);
+  if (!(target > 0.0))
+    throw std::invalid_argument{"VisionIf: template has no response at the carrier"};
+  const double realised = std::abs(taps_response_at(re, im, carrier_hz, sample_rate_hz));
+  if (!(realised > 0.0)) // != would let a denormal-or-NaN realisation poison every tap
+    throw std::invalid_argument{"VisionIf: realised kernel has no response at the carrier"};
+  const double scale = target / realised;
+  std::vector<float> re_f(n_taps);
+  std::vector<float> im_f(n_taps);
+  for (std::size_t n = 0; n < n_taps; ++n) {
+    re_f[n] = static_cast<float>(re[n] * scale);
+    im_f[n] = static_cast<float>(im[n] * scale);
+  }
+  return {std::move(re_f), std::move(im_f)};
+}
 } // namespace
+
+IfTemplate saw80_template() {
+  return {
+      .flank_half_width_hz = 0.75e6,
+      // 0 dB through the lower active band; a shoulder from 3.5 MHz rolling to
+      // -12 dB by 5.9 MHz (chroma at +4.43 sits ~4.7 dB down, which the
+      // decoder's ACC makes up, as the set's chroma bandpass did); the channel
+      // ends past the sound notch. The table starts at the System I vestige
+      // edge (-1.25 MHz); the flank has already closed the response by there.
+      .shape = {{-1.25e6, 0.0}, {3.5e6, 0.0}, {5.9e6, -12.0}, {6.8e6, -50.0}},
+      .sound_notch_offset_hz = 6.0e6,
+      .sound_notch_db = -26.0,
+      .sound_notch_half_width_hz = 0.4e6,
+      .gd_ripple_ns = 50.0,
+      .gd_ripple_period_hz = 1.0e6,
+  };
+}
+
+IfTemplate saw90_template() {
+  return {
+      .flank_half_width_hz = 0.75e6,
+      // Flat through the chroma, a short shoulder into the channel edge.
+      .shape = {{-1.25e6, 0.0}, {4.8e6, 0.0}, {5.9e6, -8.0}, {6.8e6, -50.0}},
+      .sound_notch_offset_hz = 6.0e6,
+      .sound_notch_db = -40.0, // split-IF era: sound leaves the vision path early
+      .sound_notch_half_width_hz = 0.3e6,
+      .gd_ripple_ns = 8.0,
+      .gd_ripple_period_hz = 1.0e6,
+  };
+}
+
+VisionIf::VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &shape, std::size_t num_taps,
+    dsp::Window window, std::size_t decimation) :
+    VisionIf{if_taps(sample_rate_hz, carrier_hz, shape, num_taps, window), decimation} {}
+
+VisionIf::VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, std::size_t decimation) :
+    re_filter_{std::move(taps.first), decimation}, im_filter_{std::move(taps.second), decimation} {}
+
+void VisionIf::prepare(std::size_t max_in) {
+  re_filter_.prepare(max_in);
+  im_filter_.prepare(max_in);
+  out_.reserve(re_filter_.max_output_for(max_in));
+}
+
+std::span<const float> VisionIf::process(std::span<const float> in) {
+  const auto i = re_filter_.process(in);
+  const auto q = im_filter_.process(in);
+  const std::size_t m = i.size();
+  envelope_magnitude(i.data(), q.data(), out_.write_n(m).data(), m);
+  return out_.view();
+}
 
 ComplexAmEnvelope::ComplexAmEnvelope(double sample_rate_hz, double carrier_offset_hz, double cutoff_hz,
     std::size_t num_taps, dsp::Window window, std::size_t decimation) :

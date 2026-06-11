@@ -120,6 +120,23 @@ KNOBS = [
          help="Peak-white limiter ceiling as a multiple of the standard white drive (TDA3561A: limits when any gun "
               "exceeds it for more than a line, by pulling the contrast down; recovers when clear). Crank the "
               "contrast up to watch it fight back. 0 = no limiter."),
+    dict(name="if_mode", flag="--if", choices=["saw80", "saw90", "flat"], default=0,
+         label="IF response (SAW)",
+         help="Which set's IF curve the vision carrier passes through. saw80 = an early-80s single-SAW receiver: "
+              "Nyquist flank, chroma a few dB down on the shoulder, -26 dB sound notch, +/-50 ns group-delay "
+              "ripple. saw90 = a 90s set: flat through chroma, -40 dB notch, near-clean phase. flat = the ideal "
+              "symmetric low-pass (the pre-SAW front end, no real set)."),
+    dict(name="sound_notch", flag="--sound-notch-db", label="IF sound rejection (dB)",
+         min=10.0, max=60.0, step=1.0, default=26.0,
+         help="How far the IF knocks the sound carrier down before detection (saw modes; the slider always wins, "
+              "so match it to the template by hand: saw80 26, saw90 40). Deliberately finite on a real set - the "
+              "intercarrier sound path needs the residue, which beats into the video at 6 MHz. Lower it to watch "
+              "the beat appear; B3 adds the video trap that fights it."),
+    dict(name="gd_ripple", flag="--gd-ripple", label="IF group-delay ripple (ns)",
+         min=0.0, max=200.0, step=5.0, default=50.0,
+         help="Peak group-delay ripple of the SAW (saw modes; the slider always wins - saw80's template is 50, "
+              "saw90's 8): pre/post-ringing next to sharp edges, the SAW's characteristic imperfection. 0 = a "
+              "perfectly phase-corrected IF."),
     dict(name="agc", flag="--agc", choices=["sync-tip", "adaptive"], default=0,
          label="Level scheme (AGC)",
          help="sync-tip = the period scheme: the IF AGC holds the carrier's sync tip at 1.0 and every level is "

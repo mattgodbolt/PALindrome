@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -44,10 +45,20 @@ struct LoadedRecording {
 void stream_ri16le_blocks(const std::filesystem::path &data_path,
     const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples = std::size_t{1} << 16);
 
+// Which front end demodulates the vision carrier. The saw modes run one
+// complex-coefficient FIR shaped like a receiver SAW IF (Nyquist flank,
+// vestige cutoff, finite sound notch, group-delay ripple - see
+// demod::IfTemplate); flat is the ideal symmetric low-pass the saw modes
+// replaced, kept verbatim as the legacy/comparison chain.
+enum class IfMode { saw80, saw90, flat };
+
 // Demod parameters that aren't carried in the recording itself.
 struct EnvelopeOptions {
-  double cutoff_hz = 5.0e6;
+  double cutoff_hz = 5.0e6; // baseband low-pass corner (flat mode only)
   std::size_t decimation = 1;
+  IfMode if_mode = IfMode::flat;
+  std::optional<double> sound_notch_db{}; // dB of IF sound rejection, overriding the template
+  std::optional<double> gd_ripple_ns{}; // peak group-delay ripple ns, overriding the template
 };
 
 // What stream_envelope reports back to the caller.

@@ -41,7 +41,7 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .help("Render a recording's vision signal to a PNG using a sync-locked horizontal flywheel")
           .add_argument(lyra::opt(output_, "file")["-o"]["--output"]("Output PNG (default: <recording>.png)"))
           .add_argument(lyra::opt(carrier_, "hz")["--carrier"]("Carrier Hz (default: rx888:vision_if_hz)"))
-          .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz"))
+          .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz (--if flat only)"))
           .add_argument(lyra::opt(sync_cutoff_, "hz")["--sync-cutoff"]("Sync-branch low-pass cutoff Hz"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs (0 = auto from Nyquist)"))
           .add_argument(lyra::opt(width_, "px")["--width"]("Output image width"))
@@ -76,6 +76,16 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "right): shifts the picture right by this fraction of a line"))
           .add_argument(lyra::opt(v_shift_, "x")["--v-shift"](
               "Vertical centring (internal service adjustment): shifts the picture down by this fraction of a field"))
+          .add_argument(lyra::opt(if_mode_, "mode")["--if"](
+              "IF response: saw80 (default - an 80s single-SAW set: Nyquist flank through the carrier, vestigial "
+              "lower sideband, chroma a few dB down, finite sound notch, group-delay ripple) | saw90 (a 90s set: "
+              "flat through chroma, deeper notch, cleaner phase) | flat (the ideal symmetric low-pass, the pre-SAW "
+              "front end)"))
+          .add_argument(lyra::opt(sound_notch_db_, "db")["--sound-notch-db"](
+              "IF sound rejection in dB, positive (saw modes; default from the template: 26 for saw80, 40 for "
+              "saw90 - deliberately finite, the intercarrier residue is real; 0 removes the notch)"))
+          .add_argument(lyra::opt(gd_ripple_, "ns")["--gd-ripple"](
+              "IF group-delay ripple in ns peak (saw modes; default from the template: 50 for saw80, 8 for saw90)"))
           .add_argument(lyra::opt(agc_mode_, "mode")["--agc"](
               "Level scheme: sync-tip (default - the IF AGC holds the sync tip at 1.0, white is the standard's "
               "geometry) | adaptive (the legacy per-stage trackers, an autocontrast)"))
@@ -150,7 +160,23 @@ int RenderCommand::run() const {
 
   const auto envelope_rate = loaded.sample_rate_hz / static_cast<double>(decimate);
 
-  const EnvelopeOptions opts{.cutoff_hz = cutoff_, .decimation = decimate};
+  EnvelopeOptions opts{.cutoff_hz = cutoff_, .decimation = decimate};
+  if (if_mode_ == "saw80")
+    opts.if_mode = IfMode::saw80;
+  else if (if_mode_ == "saw90")
+    opts.if_mode = IfMode::saw90;
+  else if (if_mode_ == "flat")
+    opts.if_mode = IfMode::flat;
+  else {
+    std::println(std::cerr, "render: --if must be saw80, saw90, or flat");
+    return 1;
+  }
+  // The flag sentinels (negative = "use the template's value") become absent
+  // options here, so EnvelopeOptions carries intent, not magic numbers.
+  if (sound_notch_db_ >= 0.0)
+    opts.sound_notch_db = sound_notch_db_;
+  if (gd_ripple_ >= 0.0)
+    opts.gd_ripple_ns = gd_ripple_;
 
   if (no_sync_) {
     // Debug: fold the raw envelope into the frame (sample i -> x = i % width,
