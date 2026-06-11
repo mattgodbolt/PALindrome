@@ -2,6 +2,7 @@
 
 #include "palindrome/buffer.hpp"
 #include "palindrome/fir.hpp"
+#include "palindrome/restrict_ptr.hpp"
 
 #include <complex>
 #include <cstddef>
@@ -158,7 +159,8 @@ public:
 private:
   VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, Detector detector, double omega_per_output,
       std::size_t decimation);
-  void quasi_sync_detect(const float *i, const float *q, float *out, std::size_t n);
+  void quasi_sync_detect(
+      restrict_ptr<const float> i, restrict_ptr<const float> q, restrict_ptr<float> out, std::size_t n);
 
   dsp::Fir re_filter_; // the complex kernel's real part over the real input
   dsp::Fir im_filter_; // ... and its imaginary part

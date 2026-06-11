@@ -215,13 +215,20 @@ IfTemplate saw90_template() {
 }
 
 namespace {
-// Quasi-sync PI loop gains, per output sample. kp sets the lock bandwidth
-// (~kp * rate / 2pi, a few kHz at video rates - the "high-Q tank" a TDA-era IC
-// demodulator recovered the carrier with); ki lets the integrator absorb a
-// static carrier offset (metadata error) without a standing phase error.
-// Heavily overdamped, so the lock never rings.
+// Quasi-sync PI loop gains, per OUTPUT sample (decimation lowers the
+// correction rate, so the lock bandwidth in Hz - roughly kp * output_rate /
+// 2pi, a few kHz at video rates, the "high-Q tank" a TDA-era IC demodulator
+// recovered the carrier with - shrinks with it). ki lets the integrator
+// absorb a static carrier offset (metadata error) without a standing phase
+// error. Heavily overdamped, so the lock never rings.
 constexpr double kQsKp = 1.0e-3;
 constexpr double kQsKi = 1.0e-8;
+// Anti-windup bound on the integrator: ~10 kHz at video output rates, far
+// above any believable carrier-metadata error. On a carrier-free stretch
+// (live RF: tuning gaps, dropouts) the normalised error is unit-magnitude
+// noise and the integrator random-walks; unbounded, it could wander past the
+// loop's pull-in range and take the rest of the recording to crawl back.
+constexpr double kQsMaxFreq = 4.0e-3;
 } // namespace
 
 VisionIf::VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &shape, Detector detector,
@@ -240,7 +247,8 @@ void VisionIf::prepare(std::size_t max_in) {
   out_.reserve(re_filter_.max_output_for(max_in));
 }
 
-void VisionIf::quasi_sync_detect(const float *i, const float *q, float *out, std::size_t n) {
+void VisionIf::quasi_sync_detect(
+    restrict_ptr<const float> i, restrict_ptr<const float> q, restrict_ptr<float> out, std::size_t n) {
   for (std::size_t k = 0; k < n; ++k) {
     // Snapshot the double phasor down to float at the point of use; the video
     // is per-sample flow, only the phase is the accumulator.
@@ -258,7 +266,7 @@ void VisionIf::quasi_sync_detect(const float *i, const float *q, float *out, std
     // the RX888 corpus did.
     const float mag = std::sqrt(yr * yr + yi * yi);
     const double e = mag > 1e-12f ? static_cast<double>(yi / mag) : 0.0;
-    freq_ += kQsKi * e;
+    freq_ = std::clamp(freq_ + kQsKi * e, -kQsMaxFreq, kQsMaxFreq);
     // Advance by the nominal carrier, then trim by the loop: a first-order
     // rotation (1 - j*a) is exact enough for the tiny correction angle, and
     // the renorm below absorbs its second-order magnitude drift - the same

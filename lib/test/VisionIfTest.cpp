@@ -271,6 +271,22 @@ TEST_CASE("quasi-sync acquires upright from any cold-start phase") {
   }
 }
 
+TEST_CASE("quasi-sync locks under decimation - the shipped default geometry") {
+  // The render default is quasi-sync AND auto-decimation (/2 on the RX888
+  // corpus), so the decimation-folding of the NCO step (omega * d per output
+  // sample) is load-bearing: drop that factor and the NCO free-runs megahertz
+  // off, far beyond any pull-in, while every d=1 test stays green.
+  for (const std::size_t d: {std::size_t{2}, std::size_t{4}}) {
+    const auto x = am_tone(120000, 312.5e3, 0.5);
+    demod::VisionIf dut{kRate, kCarrier, demod::saw80_template(), demod::Detector::quasi_sync, demod::kDefaultIfTaps,
+        palindrome::dsp::Window::Hamming, d};
+    dut.prepare(x.size());
+    const auto r = measure(dut.process(x), kLockSkip / d * 2); // fewer corrections/s: allow more settle
+    CHECK_THAT(r.mean, WithinAbs(0.5, 0.005));
+    CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.02));
+  }
+}
+
 TEST_CASE("quasi-sync locks through a carrier-frequency error") {
   // The signal arrives 300 Hz off the nominal carrier the NCO was built for
   // (a believable metadata/scan error). The PI integrator must wind up and
