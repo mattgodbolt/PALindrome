@@ -10,9 +10,23 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace palindrome::cli {
+
+namespace {
+// Which template a saw mode synthesises. No default: a new IfMode then fails to
+// compile (-Wswitch -Werror) until it picks one.
+[[nodiscard]] demod::IfTemplate template_for(IfMode mode) {
+  switch (mode) {
+    case IfMode::saw80: return demod::saw80_template();
+    case IfMode::saw90: return demod::saw90_template();
+    case IfMode::flat: break; // the legacy chain: never synthesised
+  }
+  std::unreachable();
+}
+} // namespace
 
 std::filesystem::path resolve_meta(std::filesystem::path path) {
   if (path.extension() != ".sigmf-meta")
@@ -83,11 +97,11 @@ EnvelopeStream stream_envelope(const LoadedRecording &loaded, const EnvelopeOpti
     // One-sided taps subsume the analytic (Hilbert) step, and the template -
     // not a --cutoff - decides what survives, including a deliberately finite
     // sound notch, so the sound carrier leaves a faint period-true 6 MHz beat.
-    auto shape = opts.if_mode == IfMode::saw90 ? demod::saw90_template() : demod::saw80_template();
-    if (opts.sound_notch_db > 0.0)
-      shape.sound_notch_db = -opts.sound_notch_db;
-    if (opts.gd_ripple_ns >= 0.0)
-      shape.gd_ripple_ns = opts.gd_ripple_ns;
+    auto shape = template_for(opts.if_mode);
+    if (opts.sound_notch_db)
+      shape.sound_notch_db = -*opts.sound_notch_db; // the option is dB of rejection, positive
+    if (opts.gd_ripple_ns)
+      shape.gd_ripple_ns = *opts.gd_ripple_ns;
     demod::VisionIf vision_if{loaded.sample_rate_hz, loaded.vision_carrier_hz, shape, demod::kDefaultIfTaps,
         dsp::Window::Hamming, opts.decimation};
     vision_if.prepare(block_samples);

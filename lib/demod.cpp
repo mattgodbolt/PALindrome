@@ -128,6 +128,15 @@ std::pair<std::vector<float>, std::vector<float>> if_taps(
   for (std::size_t i = 1; i < shape.shape.size(); ++i)
     if (shape.shape[i].offset_hz <= shape.shape[i - 1].offset_hz)
       throw std::invalid_argument{"VisionIf: shape table offsets must be strictly increasing"};
+  // The curve must have died away by Nyquist. Truncating it mid-shoulder puts a
+  // cliff in the frequency sampling whose windowed interpolation bleeds straight
+  // across into the negative-frequency bins - a near-full-strength carrier image
+  // folding onto the picture, with no other symptom (measured -4.8 dB worst case
+  // for a 16 MS/s rate that can't hold the template). -40 dB is comfortably
+  // below anything the picture would show.
+  if (template_voltage(shape, sample_rate_hz / 2.0 - carrier_hz) > 0.01)
+    throw std::invalid_argument{"VisionIf: the template does not fit below Nyquist at this sample rate/carrier - the "
+                                "truncated curve would fold a carrier image onto the picture"};
 
   const auto n_taps = num_taps;
   const auto nd = static_cast<double>(n_taps);
@@ -162,6 +171,8 @@ std::pair<std::vector<float>, std::vector<float>> if_taps(
   if (!(target > 0.0))
     throw std::invalid_argument{"VisionIf: template has no response at the carrier"};
   const double realised = std::abs(taps_response_at(re, im, carrier_hz, sample_rate_hz));
+  if (!(realised > 0.0)) // != would let a denormal-or-NaN realisation poison every tap
+    throw std::invalid_argument{"VisionIf: realised kernel has no response at the carrier"};
   const double scale = target / realised;
   std::vector<float> re_f(n_taps);
   std::vector<float> im_f(n_taps);

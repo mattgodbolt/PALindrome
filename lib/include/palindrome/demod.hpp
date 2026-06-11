@@ -91,6 +91,10 @@ struct IfPoint {
 // needs some sound carrier left, and the residue is what beats into the video.
 // Phase is a group-delay ripple (sinusoidal in frequency) about linear phase -
 // the SAW's characteristic edge-ringing imperfection.
+// Depths are DESIGN values: the windowed realisation smears fine features by
+// the window mainlobe (4*fs/num_taps wide), so the notch lands a few dB
+// shallower than specified, and shallower still at higher sample rates (at 255
+// taps: ~3 dB at 20 MS/s, ~5 dB at 32 MS/s) - era-plausible spread, not error.
 struct IfTemplate {
   double flank_half_width_hz = 0.75e6;
   std::vector<IfPoint> shape{};

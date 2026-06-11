@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -56,8 +57,8 @@ struct EnvelopeOptions {
   double cutoff_hz = 5.0e6; // baseband low-pass corner (flat mode only)
   std::size_t decimation = 1;
   IfMode if_mode = IfMode::flat;
-  double sound_notch_db = -1.0; // > 0: dB of IF sound rejection, overriding the template
-  double gd_ripple_ns = -1.0; // >= 0: peak group-delay ripple ns, overriding the template
+  std::optional<double> sound_notch_db{}; // dB of IF sound rejection, overriding the template
+  std::optional<double> gd_ripple_ns{}; // peak group-delay ripple ns, overriding the template
 };
 
 // What stream_envelope reports back to the caller.

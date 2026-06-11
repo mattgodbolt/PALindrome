@@ -45,7 +45,8 @@ TEST_CASE("demod throughput (64k-sample blocks)") {
   };
 
   // The whole real-IF envelope: Hilbert -> ComplexAmEnvelope (DC block, mix to DC,
-  // FIR low-pass x2, magnitude). This is what stream_envelope runs per block.
+  // FIR low-pass x2, magnitude). This is what stream_envelope runs per block in
+  // --if flat.
   BENCHMARK("real envelope path (Hilbert -> ComplexAmEnvelope)") {
     static demod::Hilbert hilbert = [] {
       demod::Hilbert h;
@@ -58,5 +59,17 @@ TEST_CASE("demod throughput (64k-sample blocks)") {
       return e;
     }();
     return env.process(hilbert.process(input)).size();
+  };
+
+  // The SAW-era front end (the default): one complex-tap FIR on the real IF +
+  // magnitude - more MACs than the flat chain but no serial recurrence, so the
+  // two should be a wash. Compare per-sample here, where the screen can't hide it.
+  BENCHMARK("SAW IF envelope path (VisionIf, saw80)") {
+    static demod::VisionIf vif = [] {
+      demod::VisionIf v{fs, carrier, demod::saw80_template()};
+      v.prepare(block);
+      return v;
+    }();
+    return vif.process(input).size();
   };
 }

@@ -83,7 +83,7 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "front end)"))
           .add_argument(lyra::opt(sound_notch_db_, "db")["--sound-notch-db"](
               "IF sound rejection in dB, positive (saw modes; default from the template: 26 for saw80, 40 for "
-              "saw90 - deliberately finite, the intercarrier residue is real)"))
+              "saw90 - deliberately finite, the intercarrier residue is real; 0 removes the notch)"))
           .add_argument(lyra::opt(gd_ripple_, "ns")["--gd-ripple"](
               "IF group-delay ripple in ns peak (saw modes; default from the template: 50 for saw80, 8 for saw90)"))
           .add_argument(lyra::opt(agc_mode_, "mode")["--agc"](
@@ -171,8 +171,12 @@ int RenderCommand::run() const {
     std::println(std::cerr, "render: --if must be saw80, saw90, or flat");
     return 1;
   }
-  opts.sound_notch_db = sound_notch_db_;
-  opts.gd_ripple_ns = gd_ripple_;
+  // The flag sentinels (negative = "use the template's value") become absent
+  // options here, so EnvelopeOptions carries intent, not magic numbers.
+  if (sound_notch_db_ >= 0.0)
+    opts.sound_notch_db = sound_notch_db_;
+  if (gd_ripple_ >= 0.0)
+    opts.gd_ripple_ns = gd_ripple_;
 
   if (no_sync_) {
     // Debug: fold the raw envelope into the frame (sample i -> x = i % width,

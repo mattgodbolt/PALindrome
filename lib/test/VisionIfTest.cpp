@@ -36,11 +36,12 @@ std::vector<float> am_tone(std::size_t n, double mod_hz, double depth) {
 // the template's response at one point (the envelope ripples at offset_hz with
 // amplitude = sideband * |H(carrier + offset)| / ... carrier terms, measured
 // relative to the carrier response below).
-std::vector<float> carrier_plus_sideband(std::size_t n, double offset_hz, double amp) {
+std::vector<float> carrier_plus_sideband(
+    std::size_t n, double offset_hz, double amp, double rate = kRate, double carrier = kCarrier) {
   std::vector<float> x(n);
   for (std::size_t k = 0; k < n; ++k) {
-    const auto t = static_cast<double>(k) / kRate;
-    x[k] = static_cast<float>(std::cos(two_pi * kCarrier * t) + amp * std::cos(two_pi * (kCarrier + offset_hz) * t));
+    const auto t = static_cast<double>(k) / rate;
+    x[k] = static_cast<float>(std::cos(two_pi * carrier * t) + amp * std::cos(two_pi * (carrier + offset_hz) * t));
   }
   return x;
 }
@@ -65,8 +66,9 @@ Ripple measure(std::span<const float> env, std::size_t skip) {
   return {sum / static_cast<double>(body.size()), static_cast<double>(hi - lo) / 2.0};
 }
 
-Ripple run(const demod::IfTemplate &shape, const std::vector<float> &x) {
-  demod::VisionIf dut{kRate, kCarrier, shape};
+Ripple run(
+    const demod::IfTemplate &shape, const std::vector<float> &x, double rate = kRate, double carrier = kCarrier) {
+  demod::VisionIf dut{rate, carrier, shape};
   dut.prepare(x.size());
   return measure(dut.process(x), demod::kDefaultIfTaps);
 }
@@ -148,6 +150,34 @@ TEST_CASE("sound notch is deep but deliberately finite") {
   deep.sound_notch_db = -50.0;
   const auto rd = run(deep, carrier_plus_sideband(40000, 6.0e6, 0.2));
   CHECK(rd.amplitude / rd.mean < 0.3 * (r.amplitude / r.mean));
+}
+
+TEST_CASE("VisionIf realises the template at the RX888 geometry too") {
+  // 32 MS/s widens the realisation's smear (the window mainlobe scales with
+  // fs/num_taps, ~502 kHz against the 400 kHz notch half-width), so the notch
+  // lands a few dB shallower than at 20 MS/s. It must still be well down, the
+  // image still gone, and the template must fit (Nyquist 16 MHz holds the
+  // curve's end at carrier + 6.8 = 10.4 MHz easily).
+  constexpr double kRx888Rate = 32.0e6;
+  constexpr double kRx888Carrier = 3.564e6;
+  const auto t = demod::saw80_template();
+
+  std::vector<float> bare(40000);
+  for (std::size_t k = 0; k < bare.size(); ++k)
+    bare[k] = static_cast<float>(std::cos(two_pi * kRx888Carrier * static_cast<double>(k) / kRx888Rate));
+  const auto rc = run(t, bare, kRx888Rate, kRx888Carrier);
+  CHECK_THAT(rc.mean, WithinAbs(0.5, 0.005)); // one-sided: no image beat
+  CHECK(rc.amplitude < 0.005 * rc.mean);
+
+  const auto rn =
+      run(t, carrier_plus_sideband(40000, 6.0e6, 0.2, kRx888Rate, kRx888Carrier), kRx888Rate, kRx888Carrier);
+  const double h = (rn.amplitude / rn.mean) / (0.2 / 0.5);
+  CHECK(h < std::pow(10.0, -28.0 / 20.0)); // realised shallower than 20 MS/s, still deep
+  CHECK(h > std::pow(10.0, -50.0 / 20.0)); // and still finite
+
+  // A rate that can't hold the template must refuse, not silently fold the
+  // carrier image onto the picture.
+  CHECK_THROWS_AS(demod::VisionIf(16.0e6, kRx888Carrier, t), std::invalid_argument);
 }
 
 TEST_CASE("VisionIf decimation keeps exactly every Nth full-rate output") {
