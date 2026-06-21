@@ -113,6 +113,19 @@ struct IfTemplate {
 [[nodiscard]] IfTemplate saw80_template();
 [[nodiscard]] IfTemplate saw90_template();
 
+// A coarse vision-carrier estimate from a block of real IF samples: the
+// dominant narrowband line in [lo_hz, hi_hz]. Under negative modulation the
+// vision carrier is the strongest spectral line (it sits at the sync-tip peak
+// and is present even in blanking), so a Hann-windowed FFT magnitude peak finds
+// it; a parabolic refine of the peak puts the estimate well inside a bin -
+// inside the quasi-sync loop's pull-in range, so the decoder can acquire with
+// no carrier metadata at all (the first step of decoding live RF). Uses the
+// largest power of two <= samples.size(). Throws std::invalid_argument if that
+// is < 2, the sample rate is non-positive, the band is empty or outside
+// (0, sample_rate_hz / 2), or the band holds no spectral energy.
+[[nodiscard]] double find_vision_carrier(
+    std::span<const float> samples, double sample_rate_hz, double lo_hz, double hi_hz);
+
 // How the vision detector turns the filtered IF into video. quasi_sync (the
 // period default): an NCO at the carrier with a slow PI phase lock nulling the
 // mean quadrature - the digital stand-in for the TDA-era IC demodulator's

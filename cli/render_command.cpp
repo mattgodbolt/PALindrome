@@ -40,7 +40,11 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
   cli.add_argument(lyra::command("render", [this, &action](const lyra::group &) { action = [this] { return run(); }; })
           .help("Render a recording's vision signal to a PNG using a sync-locked horizontal flywheel")
           .add_argument(lyra::opt(output_, "file")["-o"]["--output"]("Output PNG (default: <recording>.png)"))
-          .add_argument(lyra::opt(carrier_, "hz")["--carrier"]("Carrier Hz (default: rx888:vision_if_hz)"))
+          .add_argument(lyra::opt(carrier_, "hz")["--carrier"](
+              "Carrier Hz (default: from metadata, or a signal scan if the metadata has none)"))
+          .add_argument(lyra::opt(scan_)["--scan"](
+              "Find the carrier by scanning the signal's spectrum, ignoring the metadata (the no-metadata live-RF "
+              "path; here it also validates the metadata's carrier)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz (--if flat only)"))
           .add_argument(lyra::opt(sync_cutoff_, "hz")["--sync-cutoff"]("Sync-branch low-pass cutoff Hz"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs (0 = auto from Nyquist)"))
@@ -154,7 +158,15 @@ int RenderCommand::run() const {
     return 1;
   }
 
-  const auto loaded = load_recording(recording_, carrier_);
+  const auto loaded = load_recording(recording_, carrier_, scan_);
+  if (loaded.carrier_scanned) {
+    if (loaded.metadata_carrier_hz > 0.0)
+      std::println("carrier: scanned {:.4f} MHz (metadata said {:.4f} MHz, off by {:+.0f} Hz)",
+          loaded.vision_carrier_hz / 1e6, loaded.metadata_carrier_hz / 1e6,
+          loaded.vision_carrier_hz - loaded.metadata_carrier_hz);
+    else
+      std::println("carrier: scanned {:.4f} MHz (no metadata carrier)", loaded.vision_carrier_hz / 1e6);
+  }
 
   // --decimate 0 (the default) means pick the decimation from the signal; any
   // explicit value wins. The subcarrier is the textbook PAL crystal unless a

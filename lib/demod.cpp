@@ -1,9 +1,11 @@
 #include "palindrome/demod.hpp"
 
 #include "palindrome/cmul.hpp"
+#include "palindrome/fft.hpp"
 #include "palindrome/restrict_ptr.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -212,6 +214,57 @@ IfTemplate saw90_template() {
       .gd_ripple_ns = 8.0,
       .gd_ripple_period_hz = 1.0e6,
   };
+}
+
+double find_vision_carrier(std::span<const float> samples, double sample_rate_hz, double lo_hz, double hi_hz) {
+  if (!(sample_rate_hz > 0.0))
+    throw std::invalid_argument{"find_vision_carrier: sample rate must be positive"};
+  if (!(lo_hz >= 0.0) || !(hi_hz > lo_hz) || !(hi_hz < sample_rate_hz / 2.0))
+    throw std::invalid_argument{"find_vision_carrier: band must be 0 <= lo < hi < sample_rate / 2"};
+  const std::size_t n = std::bit_floor(samples.size());
+  if (n < 2)
+    throw std::invalid_argument{"find_vision_carrier: need at least 2 samples"};
+
+  // Hann-window the block before the transform: the carrier is a strong line on
+  // a broad video pedestal, and the window's low sidelobes stop that pedestal's
+  // leakage from dragging the peak off the carrier.
+  std::vector<std::complex<double>> spec(n);
+  const double denom = static_cast<double>(n - 1);
+  for (std::size_t k = 0; k < n; ++k) {
+    const double w = 0.5 - 0.5 * std::cos(kTwoPi * static_cast<double>(k) / denom);
+    spec[k] = std::complex<double>{static_cast<double>(samples[k]) * w, 0.0};
+  }
+  dsp::fft(spec);
+
+  // Search bins strictly inside [1, n/2-1] so the parabolic refine always has
+  // both neighbours (the carrier is far from DC and Nyquist either way).
+  const double bin_hz = sample_rate_hz / static_cast<double>(n);
+  const auto lo_bin = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(lo_hz / bin_hz)));
+  const auto hi_bin = std::min(n / 2 - 1, static_cast<std::size_t>(std::floor(hi_hz / bin_hz)));
+  if (lo_bin > hi_bin)
+    throw std::invalid_argument{"find_vision_carrier: band too narrow for this block length"};
+
+  auto peak = lo_bin;
+  double best = std::norm(spec[lo_bin]);
+  for (auto k = lo_bin + 1; k <= hi_bin; ++k) {
+    if (const double m = std::norm(spec[k]); m > best) {
+      best = m;
+      peak = k;
+    }
+  }
+  if (!(best > 0.0))
+    throw std::invalid_argument{"find_vision_carrier: no spectral energy in the band"};
+
+  // Parabolic interpolation in log-magnitude: a windowed line's main lobe is
+  // near-Gaussian, so a parabola through the log of the three bins lands the
+  // vertex on the true frequency to a small fraction of a bin.
+  constexpr double tiny = 1e-300;
+  const double a = std::log(std::norm(spec[peak - 1]) + tiny);
+  const double b = std::log(std::norm(spec[peak]) + tiny);
+  const double c = std::log(std::norm(spec[peak + 1]) + tiny);
+  const double curv = a - 2.0 * b + c;
+  const double delta = curv != 0.0 ? std::clamp(0.5 * (a - c) / curv, -0.5, 0.5) : 0.0;
+  return (static_cast<double>(peak) + delta) * bin_hz;
 }
 
 namespace {

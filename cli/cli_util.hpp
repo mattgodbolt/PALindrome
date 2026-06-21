@@ -28,15 +28,21 @@ struct LoadedRecording {
   std::filesystem::path data_path;
   double sample_rate_hz{};
   double vision_carrier_hz{}; // absolute IF carrier to mix down
+  bool carrier_scanned = false; // the carrier came from a signal scan, not metadata
+  double metadata_carrier_hz = 0.0; // what the metadata claimed (0 = none), for the scan diagnostic
 };
 
 // Load a PAL recording from `recording` (a .sigmf-meta path or a basename) and
-// resolve the vision carrier from the metadata (rx888:vision_if_hz or
-// airspy:vision_if_hz). `carrier_override != 0` takes precedence (an absolute
-// IF). Throws std::runtime_error on a missing/invalid recording, or on a
-// complex (ci16) input (recapture as real) — main catches and prints
-// "palindrome: <what>".
-[[nodiscard]] LoadedRecording load_recording(const std::filesystem::path &recording, double carrier_override = 0.0);
+// resolve the vision carrier. Precedence: `carrier_override != 0` (an absolute
+// IF) wins; else, unless `force_scan`, the metadata (rx888:vision_if_hz /
+// airspy:vision_if_hz); else a coarse FFT scan of the signal itself
+// (demod::find_vision_carrier) - so a recording with no carrier metadata, the
+// live-RF case, still decodes. `force_scan` takes the scan even when metadata is
+// present (to validate it). Throws std::runtime_error on a missing/invalid
+// recording, a complex (ci16) input (recapture as real), or a scan that finds no
+// carrier — main catches and prints "palindrome: <what>".
+[[nodiscard]] LoadedRecording load_recording(
+    const std::filesystem::path &recording, double carrier_override = 0.0, bool force_scan = false);
 
 // Stream ri16-LE (real int16) from `data_path` as float blocks of up to
 // `block_samples` samples, scaling each to [-1, 1). Invokes `on_block` with each
