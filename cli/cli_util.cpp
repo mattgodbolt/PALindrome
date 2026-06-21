@@ -51,10 +51,11 @@ std::vector<float> read_head(const std::filesystem::path &data_path, std::size_t
 }
 
 // Find the vision carrier in the recording's opening samples: a power-of-two
-// block (~50 ms at 20 MS/s) over the whole channel below Nyquist, where the
-// carrier is the dominant line. The block is long on purpose - finer bins
-// separate the pure carrier line from its close-in video-modulation sidebands,
-// which a short block blurs together and the peak then sits between.
+// block (~50 ms at 20 MS/s) over the band [1 MHz, 0.95*Nyquist] - low enough to
+// skip DC/LO junk, high enough to stay off the anti-alias roll-off, and the
+// vision carrier is the dominant line within it. The block is long on purpose:
+// finer bins separate the pure carrier line from its close-in video-modulation
+// sidebands, which a short block blurs together and the peak then sits between.
 double scan_vision_carrier(const std::filesystem::path &data_path, double sample_rate_hz) {
   constexpr std::size_t kScanSamples = std::size_t{1} << 20;
   constexpr double kScanLoHz = 1.0e6; // a vision IF never sits below ~1 MHz on either SDR's plan

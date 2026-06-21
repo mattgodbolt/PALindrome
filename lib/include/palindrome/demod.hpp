@@ -124,8 +124,8 @@ struct IfTemplate {
 // (sync-rate AM, carrier wander), which bounds any estimator, but the loop pulls
 // in the residual. Uses the largest power of two <= samples.size(). Throws
 // std::invalid_argument if that is < 4, the sample rate is non-positive, the
-// band is empty or outside (0, sample_rate_hz / 2), or the band holds no
-// spectral energy.
+// band is not 0 <= lo_hz < hi_hz < sample_rate_hz / 2 (lo_hz may be 0), or the
+// band holds no spectral energy.
 [[nodiscard]] double find_vision_carrier(
     std::span<const float> samples, double sample_rate_hz, double lo_hz, double hi_hz);
 

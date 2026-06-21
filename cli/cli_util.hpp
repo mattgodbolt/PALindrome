@@ -38,9 +38,9 @@ struct LoadedRecording {
 // airspy:vision_if_hz); else a coarse FFT scan of the signal itself
 // (demod::find_vision_carrier) - so a recording with no carrier metadata, the
 // live-RF case, still decodes. `force_scan` takes the scan even when metadata is
-// present (to validate it). Throws std::runtime_error on a missing/invalid
-// recording, a complex (ci16) input (recapture as real), or a scan that finds no
-// carrier — main catches and prints "palindrome: <what>".
+// present (to validate it). Throws (a std::exception — runtime_error for a
+// missing/invalid recording or a complex ci16 input, invalid_argument for a scan
+// that finds no carrier) — main catches it and prints "palindrome: <what>".
 [[nodiscard]] LoadedRecording load_recording(
     const std::filesystem::path &recording, double carrier_override = 0.0, bool force_scan = false);
 
