@@ -57,8 +57,10 @@ std::vector<float> read_head(const std::filesystem::path &data_path, std::size_t
 // which a short block blurs together and the peak then sits between.
 double scan_vision_carrier(const std::filesystem::path &data_path, double sample_rate_hz) {
   constexpr std::size_t kScanSamples = std::size_t{1} << 20;
+  constexpr double kScanLoHz = 1.0e6; // a vision IF never sits below ~1 MHz on either SDR's plan
+  constexpr double kNyquistGuard = 0.95; // stay off the anti-alias roll-off at the top of the band
   const auto head = read_head(data_path, kScanSamples);
-  return demod::find_vision_carrier(head, sample_rate_hz, 1.0e6, 0.95 * sample_rate_hz / 2.0);
+  return demod::find_vision_carrier(head, sample_rate_hz, kScanLoHz, kNyquistGuard * sample_rate_hz / 2.0);
 }
 } // namespace
 

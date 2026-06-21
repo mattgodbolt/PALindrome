@@ -40,7 +40,7 @@ TEST_CASE("fft rejects non-power-of-two sizes") {
 }
 
 TEST_CASE("fft matches the naive DFT") {
-  for (const std::size_t n: {2u, 8u, 64u, 256u}) {
+  for (const std::size_t n: {std::size_t{2}, std::size_t{8}, std::size_t{64}, std::size_t{256}}) {
     std::vector<std::complex<double>> x(n);
     for (std::size_t k = 0; k < n; ++k) // a deterministic, non-trivial signal
       x[k] = std::complex<double>{std::sin(0.3 * static_cast<double>(k)) + 0.2 * static_cast<double>(k % 5),

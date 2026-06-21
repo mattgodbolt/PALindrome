@@ -119,10 +119,13 @@ struct IfTemplate {
 // and is present even in blanking), so a Hann-windowed FFT magnitude peak finds
 // it; a parabolic refine of the peak puts the estimate well inside a bin -
 // inside the quasi-sync loop's pull-in range, so the decoder can acquire with
-// no carrier metadata at all (the first step of decoding live RF). Uses the
-// largest power of two <= samples.size(). Throws std::invalid_argument if that
-// is < 2, the sample rate is non-positive, the band is empty or outside
-// (0, sample_rate_hz / 2), or the band holds no spectral energy.
+// no carrier metadata at all (the first step of decoding live RF). The estimate
+// is good to a few hundred Hz - the carrier is really a ~300 Hz-wide cluster
+// (sync-rate AM, carrier wander), which bounds any estimator, but the loop pulls
+// in the residual. Uses the largest power of two <= samples.size(). Throws
+// std::invalid_argument if that is < 4, the sample rate is non-positive, the
+// band is empty or outside (0, sample_rate_hz / 2), or the band holds no
+// spectral energy.
 [[nodiscard]] double find_vision_carrier(
     std::span<const float> samples, double sample_rate_hz, double lo_hz, double hi_hz);
 

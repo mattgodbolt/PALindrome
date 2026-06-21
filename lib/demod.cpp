@@ -221,17 +221,26 @@ double find_vision_carrier(std::span<const float> samples, double sample_rate_hz
     throw std::invalid_argument{"find_vision_carrier: sample rate must be positive"};
   if (!(lo_hz >= 0.0) || !(hi_hz > lo_hz) || !(hi_hz < sample_rate_hz / 2.0))
     throw std::invalid_argument{"find_vision_carrier: band must be 0 <= lo < hi < sample_rate / 2"};
+
   const std::size_t n = std::bit_floor(samples.size());
-  if (n < 2)
-    throw std::invalid_argument{"find_vision_carrier: need at least 2 samples"};
+  // Need n >= 4 so the search band [1, n/2 - 1] is non-empty AND the n/2 - 1
+  // bound never underflows (it is unsigned); the parabolic refine then always
+  // has both neighbours of any peak it picks.
+  if (n < 4)
+    throw std::invalid_argument{"find_vision_carrier: need at least 4 samples"};
 
   // Hann-window the block before the transform: the carrier is a strong line on
   // a broad video pedestal, and the window's low sidelobes stop that pedestal's
-  // leakage from dragging the peak off the carrier.
+  // leakage from dragging the peak off the carrier. Periodic (DFT-even) form -
+  // denominator n, not n - 1 - so the window has no end-to-end asymmetry to bias
+  // the peak. (A single long block, not Welch-averaged: the carrier is really a
+  // ~300 Hz-wide cluster - sync-rate AM, carrier wander - so neither a long block
+  // nor an averaged one pins it finer than that, and the estimate only has to
+  // land inside the quasi-sync loop's pull-in, which it does with room to spare.)
   std::vector<std::complex<double>> spec(n);
-  const double denom = static_cast<double>(n - 1);
+  const auto nd = static_cast<double>(n);
   for (std::size_t k = 0; k < n; ++k) {
-    const double w = 0.5 - 0.5 * std::cos(kTwoPi * static_cast<double>(k) / denom);
+    const double w = 0.5 - 0.5 * std::cos(kTwoPi * static_cast<double>(k) / nd);
     spec[k] = std::complex<double>{static_cast<double>(samples[k]) * w, 0.0};
   }
   dsp::fft(spec);
@@ -255,9 +264,11 @@ double find_vision_carrier(std::span<const float> samples, double sample_rate_hz
   if (!(best > 0.0))
     throw std::invalid_argument{"find_vision_carrier: no spectral energy in the band"};
 
-  // Parabolic interpolation in log-magnitude: a windowed line's main lobe is
-  // near-Gaussian, so a parabola through the log of the three bins lands the
-  // vertex on the true frequency to a small fraction of a bin.
+  // Parabolic interpolation through the log of the three bins: a windowed line's
+  // main lobe is near-Gaussian, so the parabola's vertex lands on the true
+  // frequency to a small fraction of a bin. The bins are norm() (power, |X|^2),
+  // so this is log-power = 2*log-magnitude; the constant factor cancels in the
+  // vertex ratio, so the estimate is the same as log-magnitude would give.
   constexpr double tiny = 1e-300;
   const double a = std::log(std::norm(spec[peak - 1]) + tiny);
   const double b = std::log(std::norm(spec[peak]) + tiny);
