@@ -50,6 +50,7 @@ private:
   std::string agc_mode_{"sync-tip"}; // "sync-tip" (absolute levels) | "adaptive" (legacy trackers)
   // The IF response: which set's SAW curve the vision carrier passes through.
   std::string if_mode_{"saw80"}; // "saw80" | "saw90" | "flat" (the pre-B2 ideal low-pass)
+  std::string detector_{"quasi-sync"}; // "quasi-sync" (TDA-era product) | "envelope" (diode); saw modes
   double sound_notch_db_{-1.0}; // IF sound rejection, positive dB; negative = template default
   double gd_ripple_{-1.0}; // IF group-delay ripple, ns peak; negative = template default
   double slice_depth_{0.08}; // sync slice below the AGC'd tip (sync-tip mode)

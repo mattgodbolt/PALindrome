@@ -2,6 +2,7 @@
 
 #include "palindrome/buffer.hpp"
 #include "palindrome/fir.hpp"
+#include "palindrome/restrict_ptr.hpp"
 
 #include <complex>
 #include <cstddef>
@@ -112,14 +113,24 @@ struct IfTemplate {
 [[nodiscard]] IfTemplate saw80_template();
 [[nodiscard]] IfTemplate saw90_template();
 
-// The vision IF strip and envelope detector in one stage: a complex-coefficient
-// FIR realising an IfTemplate centred on the carrier, applied directly to the
-// real-sampled IF, then the magnitude. The complex taps are one-sided (every
-// negative-frequency bin is zero), so the filter subsumes the Hilbert (no
-// carrier image to fold) and the DC blocker (DC is in its stopband); being two
-// real convolutions on a real input, it costs about what the symmetric I/Q pair
-// did. The carrier never gets mixed to DC - the envelope doesn't care, and the
-// quasi-sync detector (which does) carries its own phase lock when it lands.
+// How the vision detector turns the filtered IF into video. quasi_sync (the
+// period default): an NCO at the carrier with a slow PI phase lock nulling the
+// mean quadrature - the digital stand-in for the TDA-era IC demodulator's
+// high-Q tank - whose in-phase product is the video. Linear through
+// overmodulation (the output swings negative rather than folding) and free of
+// the VSB quadrature distortion an envelope detector folds in on asymmetric
+// sidebands. envelope: the magnitude, a diode detector - simpler, earlier, and
+// carrier-phase indifferent, with the quadrature fold-through to match.
+enum class Detector { quasi_sync, envelope };
+
+// The vision IF strip and detector in one stage: a complex-coefficient FIR
+// realising an IfTemplate centred on the carrier, applied directly to the
+// real-sampled IF, then the chosen detector. The complex taps are one-sided
+// (every negative-frequency bin is zero), so the filter subsumes the Hilbert
+// (no carrier image to fold) and the DC blocker (DC is in its stopband); being
+// two real convolutions on a real input, it costs about what the symmetric I/Q
+// pair did. The carrier never gets mixed to DC: the envelope detector doesn't
+// care, and the quasi-sync detector's phase lock IS the mix.
 class VisionIf {
 public:
   // carrier_hz: the vision carrier's absolute IF, in (0, sample_rate_hz / 2).
@@ -130,14 +141,15 @@ public:
   // shape table, non-positive widths, decimation < 1, a template with no
   // response at the carrier, or one that hasn't died away by Nyquist (the
   // truncated curve would fold a carrier image onto the picture).
-  VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &shape, std::size_t num_taps = kDefaultIfTaps,
-      dsp::Window window = dsp::Window::Hamming, std::size_t decimation = 1);
+  VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &shape, Detector detector = Detector::quasi_sync,
+      std::size_t num_taps = kDefaultIfTaps, dsp::Window window = dsp::Window::Hamming, std::size_t decimation = 1);
 
   void prepare(std::size_t max_in);
 
-  // Demodulate `in` (real IF) to the composite envelope, one output sample per
-  // decimation() inputs. The returned span is owned by the stage, valid until
-  // the next process() call.
+  // Demodulate `in` (real IF) to composite video, one output sample per
+  // decimation() inputs. Quasi-sync output can swing negative on
+  // overmodulation; the envelope is non-negative by construction. The returned
+  // span is owned by the stage, valid until the next process() call.
   [[nodiscard]] std::span<const float> process(std::span<const float> in);
 
   [[nodiscard]] std::size_t max_output_for(std::size_t n_in) const noexcept { return re_filter_.max_output_for(n_in); }
@@ -145,11 +157,24 @@ public:
   [[nodiscard]] std::size_t decimation() const noexcept { return re_filter_.decimation(); }
 
 private:
-  VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, std::size_t decimation);
+  VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, Detector detector, double omega_per_output,
+      std::size_t decimation);
+  void quasi_sync_detect(
+      restrict_ptr<const float> i, restrict_ptr<const float> q, restrict_ptr<float> out, std::size_t n);
 
   dsp::Fir re_filter_; // the complex kernel's real part over the real input
   dsp::Fir im_filter_; // ... and its imaginary part
-  Buffer<float> out_; // owned envelope output, reused across calls
+  Detector detector_;
+  // Quasi-sync carrier recovery: a conjugate-rotating NCO phasor stepped at the
+  // nominal carrier (per OUTPUT sample, so decimation folds in) and trimmed by
+  // a slow PI loop nulling the normalised quadrature. The phasor and integrator
+  // advance in double - phase accumulates over millions of samples - and are
+  // snapshotted down to float at the point of use.
+  std::complex<double> step_{1.0, 0.0}; // e^{-j*omega} per output sample
+  std::complex<double> nco_{1.0, 0.0}; // running carrier-phase estimate (conjugate)
+  double freq_ = 0.0; // PI integrator: tracked carrier offset, rad per output sample
+  std::size_t since_renorm_ = 0; // outputs since nco_ was renormalised
+  Buffer<float> out_; // owned video output, reused across calls
 };
 
 // Forms the analytic (one-sided, complex) signal of a real-sampled input via a

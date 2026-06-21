@@ -126,6 +126,12 @@ KNOBS = [
               "Nyquist flank, chroma a few dB down on the shoulder, -26 dB sound notch, +/-50 ns group-delay "
               "ripple. saw90 = a 90s set: flat through chroma, -40 dB notch, near-clean phase. flat = the ideal "
               "symmetric low-pass (the pre-SAW front end, no real set)."),
+    dict(name="detector", flag="--detector", choices=["quasi-sync", "envelope"], default=0,
+         label="Vision detector",
+         help="How the filtered IF becomes video (saw modes). quasi-sync = the TDA-era product detector: an NCO "
+              "with a slow phase lock on the carrier - linear through overmodulation, no VSB quadrature "
+              "distortion. envelope = a diode detector: the magnitude, with the quadrature fold-through and "
+              "rectified overshoots of the early sets."),
     dict(name="sound_notch", flag="--sound-notch-db", label="IF sound rejection (dB)",
          min=10.0, max=60.0, step=1.0, default=26.0,
          help="How far the IF knocks the sound carrier down before detection (saw modes; the slider always wins, "

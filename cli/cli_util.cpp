@@ -102,8 +102,8 @@ EnvelopeStream stream_envelope(const LoadedRecording &loaded, const EnvelopeOpti
       shape.sound_notch_db = -*opts.sound_notch_db; // the option is dB of rejection, positive
     if (opts.gd_ripple_ns)
       shape.gd_ripple_ns = *opts.gd_ripple_ns;
-    demod::VisionIf vision_if{loaded.sample_rate_hz, loaded.vision_carrier_hz, shape, demod::kDefaultIfTaps,
-        dsp::Window::Hamming, opts.decimation};
+    demod::VisionIf vision_if{loaded.sample_rate_hz, loaded.vision_carrier_hz, shape, opts.detector,
+        demod::kDefaultIfTaps, dsp::Window::Hamming, opts.decimation};
     vision_if.prepare(block_samples);
     stream_ri16le_blocks(
         loaded.data_path, [&](std::span<const float> x) { on_block(vision_if.process(x)); }, block_samples);
