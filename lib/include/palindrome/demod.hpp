@@ -190,6 +190,7 @@ private:
   std::complex<double> nco_{1.0, 0.0}; // running carrier-phase estimate (conjugate)
   double freq_ = 0.0; // PI integrator: tracked carrier offset, rad per output sample
   std::size_t since_renorm_ = 0; // outputs since nco_ was renormalised
+  Buffer<float> inv_mag_; // scratch: 1/|i,q| precomputed feed-forward per block
   Buffer<float> out_; // owned video output, reused across calls
 };
 

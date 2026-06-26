@@ -62,6 +62,22 @@ void envelope_magnitude(
   for (std::size_t k = 0; k < n; ++k)
     out[k] = 2.0f * __builtin_sqrtf(i[k] * i[k] + q[k] * q[k]);
 }
+
+// Feed-forward reciprocal magnitude of the (i,q) plane: out[k] = 1/|i,q|, with a
+// squared-magnitude floor (the |i,q|^2 > 1e-24 form of the old |y| > 1e-12 guard,
+// not bit-identical at the knife edge but only silence sits there) so a near-zero
+// magnitude yields 0 error rather than a blow-up. Pure function of the FIR outputs
+// - no dependence on the nco phasor - so it vectorises to a packed sqrt+div,
+// lifting the renorm off the serial carrier-recovery recurrence. Same math-flag
+// escape as envelope_magnitude so it lowers to vsqrtps+vdivps rather than scalar
+// libm.
+[[gnu::optimize("-fno-math-errno", "-fno-trapping-math")]]
+void inv_magnitude(restrict_ptr<const float> i, restrict_ptr<const float> q, restrict_ptr<float> out, std::size_t n) {
+  for (std::size_t k = 0; k < n; ++k) {
+    const float m2 = i[k] * i[k] + q[k] * q[k];
+    out[k] = m2 > 1e-24f ? 1.0f / __builtin_sqrtf(m2) : 0.0f;
+  }
+}
 } // namespace
 
 namespace {
@@ -308,11 +324,19 @@ VisionIf::VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, Detec
 void VisionIf::prepare(std::size_t max_in) {
   re_filter_.prepare(max_in);
   im_filter_.prepare(max_in);
+  inv_mag_.reserve(re_filter_.max_output_for(max_in));
   out_.reserve(re_filter_.max_output_for(max_in));
 }
 
 void VisionIf::quasi_sync_detect(
     restrict_ptr<const float> i, restrict_ptr<const float> q, restrict_ptr<float> out, std::size_t n) {
+  // |y| = |(i,q) * nco| = |i,q| * |nco|, and the renorm holds |nco| at 1 within
+  // ~5e-6 in lock, so the error normaliser 1/|y| ~= 1/|i,q| is a pure function
+  // of the FIR outputs. Compute it feed-forward (packed sqrt+div) so the serial
+  // recurrence below carries only the complex multiply and the PI update - the
+  // sqrt and divide leave the e -> integrator -> nco -> next-e critical path.
+  const auto inv = inv_mag_.write_n(n);
+  inv_magnitude(i, q, inv.data(), n);
   for (std::size_t k = 0; k < n; ++k) {
     // Snapshot the double phasor down to float at the point of use; the video
     // is per-sample flow, only the phase is the accumulator.
@@ -328,8 +352,7 @@ void VisionIf::quasi_sync_detect(
     // Costas-style sign flip would stabilise BOTH - the loop then locks
     // inverted whenever the cold-start phase lands in the wrong half, which
     // the RX888 corpus did.
-    const float mag = std::sqrt(yr * yr + yi * yi);
-    const double e = mag > 1e-12f ? static_cast<double>(yi / mag) : 0.0;
+    const double e = static_cast<double>(yi * inv[k]);
     freq_ = std::clamp(freq_ + kQsKi * e, -kQsMaxFreq, kQsMaxFreq);
     // Advance by the nominal carrier, then trim by the loop: a first-order
     // rotation (1 - j*a) is exact enough for the tiny correction angle, and
