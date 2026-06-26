@@ -224,6 +224,17 @@ asymmetric sidebands. `--detector envelope` is the diode detector of the
 earlier sets: the magnitude, quadrature fold-through and rectified overshoots
 included. (`--if flat` is always the envelope - it's the legacy chain.)
 
+The front end has to be told where the carrier is, and once the IF curve has a
+sloped flank, where it sits on that flank is load-bearing. The carrier comes
+from the metadata when the recording carries it, but the decoder can also find
+it itself: a coarse FFT scan of the opening ~50 ms picks the dominant line (the
+vision carrier sits at the sync-tip peak and is present even in blanking),
+refined to a few hundred Hz - comfortably inside the quasi-sync loop's pull-in,
+which takes it the rest of the way. That runs automatically when a recording has
+no carrier metadata (the no-metadata case is exactly live RF, so this is the
+first brick of decoding a live stream), and `--scan` forces it even when
+metadata is present - which doubles as a check on the metadata's own number.
+
 Levels are absolute, the way a receiver actually knows them: an IF AGC
 (`--agc sync-tip`, the default) peak-detects the carrier's sync tip - under
 negative modulation the tip IS peak carrier - and holds it at 1.0, so the
@@ -390,7 +401,8 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
   vision-IF FIR), so further speed lives in the DSP loops, not the screen.
 - **Live mode.** The whole point: decode a live RF stream off the SDR, not just
   finite corpus files. The graph is bounded-memory and block-driven for exactly
-  this.
+  this, and the front end now finds its own carrier by spectrum scan (no
+  metadata needed; `--scan`) - the first brick of a metadata-free live decode.
 
 ## Backlog
 

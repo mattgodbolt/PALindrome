@@ -97,6 +97,34 @@ TEST_CASE("VisionIf rejects bad parameters") {
   CHECK_THROWS_AS(demod::VisionIf(kRate, kCarrier, bad), std::invalid_argument);
 }
 
+TEST_CASE("find_vision_carrier recovers the carrier of an AM signal") {
+  // A negative-modulated vision signal: the carrier dominates, with a video
+  // pedestal of modulation, a weaker chroma line at +4.43, and a weaker sound
+  // carrier at +6. The finder must pick the vision carrier, not those - and to
+  // a small fraction of the ~76 Hz bin (262144-point FFT at 20 MS/s).
+  constexpr double kFc = 3.0517e6; // deliberately off a bin centre
+  std::vector<float> x(1u << 18);
+  for (std::size_t k = 0; k < x.size(); ++k) {
+    const auto t = static_cast<double>(k) / kRate;
+    const double video = 0.6 + 0.4 * std::cos(two_pi * 70.0e3 * t); // modulation pedestal
+    x[k] = static_cast<float>(video * std::cos(two_pi * kFc * t) //
+                              + 0.15 * std::cos(two_pi * (kFc + 4.43e6) * t) // chroma
+                              + 0.2 * std::cos(two_pi * (kFc + 6.0e6) * t)); // sound
+  }
+  const auto found = demod::find_vision_carrier(x, kRate, 1.0e6, 9.5e6);
+  CHECK_THAT(found, WithinAbs(kFc, 20.0)); // sub-bin: within 20 Hz of 3.0517 MHz
+}
+
+TEST_CASE("find_vision_carrier rejects bad parameters") {
+  std::vector<float> x(4096, 0.0f);
+  CHECK_THROWS_AS(demod::find_vision_carrier(x, 0.0, 1.0e6, 5.0e6), std::invalid_argument); // rate
+  CHECK_THROWS_AS(demod::find_vision_carrier(x, kRate, 5.0e6, 1.0e6), std::invalid_argument); // lo >= hi
+  CHECK_THROWS_AS(demod::find_vision_carrier(x, kRate, 1.0e6, kRate), std::invalid_argument); // hi >= Nyquist
+  std::vector<float> one(1, 0.0f);
+  CHECK_THROWS_AS(demod::find_vision_carrier(one, kRate, 1.0e6, 5.0e6), std::invalid_argument); // too short
+  CHECK_THROWS_AS(demod::find_vision_carrier(x, kRate, 1.0e6, 5.0e6), std::invalid_argument); // all-zero: no energy
+}
+
 TEST_CASE("VisionIf is one-sided: a bare carrier gives a flat envelope at the flank level") {
   // A real cosine has images at +/- the carrier. If the kernel passed any of the
   // negative-frequency image the envelope would beat at 2*carrier; one-sided, it

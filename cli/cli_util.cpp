@@ -34,7 +34,38 @@ std::filesystem::path resolve_meta(std::filesystem::path path) {
   return path;
 }
 
-LoadedRecording load_recording(const std::filesystem::path &recording, double carrier_override) {
+namespace {
+// Read up to `n_samples` real int16 from the head of `data_path`, scaled to
+// [-1, 1) - enough signal for a coarse carrier scan without streaming the file.
+std::vector<float> read_head(const std::filesystem::path &data_path, std::size_t n_samples) {
+  std::ifstream data{data_path, std::ios::binary};
+  if (!data)
+    throw std::runtime_error{std::format("cannot open data file: {}", data_path.string())};
+  std::vector<std::int16_t> raw(n_samples);
+  data.read(reinterpret_cast<char *>(raw.data()), static_cast<std::streamsize>(raw.size() * sizeof(std::int16_t)));
+  const auto got = static_cast<std::size_t>(data.gcount()) / sizeof(std::int16_t);
+  std::vector<float> out(got);
+  for (std::size_t k = 0; k < got; ++k)
+    out[k] = static_cast<float>(raw[k]) * (1.0f / 32768.0f);
+  return out;
+}
+
+// Find the vision carrier in the recording's opening samples: a power-of-two
+// block (~50 ms at 20 MS/s) over the band [1 MHz, 0.95*Nyquist] - low enough to
+// skip DC/LO junk, high enough to stay off the anti-alias roll-off, and the
+// vision carrier is the dominant line within it. The block is long on purpose:
+// finer bins separate the pure carrier line from its close-in video-modulation
+// sidebands, which a short block blurs together and the peak then sits between.
+double scan_vision_carrier(const std::filesystem::path &data_path, double sample_rate_hz) {
+  constexpr std::size_t kScanSamples = std::size_t{1} << 20;
+  constexpr double kScanLoHz = 1.0e6; // a vision IF never sits below ~1 MHz on either SDR's plan
+  constexpr double kNyquistGuard = 0.95; // stay off the anti-alias roll-off at the top of the band
+  const auto head = read_head(data_path, kScanSamples);
+  return demod::find_vision_carrier(head, sample_rate_hz, kScanLoHz, kNyquistGuard * sample_rate_hz / 2.0);
+}
+} // namespace
+
+LoadedRecording load_recording(const std::filesystem::path &recording, double carrier_override, bool force_scan) {
   LoadedRecording loaded;
   loaded.meta_path = resolve_meta(recording);
   loaded.meta = sigmf::load(loaded.meta_path); // ParseError derives from runtime_error
@@ -54,14 +85,20 @@ LoadedRecording load_recording(const std::filesystem::path &recording, double ca
   // Real IF, vision carrier an absolute IF frequency: the RX888 (rx888:*), or an
   // AirSpy raw 20 MS/s capture (airspy:*). Both decode through the same analytic
   // front end (see stream_envelope).
+  if (const auto rx = loaded.meta.field<double>("rx888:vision_if_hz"))
+    loaded.metadata_carrier_hz = *rx;
+  else if (const auto air = loaded.meta.field<double>("airspy:vision_if_hz"))
+    loaded.metadata_carrier_hz = *air;
+
   if (carrier_override > 0.0)
     loaded.vision_carrier_hz = carrier_override;
-  else if (const auto rx = loaded.meta.field<double>("rx888:vision_if_hz"))
-    loaded.vision_carrier_hz = *rx;
-  else if (const auto air = loaded.meta.field<double>("airspy:vision_if_hz"))
-    loaded.vision_carrier_hz = *air;
-  else
-    throw std::runtime_error{"no rx888:vision_if_hz or airspy:vision_if_hz in metadata; pass --carrier"};
+  else if (loaded.metadata_carrier_hz > 0.0 && !force_scan)
+    loaded.vision_carrier_hz = loaded.metadata_carrier_hz;
+  else {
+    // No carrier to trust (or --scan asked us not to): find it in the signal.
+    loaded.vision_carrier_hz = scan_vision_carrier(loaded.data_path, loaded.sample_rate_hz);
+    loaded.carrier_scanned = true;
+  }
 
   return loaded;
 }

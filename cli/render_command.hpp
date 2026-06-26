@@ -23,7 +23,8 @@ private:
   int run() const;
   std::filesystem::path recording_;
   std::filesystem::path output_;
-  double carrier_{0.0}; // 0 => take the vision carrier from metadata
+  double carrier_{0.0}; // 0 => take the vision carrier from metadata (or scan if none)
+  bool scan_{false}; // force a signal scan for the carrier even if metadata has one
   double cutoff_{4.8e6};
   double sync_cutoff_{1.2e6}; // narrow low-pass on the sync-detection branch
   std::size_t decimate_{0}; // 0 => auto from the sample rate (keep chroma below 0.7*Nyquist)

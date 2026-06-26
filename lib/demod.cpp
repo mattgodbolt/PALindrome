@@ -1,9 +1,11 @@
 #include "palindrome/demod.hpp"
 
 #include "palindrome/cmul.hpp"
+#include "palindrome/fft.hpp"
 #include "palindrome/restrict_ptr.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -212,6 +214,68 @@ IfTemplate saw90_template() {
       .gd_ripple_ns = 8.0,
       .gd_ripple_period_hz = 1.0e6,
   };
+}
+
+double find_vision_carrier(std::span<const float> samples, double sample_rate_hz, double lo_hz, double hi_hz) {
+  if (!(sample_rate_hz > 0.0))
+    throw std::invalid_argument{"find_vision_carrier: sample rate must be positive"};
+  if (!(lo_hz >= 0.0) || !(hi_hz > lo_hz) || !(hi_hz < sample_rate_hz / 2.0))
+    throw std::invalid_argument{"find_vision_carrier: band must be 0 <= lo < hi < sample_rate / 2"};
+
+  const std::size_t n = std::bit_floor(samples.size());
+  // Need n >= 4 so the search band [1, n/2 - 1] is non-empty AND the n/2 - 1
+  // bound never underflows (it is unsigned); the parabolic refine then always
+  // has both neighbours of any peak it picks.
+  if (n < 4)
+    throw std::invalid_argument{"find_vision_carrier: need at least 4 samples"};
+
+  // Hann-window the block before the transform: the carrier is a strong line on
+  // a broad video pedestal, and the window's low sidelobes stop that pedestal's
+  // leakage from dragging the peak off the carrier. Periodic (DFT-even) form -
+  // denominator n, not n - 1 - so the window has no end-to-end asymmetry to bias
+  // the peak. (A single long block, not Welch-averaged: the carrier is really a
+  // ~300 Hz-wide cluster - sync-rate AM, carrier wander - so neither a long block
+  // nor an averaged one pins it finer than that, and the estimate only has to
+  // land inside the quasi-sync loop's pull-in, which it does with room to spare.)
+  std::vector<std::complex<double>> spec(n);
+  const auto nd = static_cast<double>(n);
+  for (std::size_t k = 0; k < n; ++k) {
+    const double w = 0.5 - 0.5 * std::cos(kTwoPi * static_cast<double>(k) / nd);
+    spec[k] = std::complex<double>{static_cast<double>(samples[k]) * w, 0.0};
+  }
+  dsp::fft(spec);
+
+  // Search bins strictly inside [1, n/2-1] so the parabolic refine always has
+  // both neighbours (the carrier is far from DC and Nyquist either way).
+  const double bin_hz = sample_rate_hz / static_cast<double>(n);
+  const auto lo_bin = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(lo_hz / bin_hz)));
+  const auto hi_bin = std::min(n / 2 - 1, static_cast<std::size_t>(std::floor(hi_hz / bin_hz)));
+  if (lo_bin > hi_bin)
+    throw std::invalid_argument{"find_vision_carrier: band too narrow for this block length"};
+
+  auto peak = lo_bin;
+  double best = std::norm(spec[lo_bin]);
+  for (auto k = lo_bin + 1; k <= hi_bin; ++k) {
+    if (const double m = std::norm(spec[k]); m > best) {
+      best = m;
+      peak = k;
+    }
+  }
+  if (!(best > 0.0))
+    throw std::invalid_argument{"find_vision_carrier: no spectral energy in the band"};
+
+  // Parabolic interpolation through the log of the three bins: a windowed line's
+  // main lobe is near-Gaussian, so the parabola's vertex lands on the true
+  // frequency to a small fraction of a bin. The bins are norm() (power, |X|^2),
+  // so this is log-power = 2*log-magnitude; the constant factor cancels in the
+  // vertex ratio, so the estimate is the same as log-magnitude would give.
+  constexpr double tiny = 1e-300;
+  const double a = std::log(std::norm(spec[peak - 1]) + tiny);
+  const double b = std::log(std::norm(spec[peak]) + tiny);
+  const double c = std::log(std::norm(spec[peak + 1]) + tiny);
+  const double curv = a - 2.0 * b + c;
+  const double delta = curv != 0.0 ? std::clamp(0.5 * (a - c) / curv, -0.5, 0.5) : 0.0;
+  return (static_cast<double>(peak) + delta) * bin_hz;
 }
 
 namespace {
