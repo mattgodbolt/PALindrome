@@ -45,20 +45,16 @@ def main():
                     help="AirSpy complex rate; the real ADC stream is 2x this (the decoder's rate)")
     ap.add_argument("--gain", type=int, default=9, help="airspy_rx linearity gain (0-21); 9 = sweet spot")
     ap.add_argument("--port", type=int, default=8080, help="HTTP port to serve the live picture on")
-    # The default keeps the decoder ahead of the live 20 MS/s stream (so it never
-    # drops samples and the sync holds) AND clean: mono at 480x384, decimate 1,
-    # measured ~1.35x real-time. NOT decimate 2 - at /2 the 4.43 MHz chroma sits
-    # at 0.886x the decimated Nyquist, its upper sideband folds, and the result is
-    # severe cross-colour/cross-hatch (confirmed by a blind frame review). Colour
-    # needs /1, which runs ~0.95x here and rolls a little until the deposit is
-    # sped up; --colour opts into that trade.
+    # Colour at full sample rate (decimate 1) is the only clean path - decimate 2
+    # folds the 4.43 MHz chroma into cross-colour, so don't. At 480x384 /1 colour
+    # this runs a touch under real-time on this box, so it rolls a little until
+    # the colour decode is sped up (the live work in progress). Raise to 720x576
+    # for fidelity once it's fast enough.
     ap.add_argument("--width", type=int, default=480)
     ap.add_argument("--height", type=int, default=384)
     ap.add_argument("--decimate", type=int, default=1,
                     help="keep 1 sample per N; >1 folds the 4.43 MHz chroma into cross-colour, so leave it at 1")
-    ap.add_argument("--colour", "--color", action="store_true",
-                    help="decode colour (clean only at decimate 1, ~0.95x here so it rolls a little); "
-                         "default is mono, which keeps up cleanly (~1.35x)")
+    ap.add_argument("--mono", action="store_true", help="decode grey instead of colour (debug fallback only)")
     ap.add_argument("--airspy-binary", help="path to airspy_rx (default: PATH)")
     ap.add_argument("--palindrome-binary", help="path to the palindrome CLI (default: build/release/cli/palindrome)")
     ap.add_argument("--extra", nargs=argparse.REMAINDER, default=[],
@@ -85,7 +81,7 @@ def main():
     render_cmd = [palindrome, "render", "--live", "--sample-rate", str(real_rate),
                   "--width", str(args.width), "--height", str(args.height),
                   "--decimate", str(args.decimate), "-o", frame]
-    if args.colour:
+    if not args.mono:
         render_cmd.append("--colour")
     render_cmd += args.extra
 
