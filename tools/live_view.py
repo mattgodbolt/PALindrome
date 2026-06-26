@@ -45,9 +45,15 @@ def main():
                     help="AirSpy complex rate; the real ADC stream is 2x this (the decoder's rate)")
     ap.add_argument("--gain", type=int, default=9, help="airspy_rx linearity gain (0-21); 9 = sweet spot")
     ap.add_argument("--port", type=int, default=8080, help="HTTP port to serve the live picture on")
-    ap.add_argument("--width", type=int, default=720)
-    ap.add_argument("--height", type=int, default=576)
-    ap.add_argument("--mono", action="store_true", help="decode grey (skip colour) - a touch cheaper")
+    # Defaults tuned to keep the decoder ahead of the live 20 MS/s stream (so it
+    # never drops samples and the sync holds): 480x384 shrinks the phosphor
+    # deposit, --decimate 2 halves the per-sample front-end work. Measured ~1.3x
+    # real-time in colour on this box; full 720x576 colour at /1 is ~0.8x and
+    # rolls. Raise --width/--height or set --decimate 1 for fidelity over speed.
+    ap.add_argument("--width", type=int, default=480)
+    ap.add_argument("--height", type=int, default=384)
+    ap.add_argument("--decimate", type=int, default=2, help="keep 1 sample per N (1 = full chroma, slower)")
+    ap.add_argument("--mono", action="store_true", help="decode grey (skip colour) - much cheaper (~1.35x)")
     ap.add_argument("--airspy-binary", help="path to airspy_rx (default: PATH)")
     ap.add_argument("--palindrome-binary", help="path to the palindrome CLI (default: build/release/cli/palindrome)")
     ap.add_argument("--extra", nargs=argparse.REMAINDER, default=[],
@@ -72,7 +78,8 @@ def main():
     airspy_cmd = [airspy, "-r", "/dev/stdout", "-f", f"{tune_hz / 1e6:.6f}",
                   "-a", str(args.sample_rate), "-t", "3", "-g", str(args.gain)]
     render_cmd = [palindrome, "render", "--live", "--sample-rate", str(real_rate),
-                  "--width", str(args.width), "--height", str(args.height), "-o", frame]
+                  "--width", str(args.width), "--height", str(args.height),
+                  "--decimate", str(args.decimate), "-o", frame]
     if not args.mono:
         render_cmd.append("--colour")
     render_cmd += args.extra
