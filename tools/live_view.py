@@ -7,12 +7,8 @@ Spawns the pipeline
 
 so the decoder reads the SDR's raw 20 MS/s real stream straight off stdin (no
 capture file), scans the vision carrier off the opening samples, and overwrites a
-single PNG every few fields. A tiny HTTP server serves that PNG to a browser with
-a JS reload loop - so the picture is compressed once (PNG) and only the latest
-frame crosses the network, never a forwarded X framebuffer.
-
-Bound to 0.0.0.0, so over Tailscale you just open http://<this-host>:<port>/ from
-anywhere; no SSH tunnel or X-forwarding. Ctrl-C stops the SDR, decoder, and server.
+single PNG every few fields. A tiny HTTP server serves that PNG with a JS reload
+loop. Ctrl-C stops the SDR, decoder, and server.
 
 Usage:
     tools/live_view.py                     # defaults: SMS recipe, port 8080
