@@ -75,6 +75,7 @@ struct DecoderConfig {
   double v_window_lo = 0.0;
   double v_window_hi = 1.0;
   ChromaDecoderConfig chroma{}; // sample_rate_hz filled in at construction
+  std::size_t deposit_lanes = 1; // screen deposit threads (see ScreenConfig::deposit_lanes); 1 = serial
 };
 
 // The decode stages' output for one block: the picture rail plus the two timing
