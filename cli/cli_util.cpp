@@ -3,7 +3,9 @@
 #include "palindrome/demod.hpp"
 #include "palindrome/fir.hpp"
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <format>
 #include <fstream>
 #include <ios>
@@ -35,6 +37,11 @@ std::filesystem::path resolve_meta(std::filesystem::path path) {
 }
 
 namespace {
+// Carrier-scan geometry, shared by the file and live scans.
+constexpr std::size_t kScanSamples = std::size_t{1} << 20; // ~50 ms at 20 MS/s
+constexpr double kScanLoHz = 1.0e6; // a vision IF never sits below ~1 MHz on either SDR's plan
+constexpr double kNyquistGuard = 0.95; // stay off the anti-alias roll-off at the top of the band
+
 // Read up to `n_samples` real int16 from the head of `data_path`, scaled to
 // [-1, 1) - enough signal for a coarse carrier scan without streaming the file.
 std::vector<float> read_head(const std::filesystem::path &data_path, std::size_t n_samples) {
@@ -57,9 +64,6 @@ std::vector<float> read_head(const std::filesystem::path &data_path, std::size_t
 // finer bins separate the pure carrier line from its close-in video-modulation
 // sidebands, which a short block blurs together and the peak then sits between.
 double scan_vision_carrier(const std::filesystem::path &data_path, double sample_rate_hz) {
-  constexpr std::size_t kScanSamples = std::size_t{1} << 20;
-  constexpr double kScanLoHz = 1.0e6; // a vision IF never sits below ~1 MHz on either SDR's plan
-  constexpr double kNyquistGuard = 0.95; // stay off the anti-alias roll-off at the top of the band
   const auto head = read_head(data_path, kScanSamples);
   return demod::find_vision_carrier(head, sample_rate_hz, kScanLoHz, kNyquistGuard * sample_rate_hz / 2.0);
 }
@@ -123,14 +127,55 @@ void stream_ri16le_blocks(const std::filesystem::path &data_path,
   }
 }
 
-EnvelopeStream stream_envelope(const LoadedRecording &loaded, const EnvelopeOptions &opts,
-    const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples) {
-  EnvelopeStream result;
-  result.rate_hz = loaded.sample_rate_hz / static_cast<double>(opts.decimation);
+namespace {
+// Read up to `n_samples` real int16 from stdin, scaled to [-1, 1). fread blocks
+// until it has the lot or the stream ends, so on a live pipe this returns a full
+// head buffer after the SDR has produced that many samples.
+std::vector<float> read_stdin_head(std::size_t n_samples) {
+  std::vector<std::int16_t> raw(n_samples);
+  const auto got = std::fread(raw.data(), sizeof(std::int16_t), n_samples, stdin);
+  std::vector<float> out(got);
+  for (std::size_t k = 0; k < got; ++k)
+    out[k] = static_cast<float>(raw[k]) * (1.0f / 32768.0f);
+  return out;
+}
 
+// Stream real int16 from stdin as float blocks until the pipe closes - the
+// live counterpart of stream_ri16le_blocks (which reads a named file).
+void stream_ri16le_stdin(const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples) {
+  std::vector<std::int16_t> raw(block_samples);
+  std::vector<float> block(block_samples);
+  while (true) {
+    const auto got = std::fread(raw.data(), sizeof(std::int16_t), block_samples, stdin);
+    if (got == 0)
+      break;
+    const std::span<float> dst{block.data(), got};
+    for (std::size_t k = 0; k < got; ++k)
+      dst[k] = static_cast<float>(raw[k]) * (1.0f / 32768.0f);
+    on_block(dst);
+  }
+}
+
+// The vision front end as one object: either the SAW-era IF (one complex FIR +
+// detector) or the legacy flat chain (Hilbert + ComplexAmEnvelope). Built once
+// for a carrier and driven block by block, so the file and live sources share
+// exactly one construction path.
+struct VisionFrontEnd {
+  std::optional<demod::VisionIf> saw;
+  std::optional<demod::Hilbert> hilbert;
+  std::optional<demod::ComplexAmEnvelope> flat;
+
+  [[nodiscard]] std::span<const float> process(std::span<const float> x) {
+    return saw ? saw->process(x) : flat->process(hilbert->process(x));
+  }
+};
+
+VisionFrontEnd make_front_end(double sample_rate_hz, double carrier_hz, const EnvelopeOptions &opts,
+    std::size_t block_samples, std::vector<std::string> &warnings) {
+  VisionFrontEnd fe;
   if (opts.if_mode != IfMode::flat) {
     // The SAW-era IF: one complex-coefficient FIR realising the set's IF curve
-    // around the carrier, applied straight to the real IF, then the envelope.
+    // around the carrier, applied straight to the real IF, then the detector.
     // One-sided taps subsume the analytic (Hilbert) step, and the template -
     // not a --cutoff - decides what survives, including a deliberately finite
     // sound notch, so the sound carrier leaves a faint period-true 6 MHz beat.
@@ -139,12 +184,10 @@ EnvelopeStream stream_envelope(const LoadedRecording &loaded, const EnvelopeOpti
       shape.sound_notch_db = -*opts.sound_notch_db; // the option is dB of rejection, positive
     if (opts.gd_ripple_ns)
       shape.gd_ripple_ns = *opts.gd_ripple_ns;
-    demod::VisionIf vision_if{loaded.sample_rate_hz, loaded.vision_carrier_hz, shape, opts.detector,
-        demod::kDefaultIfTaps, dsp::Window::Hamming, opts.decimation};
-    vision_if.prepare(block_samples);
-    stream_ri16le_blocks(
-        loaded.data_path, [&](std::span<const float> x) { on_block(vision_if.process(x)); }, block_samples);
-    return result;
+    fe.saw.emplace(
+        sample_rate_hz, carrier_hz, shape, opts.detector, demod::kDefaultIfTaps, dsp::Window::Hamming, opts.decimation);
+    fe.saw->prepare(block_samples);
+    return fe;
   }
 
   // Flat mode - the pre-SAW chain, kept verbatim: form the analytic (one-sided)
@@ -152,19 +195,53 @@ EnvelopeStream stream_envelope(const LoadedRecording &loaded, const EnvelopeOpti
   // chroma, then mix the vision carrier to DC, low-pass and take the magnitude.
   // The sound carrier (vision + 6 MHz) lands above the chroma after the mix and
   // is removed entirely by the cutoff low-pass - the ideal no real set was.
-  demod::Hilbert hilbert{demod::kDefaultVisionTaps};
-  demod::ComplexAmEnvelope env_demod{loaded.sample_rate_hz, loaded.vision_carrier_hz, opts.cutoff_hz,
-      demod::kDefaultVisionTaps, dsp::Window::Hamming, opts.decimation};
-  hilbert.prepare(block_samples);
-  env_demod.prepare(block_samples);
-  if (const auto decimated_nyquist = loaded.sample_rate_hz / (2.0 * static_cast<double>(opts.decimation));
+  fe.hilbert.emplace(demod::kDefaultVisionTaps);
+  fe.flat.emplace(
+      sample_rate_hz, carrier_hz, opts.cutoff_hz, demod::kDefaultVisionTaps, dsp::Window::Hamming, opts.decimation);
+  fe.hilbert->prepare(block_samples);
+  fe.flat->prepare(block_samples);
+  if (const auto decimated_nyquist = sample_rate_hz / (2.0 * static_cast<double>(opts.decimation));
       opts.cutoff_hz >= decimated_nyquist)
-    result.warnings.push_back(std::format("cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing",
+    warnings.push_back(std::format("cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing",
         opts.cutoff_hz / 1e6, decimated_nyquist / 1e6));
+  return fe;
+}
+} // namespace
 
-  stream_ri16le_blocks(
-      loaded.data_path, [&](std::span<const float> x) { on_block(env_demod.process(hilbert.process(x))); },
-      block_samples);
+EnvelopeStream stream_envelope(const LoadedRecording &loaded, const EnvelopeOptions &opts,
+    const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples) {
+  EnvelopeStream result;
+  result.rate_hz = loaded.sample_rate_hz / static_cast<double>(opts.decimation);
+  result.carrier_hz = loaded.vision_carrier_hz;
+
+  auto fe = make_front_end(loaded.sample_rate_hz, loaded.vision_carrier_hz, opts, block_samples, result.warnings);
+  stream_ri16le_blocks(loaded.data_path, [&](std::span<const float> x) { on_block(fe.process(x)); }, block_samples);
+  return result;
+}
+
+EnvelopeStream stream_envelope_live(double sample_rate_hz, double carrier_override, const EnvelopeOptions &opts,
+    const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples) {
+  EnvelopeStream result;
+  result.rate_hz = sample_rate_hz / static_cast<double>(opts.decimation);
+
+  // Resolve the carrier. With no metadata on a live stream, scan the opening
+  // samples - but stdin can't be rewound, so the scanned head is replayed
+  // through the front end below rather than discarded.
+  std::vector<float> head;
+  result.carrier_hz = carrier_override;
+  if (!(carrier_override > 0.0)) {
+    head = read_stdin_head(kScanSamples);
+    result.carrier_hz =
+        demod::find_vision_carrier(head, sample_rate_hz, kScanLoHz, kNyquistGuard * sample_rate_hz / 2.0);
+  }
+
+  auto fe = make_front_end(sample_rate_hz, result.carrier_hz, opts, block_samples, result.warnings);
+  const auto feed = [&](std::span<const float> x) { on_block(fe.process(x)); };
+  // Replay the scanned head (in front-end-sized blocks), then stream the rest of
+  // stdin until the pipe closes.
+  for (std::size_t off = 0; off < head.size(); off += block_samples)
+    feed(std::span{head}.subspan(off, std::min(block_samples, head.size() - off)));
+  stream_ri16le_stdin(feed, block_samples);
   return result;
 }
 

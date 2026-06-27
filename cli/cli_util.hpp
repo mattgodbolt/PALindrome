@@ -74,6 +74,7 @@ struct EnvelopeOptions {
 // What stream_envelope reports back to the caller.
 struct EnvelopeStream {
   double rate_hz = 0.0; // envelope sample rate (input rate / decimation)
+  double carrier_hz = 0.0; // the vision carrier actually used (resolved by a live scan)
   std::vector<std::string> warnings; // demod warnings (e.g. cutoff vs decimated Nyquist)
 };
 
@@ -83,6 +84,17 @@ struct EnvelopeStream {
 // with each envelope block (owned by the demodulator, valid only for that call).
 // Throws std::runtime_error on a file-open failure.
 EnvelopeStream stream_envelope(const LoadedRecording &loaded, const EnvelopeOptions &opts,
+    const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples = std::size_t{1} << 16);
+
+// Live variant: the same demod, but the real-IF samples come from stdin (a
+// continuous SDR stream, e.g. `airspy_rx -r /dev/stdout | palindrome render
+// --live`) instead of a file, and it runs until stdin closes. `sample_rate_hz`
+// is the real input rate (the file path had it in the metadata). The carrier is
+// `carrier_override` if positive, else scanned from the opening samples of the
+// stream (demod::find_vision_carrier) - the resolved value comes back in
+// EnvelopeStream::carrier_hz. Invokes `on_block` with each envelope block (owned,
+// valid only for that call).
+EnvelopeStream stream_envelope_live(double sample_rate_hz, double carrier_override, const EnvelopeOptions &opts,
     const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples = std::size_t{1} << 16);
 
 } // namespace palindrome::cli

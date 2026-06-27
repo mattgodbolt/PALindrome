@@ -45,6 +45,12 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(scan_)["--scan"](
               "Find the carrier by scanning the signal's spectrum, ignoring the metadata (the no-metadata live-RF "
               "path; here it also validates the metadata's carrier)"))
+          .add_argument(lyra::opt(live_)["--live"](
+              "Live mode: decode a continuous real-int16 SDR stream from stdin (e.g. airspy_rx -r /dev/stdout | "
+              "palindrome render --live --sample-rate 20e6), scanning the carrier off the stream, and overwrite "
+              "--output every few fields until the pipe closes"))
+          .add_argument(lyra::opt(sample_rate_, "hz")["--sample-rate"](
+              "Live input real sample rate Hz (required with --live; 20e6 for the AirSpy raw stream)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz (--if flat only)"))
           .add_argument(lyra::opt(sync_cutoff_, "hz")["--sync-cutoff"]("Sync-branch low-pass cutoff Hz"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs (0 = auto from Nyquist)"))
@@ -160,14 +166,28 @@ int RenderCommand::run() const {
     return 1;
   }
 
-  const auto loaded = load_recording(recording_, carrier_, scan_);
-  if (loaded.carrier_scanned) {
-    if (loaded.metadata_carrier_hz > 0.0)
-      std::println("carrier: scanned {:.4f} MHz (metadata said {:.4f} MHz, off by {:+.0f} Hz)",
-          loaded.vision_carrier_hz / 1e6, loaded.metadata_carrier_hz / 1e6,
-          loaded.vision_carrier_hz - loaded.metadata_carrier_hz);
-    else
-      std::println("carrier: scanned {:.4f} MHz (no metadata carrier)", loaded.vision_carrier_hz / 1e6);
+  LoadedRecording loaded;
+  if (live_) {
+    if (!(sample_rate_ > 0.0)) {
+      std::println(std::cerr, "render: --live requires --sample-rate (e.g. 20e6 for the AirSpy raw stream)");
+      return 1;
+    }
+    if (no_sync_) {
+      std::println(std::cerr, "render: --no-sync cannot combine with --live");
+      return 1;
+    }
+    loaded.sample_rate_hz = sample_rate_; // carrier is resolved from the stream in stream_envelope_live
+  }
+  else {
+    loaded = load_recording(recording_, carrier_, scan_);
+    if (loaded.carrier_scanned) {
+      if (loaded.metadata_carrier_hz > 0.0)
+        std::println("carrier: scanned {:.4f} MHz (metadata said {:.4f} MHz, off by {:+.0f} Hz)",
+            loaded.vision_carrier_hz / 1e6, loaded.metadata_carrier_hz / 1e6,
+            loaded.vision_carrier_hz - loaded.metadata_carrier_hz);
+      else
+        std::println("carrier: scanned {:.4f} MHz (no metadata carrier)", loaded.vision_carrier_hz / 1e6);
+    }
   }
 
   // --decimate 0 (the default) means pick the decimation from the signal; any
@@ -354,7 +374,8 @@ int RenderCommand::run() const {
 
   std::filesystem::path output = output_;
   if (output.empty())
-    output = std::format("{}.png", loaded.meta_path.stem().string());
+    output = live_ ? std::filesystem::path{"live.png"}
+                   : std::filesystem::path{std::format("{}.png", loaded.meta_path.stem().string())};
 
   // Snapshot at field boundaries: in sequence mode quantise and write every Nth
   // as <stem>_NNNN.png; otherwise just latch the boundary state (a float copy)
@@ -369,7 +390,23 @@ int RenderCommand::run() const {
     else
       image::write_png_grey(p, f.pixels, static_cast<unsigned>(f.width), static_cast<unsigned>(f.height));
   };
+  // Live mode overwrites one file via write-temp-then-rename, so a web server (or
+  // any reader) polling it never catches a half-written PNG.
+  const auto save_atomic = [&save](const std::filesystem::path &p, const video::Screen::Frame &f) {
+    auto tmp = p;
+    tmp += ".tmp";
+    save(tmp, f);
+    std::filesystem::rename(tmp, p);
+  };
+  // ~5 frames/sec at 50 fields/s, throttling PNG encode + disk churn (the
+  // phosphor still paints every field; this only caps how often we snapshot it).
+  const std::size_t live_stride = frame_stride_ != 0 ? frame_stride_ : 10;
   const video::Screen::FieldCallback on_field = [&](const video::Screen::FieldEvent &e) {
+    if (live_) {
+      if (fields_seen++ % live_stride == 0)
+        save_atomic(output, e.frame());
+      return;
+    }
     if (frame_stride_ == 0) {
       e.latch(); // single-image mode: keep the latest clean boundary
       return;
@@ -392,7 +429,10 @@ int RenderCommand::run() const {
   EnvelopeStream es;
   pipe::run(
       !no_threads_, kInFlight, //
-      [&](const auto &emit) { es = stream_envelope(loaded, opts, emit, kBlock); },
+      [&](const auto &emit) {
+        es = live_ ? stream_envelope_live(sample_rate_, carrier_, opts, emit, kBlock)
+                   : stream_envelope(loaded, opts, emit, kBlock);
+      },
       pipe::transform<video::DecodedBlock>(
           kInFlight, [&](std::span<const float> env, video::DecodedBlock &out) { decoder.decode_into(out, env); }),
       pipe::sink([&](const video::DecodedBlock &block) { decoder.deposit(block, on_field); }));
@@ -405,7 +445,7 @@ int RenderCommand::run() const {
     return 1;
   }
 
-  if (frame_stride_ == 0)
+  if (!live_ && frame_stride_ == 0)
     save(output, decoder.latched_frame()); // falls back to the live state if no field completed
 
   if (colour_)
@@ -422,12 +462,13 @@ int RenderCommand::run() const {
     std::println("AGC: front-end gain {:.3f}x (sync tip held at 1.0)", decoder.agc_gain());
   const double line_hz = decoder.line_omega() * envelope_rate;
   const double field_hz = decoder.field_omega() * envelope_rate;
-  const auto what = frame_stride_ > 0 ? std::format("wrote {} frames {}_NNNN.png (every {} fields)", written,
-                                            output.stem().string(), frame_stride_)
-                                      : std::format("wrote {}", output.string());
+  const auto what = live_ ? std::format("live stream ended; last frame {}", output.string())
+                          : (frame_stride_ > 0 ? std::format("wrote {} frames {}_NNNN.png (every {} fields)", written,
+                                                     output.stem().string(), frame_stride_)
+                                               : std::format("wrote {}", output.string()));
   std::println("{} ({}x{}); envelope @ {:g} MS/s after /{} decimation, carrier {:.4f} MHz; "
                "horizontal {} {} edges @ {:.1f} Hz ({:+.2f}%); vertical locked {} fields @ {:.2f} Hz ({:+.2f}%)",
-      what, width_, height_, envelope_rate / 1e6, decimate, loaded.vision_carrier_hz / 1e6,
+      what, width_, height_, envelope_rate / 1e6, decimate, es.carrier_hz / 1e6,
       decoder.hold_locked() ? "locked" : "STILL ACQUIRING after", decoder.accepted_edges(), line_hz,
       100.0 * (line_hz - video::kNominalLineHz) / video::kNominalLineHz, decoder.detected_fields(), field_hz,
       100.0 * (field_hz - video::kNominalFieldHz) / video::kNominalFieldHz);

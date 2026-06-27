@@ -25,6 +25,8 @@ private:
   std::filesystem::path output_;
   double carrier_{0.0}; // 0 => take the vision carrier from metadata (or scan if none)
   bool scan_{false}; // force a signal scan for the carrier even if metadata has one
+  bool live_{false}; // decode a continuous stdin SDR stream instead of a recording file
+  double sample_rate_{0.0}; // live input real sample rate Hz (the file path had it in metadata)
   double cutoff_{4.8e6};
   double sync_cutoff_{1.2e6}; // narrow low-pass on the sync-detection branch
   std::size_t decimate_{0}; // 0 => auto from the sample rate (keep chroma below 0.7*Nyquist)
