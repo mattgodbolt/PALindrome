@@ -70,7 +70,8 @@ Decoder::Decoder(const DecoderConfig &cfg) :
         .eht_focus = cfg.eht_focus,
         .line_pull = cfg.line_pull,
         .bcl_threshold = cfg.bcl_threshold,
-        .bcl_tc_fields = cfg.bcl_tc_fields}} {}
+        .bcl_tc_fields = cfg.bcl_tc_fields,
+        .deposit_lanes = cfg.deposit_lanes}} {}
 
 void Decoder::prepare(std::size_t max_in) {
   if (agc_)

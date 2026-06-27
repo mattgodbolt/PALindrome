@@ -82,6 +82,7 @@ private:
   std::size_t frame_stride_{0}; // 0 => one image; N => a PNG every Nth field boundary
   bool no_sync_{false}; // debug: naive-fold the envelope, bypassing the sync graph
   bool no_threads_{false}; // decode serially instead of the default stage pipeline
+  std::size_t deposit_threads_{1}; // screen-deposit lanes (bit-exact); 1 = serial
   // Sync/sweep hold knobs — the rest of the decoder, surfaced for the tuner.
   double sync_level_{0.85}; // separator slice level
   double h_kp_{0.1}; // horizontal hold: locked (flywheel) AFC gains + omega clamp

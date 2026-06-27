@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <memory>
 #include <stdexcept>
+#include <utility>
 
 namespace palindrome::video {
 
@@ -28,6 +30,11 @@ Screen::Screen(const ScreenConfig &cfg) :
     bright_(cfg.width * cfg.height * (cfg.colour ? 3 : 1), 0.0f) {
   if (cfg_.width == 0 || cfg_.height == 0)
     throw std::invalid_argument{"Screen: width and height must be positive"};
+  // Splat positions are stored as int16 in SplatRecord (floor of the beam x/y,
+  // which overscan magnification and the yoke tilt push a little past the frame).
+  // Bound the dimensions well inside int16 so that can never overflow silently.
+  if (cfg_.width > 16384 || cfg_.height > 16384)
+    throw std::invalid_argument{"Screen: width and height must be <= 16384 (splat coordinates are int16)"};
   if (!(cfg_.saturation >= 0.0))
     throw std::invalid_argument{"Screen: saturation must be non-negative"};
   if (!(cfg_.sample_rate_hz > 0.0 && cfg_.field_hz > 0.0))
@@ -127,12 +134,20 @@ Screen::Screen(const ScreenConfig &cfg) :
     y_classes_.push_back(build(sigma_rows * grow));
     x_classes_.push_back(build(sigma_cols * grow));
   }
-  splat_radius_y_ = y_classes_[0].radius;
-  splat_radius_x_ = x_classes_[0].radius;
-  gauss_stride_y_ = y_classes_[0].stride;
-  gauss_stride_x_ = x_classes_[0].stride;
-  gauss_lut_y_ = y_classes_[0].lut.data();
-  gauss_lut_x_ = x_classes_[0].lut.data();
+  // Hand the per-class kernels to the deposit, which resolves a splat's (class,
+  // bin) to its weight rows and spot geometry. The LUT storage lives in
+  // y_classes_/x_classes_ for this Screen's lifetime, so the pointers stay valid.
+  SplatKernels kernels;
+  kernels.bins = kGaussBins;
+  kernels.classes.reserve(y_classes_.size());
+  for (std::size_t c = 0; c < y_classes_.size(); ++c)
+    kernels.classes.push_back(SplatKernels::Class{.radius_x = static_cast<std::int32_t>(x_classes_[c].radius),
+        .radius_y = static_cast<std::int32_t>(y_classes_[c].radius),
+        .stride_x = static_cast<std::int32_t>(x_classes_[c].stride),
+        .stride_y = static_cast<std::int32_t>(y_classes_[c].stride),
+        .lut_x = x_classes_[c].lut.data(),
+        .lut_y = y_classes_[c].lut.data()});
+  deposit_ = std::make_unique<SplatDeposit>(cfg_.width, cfg_.height, channels_, cfg_.deposit_lanes, std::move(kernels));
   limiting_ = cfg_.bcl_threshold > 0.0;
   // The line-load sensor runs for any consumer: the EHT, the pull or a limiter.
   loading_ = cfg_.eht_sag > 0.0 || cfg_.line_pull > 0.0 || limiting_;
@@ -190,7 +205,15 @@ Screen::Screen(const ScreenConfig &cfg) :
   return gun_lut_[i] + f * (gun_lut_[i + 1] - gun_lut_[i]);
 }
 
-void Screen::prepare(std::size_t) {}
+void Screen::prepare(std::size_t max_in) {
+  // The splat buffer accumulates a whole field before the boundary flush, so size
+  // it for a field's worth of samples plus one block straddling the boundary. It
+  // also grows on demand in process(), so a caller that skips prepare (tests) is
+  // safe; this just avoids reallocation on the streaming path.
+  const auto per_field = static_cast<std::size_t>(cfg_.sample_rate_hz / cfg_.field_hz);
+  splats_.reserve(per_field + max_in);
+  deposit_->prepare(per_field + max_in); // size the deposit's index buffer for a field
+}
 
 namespace {
 // The back porch — the blanking shelf just after the line-sync pulse (h_phase=0
@@ -277,16 +300,11 @@ void Screen::start_line() {
     eht_ += alpha * ((1.0 - cfg_.eht_sag * load) - eht_);
     defl = 1.0 / std::sqrt(eht_); // deflection sensitivity rises as EHT sags
     bright_eff_ = static_cast<float>(eht_); // light ∝ V·I
-    // Focus: the spot grows toward the full-sag class as the EHT sags.
+    // Focus: the spot grows toward the full-sag class as the EHT sags. Each splat
+    // records this class so the deferred apply picks the matching kernel.
     if (y_classes_.size() > 1) {
       const double sag = std::clamp((1.0 - eht_) / cfg_.eht_sag, 0.0, 1.0);
-      const auto c = static_cast<std::size_t>(sag * static_cast<double>(y_classes_.size() - 1) + 0.5);
-      splat_radius_y_ = y_classes_[c].radius;
-      splat_radius_x_ = x_classes_[c].radius;
-      gauss_stride_y_ = y_classes_[c].stride;
-      gauss_stride_x_ = x_classes_[c].stride;
-      gauss_lut_y_ = y_classes_[c].lut.data();
-      gauss_lut_x_ = x_classes_[c].lut.data();
+      active_class_ = static_cast<std::size_t>(sag * static_cast<double>(y_classes_.size() - 1) + 0.5);
     }
   }
   const double pull = 1.0 + cfg_.line_pull * prev_line_load_;
@@ -324,6 +342,7 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // paint before any decay — which needs the decay/snapshot aligned to a frame
     // boundary, i.e. the interlace even/odd parity tracking still to be added.
     if (vbeam[i].field_start) {
+      flush(); // land this field's splats so the snapshot below reads a complete field
       if (on_field)
         on_field(FieldEvent{*this});
       for (float &b: bright_)
@@ -389,61 +408,45 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
       gun_rgb[2] *= bright_eff_;
     }
 
-    // Horizontal beam position. The spot has a real width, so the deposit spreads
-    // over the columns under the Gaussian, centred on the sub-pixel position; the
-    // normalised weights depend only on xf's fractional part, so look up the bin.
-    // picture_h_offset_ shifts the picture back onto the sweep to register colour
-    // with mono (sync timing — blanking, yoke — still uses the raw h_phase).
+    // Beam position to sub-pixel precision: the integer pixel and the sub-pixel
+    // bin (which pre-shifted copy of the Gaussian kernel). The apply turns the
+    // pixel + the class radius into the spot's corner and resolves the kernel from
+    // the bin. picture_h_offset_ shifts the picture back onto the sweep to
+    // register colour with mono (sync timing still uses the raw h_phase).
     const double xf = (static_cast<double>(hbeam[i].h_phase) - picture_h_offset_) * x_scale_eff_ + x_off_eff_;
     const double xf_floor = std::floor(xf);
-    const auto base_col = static_cast<std::ptrdiff_t>(xf_floor) - static_cast<std::ptrdiff_t>(splat_radius_x_);
     auto bin_x = static_cast<std::size_t>((xf - xf_floor) * static_cast<double>(kGaussBins));
     if (bin_x >= kGaussBins)
       bin_x = kGaussBins - 1;
-    const auto *cweights = &gauss_lut_x_[bin_x * gauss_stride_x_];
-
     // Yoke shear: un-creep the vertical so the scanline is flat (see header).
     const auto yc = static_cast<double>(vbeam[i].v_phase) * y_scale_eff_ -
                     tilt_eff_ * static_cast<double>(hbeam[i].h_phase) + y_off_eff_;
-
-    // Gaussian beam spot, centred on the sheared sub-pixel row. The normalised
-    // weights depend only on yc's fractional part, so look up the matching bin.
     const double yc_floor = std::floor(yc);
-    const auto base = static_cast<std::ptrdiff_t>(yc_floor) - static_cast<std::ptrdiff_t>(splat_radius_y_);
-    auto bin = static_cast<std::size_t>((yc - yc_floor) * static_cast<double>(kGaussBins));
-    if (bin >= kGaussBins)
-      bin = kGaussBins - 1;
-    const auto *rweights = &gauss_lut_y_[bin * gauss_stride_y_];
+    auto bin_y = static_cast<std::size_t>((yc - yc_floor) * static_cast<double>(kGaussBins));
+    if (bin_y >= kGaussBins)
+      bin_y = kGaussBins - 1;
 
-    // Splat the round spot (rows × columns), ADDING charge (the whole-buffer fade
-    // at the field boundary handles decay). The beam hits all channels of a pixel
-    // at the same instant. Row and column weights each sum to 1, so the separable
-    // product conserves the sample's total deposited charge.
-    // Clip the column span to the frame once (base_col and the stride don't change
-    // per row), so the inner loop is branchless over the ~49-cell spot.
-    const auto width = static_cast<std::ptrdiff_t>(cfg_.width);
-    const std::ptrdiff_t j_lo = std::max<std::ptrdiff_t>(0, -base_col);
-    const std::ptrdiff_t j_hi = std::min(static_cast<std::ptrdiff_t>(gauss_stride_x_), width - base_col);
-    for (std::size_t k = 0; k < gauss_stride_y_; ++k) {
-      const std::ptrdiff_t row = base + static_cast<std::ptrdiff_t>(k);
-      if (row < 0 || row >= static_cast<std::ptrdiff_t>(cfg_.height))
-        continue;
-      const auto rw = rweights[k];
-      const auto row_base = static_cast<std::size_t>(row) * cfg_.width;
-      for (std::ptrdiff_t j = j_lo; j < j_hi; ++j) {
-        const auto pixel = row_base + static_cast<std::size_t>(base_col + j);
-        const auto w = rw * cweights[j];
-        // channels_ is 1 or 3; spell both out so the guns stay in registers and
-        // the RGB triple isn't a variable-trip loop.
-        float *cell = &bright_[pixel * channels_];
-        cell[0] += gun_rgb[0] * w;
-        if (channels_ == 3) {
-          cell[1] += gun_rgb[1] * w;
-          cell[2] += gun_rgb[2] * w;
-        }
-      }
-    }
+    // Record the splat to deposit at the field flush rather than painting bright_
+    // here: deferring keeps every pixel's adds in sample order (identical output)
+    // while making a field's deposits one list the apply can fan across cores.
+    // Append, growing the buffer if this field overran the reserve.
+    if (splats_.size() >= splats_.capacity())
+      splats_.reserve(splats_.capacity() ? splats_.capacity() * 2 : std::size_t{1} << 16);
+    const auto slot = splats_.write_n(splats_.size() + 1);
+    slot.back() = SplatRecord{.x_pixel = static_cast<std::int16_t>(xf_floor),
+        .y_pixel = static_cast<std::int16_t>(yc_floor),
+        .x_bin = static_cast<std::uint16_t>(bin_x),
+        .y_bin = static_cast<std::uint16_t>(bin_y),
+        .gun = {gun_rgb[0], gun_rgb[1], gun_rgb[2]},
+        .klass = static_cast<std::uint8_t>(active_class_)};
   }
+}
+
+void Screen::flush() const {
+  if (splats_.empty())
+    return;
+  deposit_->apply(splats_.view(), bright_);
+  splats_.clear();
 }
 
 Screen::Frame Screen::quantise(const std::vector<float> &bright, double white_ref) const {
@@ -477,7 +480,10 @@ Screen::Frame Screen::quantise(const std::vector<float> &bright, double white_re
   return Frame{.pixels = std::move(pixels), .width = cfg_.width, .height = cfg_.height, .channels = channels_};
 }
 
-Screen::Frame Screen::snapshot() const { return quantise(bright_, white_ref_); }
+Screen::Frame Screen::snapshot() const {
+  flush();
+  return quantise(bright_, white_ref_);
+}
 
 void Screen::latch_boundary() {
   latch_bright_.assign(bright_.begin(), bright_.end());

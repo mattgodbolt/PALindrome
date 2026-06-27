@@ -1,10 +1,13 @@
 #pragma once
 
+#include "palindrome/buffer.hpp"
+#include "palindrome/splat.hpp"
 #include "palindrome/video_types.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -119,6 +122,12 @@ struct ScreenConfig {
   // the threshold, with bcl_tc_fields response. 0 disables.
   double bcl_threshold = 0.0;
   double bcl_tc_fields = 0.5;
+  // Deposit threads. The per-sample control pass records one splat per visible
+  // sample into a buffer; at each field boundary the field's splats are applied
+  // to the phosphor, fanned across this many threads by output band (see
+  // SplatDeposit). Bit-exact in the thread count - the picture never changes -
+  // so this is a wall-clock knob only. 1 = serial (no pool). The caller sets it.
+  std::size_t deposit_lanes = 1;
 };
 
 // The picture tube. A join sink fed three aligned rails — the picture (luma +
@@ -173,10 +182,11 @@ public:
   void process(std::span<const ChromaSample> picture, std::span<const BeamSample> hbeam, std::span<const VSample> vbeam,
       const FieldCallback &on_field = {});
 
-  // Decay the phosphor to the current instant and read it out, scaled by the
-  // AGC-tracked white reference (one shared scale across R/G/B so hue is
-  // preserved). Const — snapshotting doesn't disturb the running sim, so the
-  // per-field callback can call it at every field boundary.
+  // Read the phosphor out, scaled by the white reference (one shared scale across
+  // R/G/B so hue is preserved). The deposit is batched per field, so this first
+  // materialises any splats buffered since the last field boundary into the
+  // phosphor - a lazy finalise of work already committed, so snapshotting still
+  // doesn't disturb the running sim and stays const.
   [[nodiscard]] Frame snapshot() const;
 
   // Diagnostic: the per-unit EHT (1 = unloaded; sustained full white sags it
@@ -225,8 +235,22 @@ private:
   // implementation — last_, sample_index_, the split decay LUTs, decay_for, and
   // the fade-to-now in snapshot() — sits in the commit before "fade the phosphor
   // per field, not per sample" (git log -- lib/video.cpp; show its parent).
-  std::vector<float> bright_; // per-pixel-per-channel accumulated phosphor charge
+  // mutable: the phosphor is the readout, but the deposit into it is batched per
+  // field and materialised lazily by flush() (called from the const snapshot), so
+  // the charge committed by the splats is logically already part of the picture.
+  mutable std::vector<float> bright_; // per-pixel-per-channel accumulated phosphor charge
   float field_decay_ = 1.0f; // whole-buffer multiply applied once per field
+
+  // Deferred deposit. The per-sample control pass records one SplatRecord per
+  // visible sample into splats_, accumulating across blocks within a field; at
+  // each field boundary (and lazily on any read) flush() hands the whole field to
+  // deposit_, which fans the splats across its threads (by output band) into
+  // bright_. Batching to per-field is what lets the apply be threaded: the
+  // fan/join cost is paid ~once per field, not once per block, and a full field
+  // spans every row so all the deposit threads have work at once.
+  mutable Buffer<SplatRecord> splats_; // this field's pending splats (accumulated across blocks)
+  std::unique_ptr<SplatDeposit> deposit_; // applies a field of splats, threaded by band (built once the LUTs exist)
+  void flush() const; // materialise splats_ into bright_, then clear (idempotent)
 
   // FieldEvent::latch() support: the phosphor and white reference copied aside
   // at a field boundary (a float memcpy — far cheaper than quantising a Frame
@@ -250,16 +274,14 @@ private:
   double picture_h_offset_ = 0.0; // h_phase shift to register the picture rail (see ScreenConfig)
   double x_scale_ = 0.0; // columns per unit h_phase: width / (h_window_hi - h_window_lo)
   double y_scale_ = 0.0; // rows per unit v_phase: height / (v_window_hi - v_window_lo)
-  std::size_t splat_radius_y_ = 0; // Gaussian half-width in rows
-  std::size_t splat_radius_x_ = 0; // Gaussian half-width in columns
-
   // The beam spot is a separable 2-D Gaussian: a vertical kernel over rows and a
   // horizontal one over columns, each normalised to sum 1. Both depend only on
   // the spot centre's sub-pixel fraction along that axis, so each is tabulated per
   // fraction bin (a [bin][cell] table) instead of calling exp() per sample.
   // EHT focus softening quantises the spot into kFocusClasses sizes, one table
-  // set per class, switched per LINE (the EHT moves on field timescales) — the
-  // per-sample deposit loop sees fixed pointers and strides within a line.
+  // set per class; the active class is chosen per LINE (the EHT moves on field
+  // timescales) and recorded on each splat so the deferred apply picks the right
+  // kernel. The tables themselves are handed to deposit_ as SplatKernels.
   static constexpr std::size_t kGaussBins = 4096;
   static constexpr std::size_t kFocusClasses = 8;
   struct SplatLut {
@@ -269,10 +291,7 @@ private:
   };
   std::vector<SplatLut> y_classes_; // class 0 = nominal focus, last = full sag
   std::vector<SplatLut> x_classes_;
-  std::size_t gauss_stride_y_ = 1; // the ACTIVE class's geometry (this line)
-  std::size_t gauss_stride_x_ = 1;
-  const float *gauss_lut_y_ = nullptr; // the active class's tables
-  const float *gauss_lut_x_ = nullptr;
+  std::size_t active_class_ = 0; // the focus class chosen for the current line
 
   // Beam loading (see ScreenConfig). The per-line mean gun output, normalised
   // by the AGC white, is the load; eht_ integrates it at line rate (a slow
