@@ -94,6 +94,22 @@ struct DecodedBlock {
   [[nodiscard]] std::size_t size() const noexcept { return picture.size(); }
 };
 
+// The sync half's output: the AGC'd envelope (carried forward for the chroma
+// decode, which is now a separate pipeline stage) plus the two timing rails. Lets
+// the FIR-heavy sync/sweep work and the FIR-heavy chroma work run on their own
+// in-order threads instead of one (decode_sync -> decode_chroma).
+struct SyncedBlock {
+  std::vector<float> envelope; // the AGC'd composite envelope
+  std::vector<BeamSample> hbeam;
+  std::vector<VSample> vbeam;
+  void resize(std::size_t n) {
+    envelope.resize(n);
+    hbeam.resize(n);
+    vbeam.resize(n);
+  }
+  [[nodiscard]] std::size_t size() const noexcept { return envelope.size(); }
+};
+
 // The whole video graph as one streaming node: it owns the separator, the two
 // sweeps and the screen, and hides the fan-out (the sync bit feeds both
 // timebases) and the 3-way join (the screen). Feed it envelope blocks; read a
@@ -104,11 +120,15 @@ public:
   explicit Decoder(const DecoderConfig &cfg);
 
   void prepare(std::size_t max_in);
-  // The decode is split into two halves so a pipeline can run them on separate
-  // threads: decode_into() runs the sync/chroma stages into a caller-owned block;
-  // deposit() paints that block onto the phosphor screen, firing on_field (if
-  // set) at each field boundary. Run back to back they are a full decode.
-  void decode_into(DecodedBlock &out, std::span<const float> envelope);
+  // The decode is split into three stages a pipeline runs on separate in-order
+  // threads: decode_sync() runs the AGC, sync separator and the two timebases
+  // (the FIR-heavy sync path) into a SyncedBlock; decode_chroma() runs the
+  // (FIR-heavy) chroma decode into a DecodedBlock; deposit() paints it onto the
+  // phosphor, firing on_field at each field boundary. Run back to back they are a
+  // full decode. Splitting sync from chroma spreads the two FIR loads across two
+  // cores rather than serialising them on one.
+  void decode_sync(SyncedBlock &out, std::span<const float> envelope);
+  void decode_chroma(DecodedBlock &out, const SyncedBlock &synced);
   void deposit(const DecodedBlock &block, const Screen::FieldCallback &on_field = {});
   [[nodiscard]] Screen::Frame snapshot() const { return screen_.snapshot(); }
   [[nodiscard]] Screen::Frame latched_frame() const { return screen_.latched_frame(); }

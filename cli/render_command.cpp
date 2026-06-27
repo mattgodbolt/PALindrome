@@ -433,8 +433,10 @@ int RenderCommand::run() const {
         es = live_ ? stream_envelope_live(sample_rate_, carrier_, opts, emit, kBlock)
                    : stream_envelope(loaded, opts, emit, kBlock);
       },
-      pipe::transform<video::DecodedBlock>(
-          kInFlight, [&](std::span<const float> env, video::DecodedBlock &out) { decoder.decode_into(out, env); }),
+      pipe::transform<video::SyncedBlock>(
+          kInFlight, [&](std::span<const float> env, video::SyncedBlock &out) { decoder.decode_sync(out, env); }),
+      pipe::transform<video::DecodedBlock>(kInFlight,
+          [&](const video::SyncedBlock &synced, video::DecodedBlock &out) { decoder.decode_chroma(out, synced); }),
       pipe::sink([&](const video::DecodedBlock &block) { decoder.deposit(block, on_field); }));
   for (const auto &w: es.warnings)
     std::println(std::cerr, "render: warning: {}", w);

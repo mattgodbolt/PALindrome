@@ -84,33 +84,40 @@ void Decoder::prepare(std::size_t max_in) {
   screen_.prepare(max_in);
 }
 
-void Decoder::decode_into(DecodedBlock &out, std::span<const float> envelope) {
-  // The IF AGC normalises the carrier first - every branch below (sync slice,
-  // picture rail, chroma) sees the same absolute levels, exactly as the gain
-  // stage sits ahead of the detector fan-out in a real IF strip. Absent in
+void Decoder::decode_sync(SyncedBlock &out, std::span<const float> envelope) {
+  // The IF AGC normalises the carrier first - every branch downstream (sync
+  // slice, picture rail, chroma) sees the same absolute levels, exactly as the
+  // gain stage sits ahead of the detector fan-out in a real IF strip. Absent in
   // adaptive mode, where the per-stage trackers do their own levelling.
   if (agc_)
     envelope = agc_->process(envelope);
-  // The branch: the envelope fans to a narrow sync low-pass (whose sliced sync
-  // bit feeds both timebases) and, untouched, to the picture rail. In colour the
-  // chroma decoder is a third branch off the envelope (it needs the horizontal
-  // rail for the burst gate). The rails are copied into owned vectors so the
-  // screen deposit can run on a different thread a block behind.
+  // The sync fan-out: the envelope feeds a narrow sync low-pass whose sliced sync
+  // bit drives both timebases. Carry the AGC'd envelope forward too - the chroma
+  // stage needs it (and the horizontal rail) a block behind, on its own thread.
   const auto sync_env = sync_lp_.process(envelope);
   const auto sync = sep_.process(sync_env);
   const auto hbeam = hsweep_.process(sync);
   const auto vbeam = vsync_.process(sync);
-  const auto n = envelope.size();
-  out.resize(n);
+  out.resize(envelope.size());
+  std::ranges::copy(envelope, out.envelope.begin());
   std::ranges::copy(hbeam, out.hbeam.begin());
   std::ranges::copy(vbeam, out.vbeam.begin());
+}
+
+void Decoder::decode_chroma(DecodedBlock &out, const SyncedBlock &synced) {
+  out.resize(synced.size());
+  std::ranges::copy(synced.hbeam, out.hbeam.begin());
+  std::ranges::copy(synced.vbeam, out.vbeam.begin());
   if (colour_) {
-    std::ranges::copy(chroma_.process(envelope, hbeam), out.picture.begin());
+    // The chroma decoder is a branch off the envelope (it needs the horizontal
+    // rail for the burst gate). The FIR-heavy work that this split moves off the
+    // sync thread onto its own.
+    std::ranges::copy(chroma_.process(synced.envelope, synced.hbeam), out.picture.begin());
   }
   else {
     // Monochrome: the luma rail is the envelope straight through, no chroma.
-    std::ranges::transform(
-        envelope, out.picture.begin(), [](float luma) { return ChromaSample{.luma = luma, .u = 0.0f, .v = 0.0f}; });
+    std::ranges::transform(synced.envelope, out.picture.begin(),
+        [](float luma) { return ChromaSample{.luma = luma, .u = 0.0f, .v = 0.0f}; });
   }
 }
 
