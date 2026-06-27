@@ -149,6 +149,8 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(no_sync_)["--no-sync"]("Debug: naive-fold the envelope, bypassing sync"))
           .add_argument(
               lyra::opt(no_threads_)["--no-threads"]("Decode serially (default is a threaded stage pipeline)"))
+          .add_argument(lyra::opt(deposit_threads_, "n")["--deposit-threads"](
+              "Threads the screen deposit fans a field's splats across (bit-exact); 1 = serial"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to render (e.g. corpus/alex_kidd)")));
 }
 
@@ -257,6 +259,7 @@ int RenderCommand::run() const {
   // are what every pre-AGC render used, so the legacy mode looks legacy.
   dc.saturation = saturation_ >= 0.0 ? saturation_ : (adaptive ? 0.17 : 0.085);
   dc.contrast = contrast_ >= 0.0 ? contrast_ : (adaptive ? 0.85 : 1.6);
+  dc.deposit_lanes = deposit_threads_;
   dc.readout_gamma = readout_gamma_;
   dc.eht_sag = eht_sag_;
   dc.eht_tc_fields = eht_tc_;
@@ -380,7 +383,12 @@ int RenderCommand::run() const {
   // pipe::run threads it (each stage on its own in-order worker, owned blocks
   // through bounded pools — the live-streaming shape) or runs it inline for
   // --no-threads, from this one description. Either way it's bit-identical.
-  constexpr std::ptrdiff_t kInFlight = 4;
+  //
+  // Depth is a field's worth of blocks (~10 at this block size), not a handful:
+  // the screen deposit applies a whole field of splats in one burst at each field
+  // boundary, and the decode stage can only run ahead through it - overlapping the
+  // burst instead of stalling on it - if the pool can hold that many blocks.
+  constexpr std::ptrdiff_t kInFlight = 16;
   EnvelopeStream es;
   pipe::run(
       !no_threads_, kInFlight, //
