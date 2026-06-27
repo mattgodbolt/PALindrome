@@ -65,6 +65,12 @@ public:
   // record's (class, bin) to its weight rows and spot geometry.
   SplatDeposit(std::size_t width, std::size_t height, std::size_t channels, std::size_t lanes, SplatKernels kernels);
 
+  // Size the per-band buckets once for batches of up to max_records, so the
+  // per-field bin never allocates. Must be called (with a bound >= the largest
+  // batch apply() will see) before apply() when threaded; Screen does so from its
+  // own prepare().
+  void prepare(std::size_t max_records);
+
   [[nodiscard]] unsigned lanes() const noexcept { return pool_ ? pool_->threads() : 1u; }
 
   // Add every record's spot into framebuffer (width*height*channels floats),
@@ -98,7 +104,10 @@ private:
   std::size_t bands_;
   std::unique_ptr<WorkQueue> pool_; // null when serial (lanes <= 1)
   std::vector<std::function<void()>> tasks_; // reused per-apply band-task closures
-  std::vector<Buffer<std::uint32_t>> buckets_; // one record-index bucket per band
+  // bin() sorts the record indices into one bucket per band (record order within a
+  // band). Each bucket is reserved once in prepare() to the worst case (a band
+  // could in the limit own every record), so the per-field bin never allocates.
+  std::vector<Buffer<std::uint32_t>> buckets_;
   std::vector<std::int32_t> band_edges_; // band b owns rows [band_edges_[b], band_edges_[b+1])
   std::vector<std::uint16_t> row_band_; // row -> owning band, the inverse of band_edges_
 };

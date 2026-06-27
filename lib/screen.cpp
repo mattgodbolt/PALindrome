@@ -212,6 +212,7 @@ void Screen::prepare(std::size_t max_in) {
   // safe; this just avoids reallocation on the streaming path.
   const auto per_field = static_cast<std::size_t>(cfg_.sample_rate_hz / cfg_.field_hz);
   splats_.reserve(per_field + max_in);
+  deposit_->prepare(per_field + max_in); // size the deposit's index buffer for a field
 }
 
 namespace {

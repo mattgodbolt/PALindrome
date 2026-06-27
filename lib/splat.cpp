@@ -39,6 +39,11 @@ SplatDeposit::SplatDeposit(std::size_t width, std::size_t height, std::size_t ch
   buckets_ = std::vector<Buffer<std::uint32_t>>(bands_);
 }
 
+void SplatDeposit::prepare(std::size_t max_records) {
+  for (auto &bucket: buckets_)
+    bucket.reserve(max_records); // worst case: a band could own every record
+}
+
 void SplatDeposit::row_span(const SplatRecord &s, std::int32_t &lo, std::int32_t &hi) const {
   const auto &kc = kernels_.classes[s.klass];
   const std::int32_t base = s.y_pixel - kc.radius_y;
@@ -102,10 +107,15 @@ void SplatDeposit::apply(std::span<const SplatRecord> recs, std::span<float> fra
 }
 
 void SplatDeposit::bin(std::span<const SplatRecord> recs) {
-  for (auto &bucket: buckets_)
+  // Sort the record indices into one bucket per band; a spot straddles the 1-2
+  // bands its rows fall in. prepare() has sized the buckets, so this only clears
+  // and appends (the capacity guard is a one-time fallback for an unprepared
+  // caller, e.g. a test - never hit on the streaming path).
+  for (auto &bucket: buckets_) {
     bucket.clear();
-  for (auto &bucket: buckets_)
-    bucket.reserve(recs.size()); // a single band can, in the limit, own every spot
+    if (bucket.capacity() < recs.size())
+      bucket.reserve(recs.size());
+  }
   for (std::size_t i = 0; i < recs.size(); ++i) {
     std::int32_t lo = 0;
     std::int32_t hi = 0;
@@ -116,7 +126,7 @@ void SplatDeposit::bin(std::span<const SplatRecord> recs) {
     const unsigned b_hi = row_band_[static_cast<std::size_t>(hi - 1)];
     for (unsigned b = b_lo; b <= b_hi; ++b) {
       auto &bucket = buckets_[b];
-      const auto out = bucket.write_n(bucket.size() + 1); // grow the logical size by one
+      const auto out = bucket.write_n(bucket.size() + 1); // append (capacity from prepare)
       out.back() = static_cast<std::uint32_t>(i);
     }
   }
