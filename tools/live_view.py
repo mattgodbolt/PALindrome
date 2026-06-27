@@ -88,8 +88,7 @@ def main():
     sdr.stdout.close()  # so airspy_rx gets SIGPIPE if the decoder exits
 
     host = socket.gethostname()
-    print(f"\nlive view: http://{host}:{args.port}/  (Tailscale: that host name works directly)\n",
-          file=sys.stderr)
+    print(f"\nlive view: http://{host}:{args.port}/\n", file=sys.stderr)
 
     page = f"""<!doctype html><meta charset=utf-8><title>PALindrome live</title>
 <style>html,body{{margin:0;background:#111;height:100%;display:flex;align-items:center;justify-content:center}}
