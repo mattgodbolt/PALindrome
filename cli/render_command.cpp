@@ -421,7 +421,7 @@ int RenderCommand::run() const {
   // through bounded pools — the live-streaming shape) or runs it inline for
   // --no-threads, from this one description. Either way it's bit-identical.
   //
-  // Depth is a field's worth of blocks (~10 at this block size), not a handful:
+  // Depth is a field's worth of blocks (~5-6 at this block size), not a handful:
   // the screen deposit applies a whole field of splats in one burst at each field
   // boundary, and the decode stage can only run ahead through it - overlapping the
   // burst instead of stalling on it - if the pool can hold that many blocks.

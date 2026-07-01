@@ -1,5 +1,10 @@
 # PALindrome - project guidance for Claude Code
 
+## Documentation
+
+Design and reference notes live in `docs/`. Consult it for the background the code
+assumes (and keep it current when behaviour changes) rather than re-deriving it.
+
 ## C++ conventions
 
 - **Almost Always Auto.** Prefer `auto` / `const auto` for locals wherever the
