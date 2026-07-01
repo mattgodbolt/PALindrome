@@ -423,9 +423,11 @@ int RenderCommand::run() const {
       left -= static_cast<std::size_t>(n);
     }
   };
-  // ~5 frames/sec at 50 fields/s, throttling the snapshot + downstream encode (the
+  // ~10 frames/sec at 50 fields/s, throttling the snapshot + downstream encode (the
   // phosphor still paints every field; this only caps how often we snapshot it).
-  const std::size_t live_stride = frame_stride_ != 0 ? frame_stride_ : 10;
+  // 10/s keeps ~8% real-time margin at 720x576 colour; ~15/s is the ceiling before
+  // the per-snapshot gamma quantise on this thread pushes the decode over.
+  const std::size_t live_stride = frame_stride_ != 0 ? frame_stride_ : 5;
   const video::Screen::FieldCallback on_field = [&](const video::Screen::FieldEvent &e) {
     if (live_) {
       if (fields_seen++ % live_stride == 0)
