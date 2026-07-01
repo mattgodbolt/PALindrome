@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -186,6 +187,9 @@ int RenderCommand::run() const {
       std::println(std::cerr, "render: --live requires --frame-fd (raw frames for the MJPEG viewer)");
       return 1;
     }
+    // Let a closed reader surface as EPIPE from write() rather than killing us
+    // with SIGPIPE (the viewer disconnecting is a normal live-stream event).
+    std::signal(SIGPIPE, SIG_IGN);
     loaded.sample_rate_hz = sample_rate_; // carrier is resolved from the stream in stream_envelope_live
   }
   else {
@@ -413,6 +417,8 @@ int RenderCommand::run() const {
           continue;
         throw std::system_error{errno, std::generic_category(), "render: --frame-fd write"};
       }
+      if (n == 0)
+        throw std::system_error{EIO, std::generic_category(), "render: --frame-fd write returned 0"};
       bytes += n;
       left -= static_cast<std::size_t>(n);
     }

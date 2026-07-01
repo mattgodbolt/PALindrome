@@ -72,19 +72,28 @@ def _read_exact(f, n):
     return b"".join(chunks)
 
 
-def reader_loop(read_fd, width, height, channels, latest):
-    """Read raw frames off the decoder's pipe, JPEG-encode, publish the latest."""
+def reader_loop(read_fd, width, height, channels, latest, on_fail):
+    """Read raw frames off the decoder's pipe, JPEG-encode, publish the latest.
+
+    This thread is the pipe's only drainer: if it dies while the decoder is still
+    running, the pipe fills, the decoder's write blocks, and the SDR wedges. So a
+    normal EOF (decoder gone) just ends the thread, but any other failure calls
+    on_fail to tear the whole pipeline down instead of stalling silently."""
     frame_bytes = width * height * channels
     mode = "RGB" if channels == 3 else "L"
-    with os.fdopen(read_fd, "rb", buffering=0) as f:
-        while True:
-            raw = _read_exact(f, frame_bytes)
-            if raw is None:
-                return  # decoder closed the pipe
-            img = Image.frombytes(mode, (width, height), raw)
-            out = io.BytesIO()
-            img.save(out, format="JPEG", quality=80)
-            latest.publish(out.getvalue())
+    try:
+        with os.fdopen(read_fd, "rb", buffering=0) as f:
+            while True:
+                raw = _read_exact(f, frame_bytes)
+                if raw is None:
+                    return  # decoder closed the pipe (normal end)
+                img = Image.frombytes(mode, (width, height), raw)
+                out = io.BytesIO()
+                img.save(out, format="JPEG", quality=80)
+                latest.publish(out.getvalue())
+    except Exception as e:
+        print(f"live_view: frame reader failed: {e}", file=sys.stderr)
+        on_fail()
 
 
 PAGE = b"""<!doctype html><meta charset=utf-8><title>PALindrome live</title>
@@ -187,7 +196,10 @@ def main():
     os.close(frame_w)   # the child holds the only write end now
 
     latest = LatestFrame()
-    threading.Thread(target=reader_loop, args=(frame_r, args.width, args.height, channels, latest),
+    # If the reader dies unexpectedly, terminate the decoder so its dec.wait()
+    # watcher below shuts the server down rather than leaving a wedged pipe.
+    threading.Thread(target=reader_loop,
+                     args=(frame_r, args.width, args.height, channels, latest, dec.terminate),
                      daemon=True).start()
 
     host = socket.gethostname()
