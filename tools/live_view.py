@@ -27,7 +27,10 @@ import subprocess
 import sys
 import threading
 
-from PIL import Image
+try:
+    from PIL import Image
+except ModuleNotFoundError:
+    Image = None  # checked in main() so the script stays importable without Pillow
 
 # The AirSpy R2 raw ADC runs at 2x the requested complex rate, low-IF at fs/4 and
 # spectrally inverting, so a carrier `d` above the tune lands at IF = fs/4 - d.
@@ -161,6 +164,8 @@ def main():
                     help="everything after --extra is passed through to `palindrome render` (e.g. --extra --contrast 1.8)")
     args = ap.parse_args()
 
+    if Image is None:
+        sys.exit("Pillow not found; install it (pip install pillow) - the MJPEG server encodes frames with it")
     airspy = args.airspy_binary or shutil.which("airspy_rx")
     if not airspy:
         sys.exit("airspy_rx not found; install airspy-tools or pass --airspy-binary")
