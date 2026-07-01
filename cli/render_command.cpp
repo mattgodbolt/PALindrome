@@ -182,6 +182,10 @@ int RenderCommand::run() const {
       std::println(std::cerr, "render: --no-sync cannot combine with --live");
       return 1;
     }
+    if (frame_fd_ < 0) {
+      std::println(std::cerr, "render: --live requires --frame-fd (raw frames for the MJPEG viewer)");
+      return 1;
+    }
     loaded.sample_rate_hz = sample_rate_; // carrier is resolved from the stream in stream_envelope_live
   }
   else {
@@ -378,10 +382,10 @@ int RenderCommand::run() const {
   constexpr std::size_t kBlock = std::size_t{1} << 16;
   decoder.prepare(kBlock);
 
+  // The output path is for the file modes; --live streams to --frame-fd, not a file.
   std::filesystem::path output = output_;
-  if (output.empty())
-    output = live_ ? std::filesystem::path{"live.png"}
-                   : std::filesystem::path{std::format("{}.png", loaded.meta_path.stem().string())};
+  if (output.empty() && !live_)
+    output = std::format("{}.png", loaded.meta_path.stem().string());
 
   // Snapshot at field boundaries: in sequence mode quantise and write every Nth
   // as <stem>_NNNN.png; otherwise just latch the boundary state (a float copy)
@@ -396,16 +400,9 @@ int RenderCommand::run() const {
     else
       image::write_png_grey(p, f.pixels, static_cast<unsigned>(f.width), static_cast<unsigned>(f.height));
   };
-  // Live mode overwrites one file via write-temp-then-rename, so a web server (or
-  // any reader) polling it never catches a half-written PNG.
-  const auto save_atomic = [&save](const std::filesystem::path &p, const video::Screen::Frame &f) {
-    auto tmp = p;
-    tmp += ".tmp";
-    save(tmp, f);
-    std::filesystem::rename(tmp, p);
-  };
-  // Raw RGB frames straight to a fd, so a downstream process does the JPEG/MJPEG
-  // encode instead of this deposit thread paying the zlib cost per snapshot.
+  // Live: raw RGB frames straight to a fd, so a downstream process does the
+  // JPEG/MJPEG encode instead of this deposit thread paying the zlib cost per
+  // snapshot.
   const auto write_frame_fd = [fd = frame_fd_](const video::Screen::Frame &f) {
     const auto *bytes = f.pixels.data();
     auto left = f.pixels.size();
@@ -420,17 +417,13 @@ int RenderCommand::run() const {
       left -= static_cast<std::size_t>(n);
     }
   };
-  // ~5 frames/sec at 50 fields/s, throttling PNG encode + disk churn (the
+  // ~5 frames/sec at 50 fields/s, throttling the snapshot + downstream encode (the
   // phosphor still paints every field; this only caps how often we snapshot it).
   const std::size_t live_stride = frame_stride_ != 0 ? frame_stride_ : 10;
   const video::Screen::FieldCallback on_field = [&](const video::Screen::FieldEvent &e) {
     if (live_) {
-      if (fields_seen++ % live_stride == 0) {
-        if (frame_fd_ >= 0)
-          write_frame_fd(e.frame());
-        else
-          save_atomic(output, e.frame());
-      }
+      if (fields_seen++ % live_stride == 0)
+        write_frame_fd(e.frame());
       return;
     }
     if (frame_stride_ == 0) {
@@ -488,7 +481,7 @@ int RenderCommand::run() const {
     std::println("AGC: front-end gain {:.3f}x (sync tip held at 1.0)", decoder.agc_gain());
   const double line_hz = decoder.line_omega() * envelope_rate;
   const double field_hz = decoder.field_omega() * envelope_rate;
-  const auto what = live_ ? std::format("live stream ended; last frame {}", output.string())
+  const auto what = live_ ? std::string{"live stream ended"}
                           : (frame_stride_ > 0 ? std::format("wrote {} frames {}_NNNN.png (every {} fields)", written,
                                                      output.stem().string(), frame_stride_)
                                                : std::format("wrote {}", output.string()));
