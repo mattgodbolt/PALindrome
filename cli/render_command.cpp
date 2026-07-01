@@ -6,7 +6,10 @@
 #include "palindrome/image.hpp"
 #include "palindrome/pipeline_run.hpp"
 
+#include <unistd.h>
+
 #include <algorithm>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -14,6 +17,7 @@
 #include <iostream>
 #include <print>
 #include <span>
+#include <system_error>
 #include <vector>
 
 namespace palindrome::cli {
@@ -152,6 +156,8 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(v_minfield_, "x")["--v-min-field"]("Vertical hold: min field fraction"))
           .add_argument(lyra::opt(frame_stride_, "n")["--frame-stride"](
               "Write a PNG every Nth field boundary (<stem>_NNNN.png); 0 = one image"))
+          .add_argument(lyra::opt(frame_fd_, "fd")["--frame-fd"](
+              "Live: write raw RGB frames (w*h*channels bytes) to this fd instead of a PNG"))
           .add_argument(lyra::opt(no_sync_)["--no-sync"]("Debug: naive-fold the envelope, bypassing sync"))
           .add_argument(
               lyra::opt(no_threads_)["--no-threads"]("Decode serially (default is a threaded stage pipeline)"))
@@ -398,13 +404,33 @@ int RenderCommand::run() const {
     save(tmp, f);
     std::filesystem::rename(tmp, p);
   };
+  // Raw RGB frames straight to a fd, so a downstream process does the JPEG/MJPEG
+  // encode instead of this deposit thread paying the zlib cost per snapshot.
+  const auto write_frame_fd = [fd = frame_fd_](const video::Screen::Frame &f) {
+    const auto *bytes = f.pixels.data();
+    auto left = f.pixels.size();
+    while (left > 0) {
+      const auto n = ::write(fd, bytes, left);
+      if (n < 0) {
+        if (errno == EINTR)
+          continue;
+        throw std::system_error{errno, std::generic_category(), "render: --frame-fd write"};
+      }
+      bytes += n;
+      left -= static_cast<std::size_t>(n);
+    }
+  };
   // ~5 frames/sec at 50 fields/s, throttling PNG encode + disk churn (the
   // phosphor still paints every field; this only caps how often we snapshot it).
   const std::size_t live_stride = frame_stride_ != 0 ? frame_stride_ : 10;
   const video::Screen::FieldCallback on_field = [&](const video::Screen::FieldEvent &e) {
     if (live_) {
-      if (fields_seen++ % live_stride == 0)
-        save_atomic(output, e.frame());
+      if (fields_seen++ % live_stride == 0) {
+        if (frame_fd_ >= 0)
+          write_frame_fd(e.frame());
+        else
+          save_atomic(output, e.frame());
+      }
       return;
     }
     if (frame_stride_ == 0) {
