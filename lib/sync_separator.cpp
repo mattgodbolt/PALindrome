@@ -14,7 +14,10 @@ namespace {
 // floor-to-peak range.
 constexpr double kFixedHysteresis = 0.01;
 constexpr double kSyncHysteresis = 0.05;
-constexpr double kLevelRelease = 0.999999; // ~60 ms settle at 16 MS/s
+// Per-sample RETENTION factor of the trackers (the release rate is 1 - this):
+// ~60 ms settle at 16 MS/s. Named for what it multiplies, so it can't be
+// misread as the rate it is inverted into below.
+constexpr double kLevelRetain = 0.999999;
 } // namespace
 
 SyncSeparator::SyncSeparator(const SyncSeparatorConfig &cfg) : cfg_{cfg} {
@@ -72,7 +75,7 @@ std::span<const SyncSample> SyncSeparator::process_adaptive(std::span<const floa
 
   const double enter_frac = cfg_.sync_level + kSyncHysteresis * 0.5;
   const double leave_frac = cfg_.sync_level - kSyncHysteresis * 0.5;
-  const double release = 1.0 - kLevelRelease;
+  const double release = 1.0 - kLevelRetain;
 
   for (std::size_t k = 0; k < n; ++k) {
     const auto env = static_cast<double>(envelope[k]);

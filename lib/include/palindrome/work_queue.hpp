@@ -2,10 +2,12 @@
 
 #include <condition_variable>
 #include <cstddef>
+#include <exception>
 #include <functional>
 #include <mutex>
 #include <span>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // A persistent pool of worker threads draining a shared work queue. The threads
@@ -42,11 +44,24 @@ public:
   [[nodiscard]] unsigned threads() const noexcept { return threads_; }
 
   // Run every task, returning only once all have completed. `tasks` outlives the
-  // call (run blocks until the batch drains), so the workers reference it.
+  // call (run blocks until the batch drains), so the workers reference it. A
+  // throwing task must neither unwind a worker thread (std::terminate) nor leave
+  // the batch accounting short: the batch still drains, and the first exception
+  // is rethrown here, to the caller - where the pipeline's error funnel sees it.
   void run(std::span<const std::function<void()>> tasks) {
     if (threads_ == 1) {
-      for (const auto &t: tasks)
-        t();
+      std::exception_ptr err;
+      for (const auto &t: tasks) {
+        try {
+          t();
+        }
+        catch (...) {
+          if (!err)
+            err = std::current_exception();
+        }
+      }
+      if (err)
+        std::rethrow_exception(err);
       return;
     }
     std::unique_lock lk{mtx_};
@@ -57,6 +72,8 @@ public:
     drain(lk); // the caller is a participant, not just a waiter
     done_cv_.wait(lk, [this] { return remaining_ == 0; });
     tasks_ = {}; // idle workers' predicate is now false until the next batch
+    if (first_error_)
+      std::rethrow_exception(std::exchange(first_error_, nullptr));
   }
 
 private:
@@ -66,8 +83,16 @@ private:
     while (next_ < tasks_.size()) {
       const auto i = next_++;
       lk.unlock();
-      tasks_[i]();
+      std::exception_ptr err;
+      try {
+        tasks_[i]();
+      }
+      catch (...) {
+        err = std::current_exception();
+      }
       lk.lock();
+      if (err && !first_error_)
+        first_error_ = std::move(err);
       if (--remaining_ == 0)
         done_cv_.notify_one();
     }
@@ -91,6 +116,7 @@ private:
   std::span<const std::function<void()>> tasks_{}; // the current batch (valid during run)
   std::size_t next_ = 0; // next task index to claim
   std::size_t remaining_ = 0; // tasks not yet completed
+  std::exception_ptr first_error_{}; // first task exception of the batch (rethrown by run)
   bool stop_ = false;
 };
 

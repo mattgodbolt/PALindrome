@@ -1,5 +1,7 @@
 #pragma once
 
+#include "cli_util.hpp"
+
 #include <cstddef>
 #include <filesystem>
 #include <functional>
@@ -15,11 +17,12 @@ public:
 
 private:
   int run() const;
+  static constexpr EnvelopeOptions kDefaults{}; // flag defaults come from the library (see RenderCommand)
   std::filesystem::path recording_;
   std::filesystem::path output_;
   double carrier_{0.0}; // 0 => take the vision carrier from metadata
-  double cutoff_{5.0e6}; // baseband low-pass corner
-  std::size_t decimate_{1}; // keep one output sample per this many inputs
+  double cutoff_{kDefaults.cutoff_hz}; // baseband low-pass corner
+  std::size_t decimate_{kDefaults.decimation}; // keep one output sample per this many inputs
   double slowdown_{1000.0}; // WAV is stamped at real output rate / this
 };
 

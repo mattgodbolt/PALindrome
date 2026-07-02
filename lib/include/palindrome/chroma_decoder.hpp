@@ -2,6 +2,7 @@
 
 #include "palindrome/buffer.hpp"
 #include "palindrome/fir.hpp"
+#include "palindrome/phasor.hpp"
 #include "palindrome/video_types.hpp"
 
 #include <complex>
@@ -157,9 +158,8 @@ private:
   // retunes it within ±apc_catch_range_hz of the crystal (see the config);
   // with the pull disabled it stays fixed, the original behaviour.
   double nco_omega_; // cycles/sample (× sample_rate = crystal Hz)
-  std::complex<double> nco_phasor_{1.0, 0.0}; // e^{+i*2π*phase}
+  dsp::Phasor nco_phasor_; // e^{+i*2π*phase} (counted renorm inside)
   std::complex<double> nco_step_; // e^{+i*2π*omega}
-  std::size_t since_renorm_ = 0;
   // Frequency-pull bookkeeping: the reference axis at the previous good line,
   // usable only when that line was the immediately preceding gate close (a
   // VBI/dropout gap would alias the wrapped phase drift, so the pull skips

@@ -56,6 +56,19 @@ TEST_CASE("write_n throws when it exceeds reserved capacity") {
   CHECK(b.write_n(16).size() == 16); // exactly at capacity is fine
 }
 
+TEST_CASE("push extends by one, preserving prior elements, and throws when full") {
+  Buffer<float> b{3};
+  b.push() = 1.0f;
+  b.push() = 2.0f;
+  b.push() = 3.0f;
+  REQUIRE(b.size() == 3);
+  CHECK(b.view()[0] == 1.0f);
+  CHECK(b.view()[1] == 2.0f);
+  CHECK(b.view()[2] == 3.0f);
+  CHECK_THROWS_AS(b.push(), std::length_error);
+  CHECK(b.size() == 3); // a failed push leaves the buffer untouched
+}
+
 TEST_CASE("clear resets the size but keeps the capacity") {
   Buffer<float> b{32};
   (void)b.write_n(20);

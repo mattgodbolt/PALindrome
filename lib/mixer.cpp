@@ -9,9 +9,6 @@ namespace palindrome::dsp {
 
 namespace {
 constexpr double two_pi = 2.0 * std::numbers::pi;
-// Renormalise `base` to unit modulus this often, to shed accumulated rounding
-// drift. One group is kLanes samples, so this is every few thousand samples.
-constexpr unsigned renorm_groups = 1024;
 } // namespace
 
 Mixer::Mixer(double carrier_hz, double sample_rate_hz) {
@@ -58,24 +55,20 @@ Mixer::Iq Mixer::process(std::span<const float> in) {
   // advance pass that can't fuse: benchmarked ~30% slower, so it stays as is.
   std::size_t k = 0;
   for (; k + kLanes <= n; k += kLanes) {
-    mix_group(x + k, ip + k, qp + k, rre, rim, static_cast<float>(base_.real()), static_cast<float>(base_.imag()));
-    base_ = cmul(base_, step_block_);
-    if (++groups_since_renorm_ >= renorm_groups) {
-      base_ /= std::abs(base_);
-      groups_since_renorm_ = 0;
-    }
+    mix_group(x + k, ip + k, qp + k, rre, rim, base_.real_f(), base_.imag_f());
+    base_.advance(step_block_);
   }
 
   // Tail: fewer than kLanes samples. Mix each from the same fixed base — the
   // snapshot (br, bi), never base_ itself — and advance base_ one step per sample
   // in the same pass, so its phase stays exact for the next call.
   const auto r = n - k;
-  const auto br = static_cast<float>(base_.real());
-  const auto bi = static_cast<float>(base_.imag());
+  const auto br = base_.real_f();
+  const auto bi = base_.imag_f();
   for (std::size_t l = 0; l < r; ++l) {
     ip[k + l] = x[k + l] * (br * rre[l] - bi * rim[l]);
     qp[k + l] = x[k + l] * (br * rim[l] + bi * rre[l]);
-    base_ = cmul(base_, step_);
+    base_.advance(step_);
   }
 
   return {i_out_.view(), q_out_.view()};

@@ -12,6 +12,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -42,6 +43,15 @@ constexpr std::size_t kScanSamples = std::size_t{1} << 20; // ~50 ms at 20 MS/s
 constexpr double kScanLoHz = 1.0e6; // a vision IF never sits below ~1 MHz on either SDR's plan
 constexpr double kNyquistGuard = 0.95; // stay off the anti-alias roll-off at the top of the band
 
+// No default: a new CarrierScanError fails to compile until it's worded here.
+[[nodiscard]] std::string_view describe(demod::CarrierScanError err) {
+  switch (err) {
+    case demod::CarrierScanError::too_few_samples: return "not enough samples to scan";
+    case demod::CarrierScanError::no_signal: return "no spectral energy in the band";
+  }
+  std::unreachable();
+}
+
 // Read up to `n_samples` real int16 from the head of `data_path`, scaled to
 // [-1, 1) - enough signal for a coarse carrier scan without streaming the file.
 std::vector<float> read_head(const std::filesystem::path &data_path, std::size_t n_samples) {
@@ -63,9 +73,16 @@ std::vector<float> read_head(const std::filesystem::path &data_path, std::size_t
 // vision carrier is the dominant line within it. The block is long on purpose:
 // finer bins separate the pure carrier line from its close-in video-modulation
 // sidebands, which a short block blurs together and the peak then sits between.
+// For a FILE a failed scan is terminal (the recording is what it is), so the
+// expected converts to a throw here; the live path retries instead.
 double scan_vision_carrier(const std::filesystem::path &data_path, double sample_rate_hz) {
   const auto head = read_head(data_path, kScanSamples);
-  return demod::find_vision_carrier(head, sample_rate_hz, kScanLoHz, kNyquistGuard * sample_rate_hz / 2.0);
+  const auto carrier =
+      demod::find_vision_carrier(head, sample_rate_hz, kScanLoHz, kNyquistGuard * sample_rate_hz / 2.0);
+  if (!carrier)
+    throw std::runtime_error{
+        std::format("no vision carrier found in {}: {}", data_path.string(), describe(carrier.error()))};
+  return *carrier;
 }
 } // namespace
 
@@ -226,13 +243,31 @@ EnvelopeStream stream_envelope_live(double sample_rate_hz, double carrier_overri
 
   // Resolve the carrier. With no metadata on a live stream, scan the opening
   // samples - but stdin can't be rewound, so the scanned head is replayed
-  // through the front end below rather than discarded.
+  // through the front end below rather than discarded. A head with nothing to
+  // find (the SDR still warming up, squelch, a tuning gap) is an expected live
+  // event, not an error: keep reading and rescanning over the growing head,
+  // bounded so a genuinely dead stream still fails with a message.
   std::vector<float> head;
   result.carrier_hz = carrier_override;
   if (!(carrier_override > 0.0)) {
+    constexpr std::size_t kMaxScanSamples = kScanSamples * 8; // ~0.4 s at 20 MS/s
     head = read_stdin_head(kScanSamples);
-    result.carrier_hz =
-        demod::find_vision_carrier(head, sample_rate_hz, kScanLoHz, kNyquistGuard * sample_rate_hz / 2.0);
+    for (;;) {
+      const auto carrier =
+          demod::find_vision_carrier(head, sample_rate_hz, kScanLoHz, kNyquistGuard * sample_rate_hz / 2.0);
+      if (carrier) {
+        result.carrier_hz = *carrier;
+        break;
+      }
+      if (head.size() >= kMaxScanSamples)
+        throw std::runtime_error{
+            std::format("no vision carrier in the first {} live samples: {}", head.size(), describe(carrier.error()))};
+      const auto more = read_stdin_head(kScanSamples);
+      if (more.empty())
+        throw std::runtime_error{
+            std::format("live stream ended before a vision carrier was found: {}", describe(carrier.error()))};
+      head.insert(head.end(), more.begin(), more.end());
+    }
   }
 
   auto fe = make_front_end(sample_rate_hz, result.carrier_hz, opts, block_samples, result.warnings);

@@ -1,6 +1,5 @@
 #include "palindrome/chroma_decoder.hpp"
 
-#include "palindrome/cmul.hpp"
 #include "palindrome/phase.hpp"
 
 #include <algorithm>
@@ -126,7 +125,11 @@ void ChromaDecoder::finalize_line() {
   // Colour-killer: a slow-decay peak tracks the live burst level; lines whose
   // burst is well below it (the vertical-interval/VBI lines, dropouts) carry no
   // colour. Skip them entirely — don't move the APC or rotation — and hold the
-  // last good line's rotation across the gap.
+  // last good line's rotation across the gap. The 0.9995/line decay forgets the
+  // peak over ~2000 lines (~a tenth of a second), so after a genuine burst loss
+  // noise lines start passing the 0.3 gate within that window and their random
+  // swing kills the colour; 0.3 sits far below any real line-to-line burst
+  // variation, so VBI lines are the only thing it rejects in normal running.
   burst_ref_ = std::max(burst_ref_ * 0.9995, mag);
   ++gate_closes_;
   if (mag < 0.3 * burst_ref_)
@@ -201,7 +204,11 @@ void ChromaDecoder::finalize_line() {
 
 std::span<const ChromaSample> ChromaDecoder::process(
     std::span<const float> envelope, std::span<const BeamSample> hbeam) {
-  const std::size_t n = std::min(envelope.size(), hbeam.size());
+  // Both rails are per-sample views of one block, so a length mismatch can only
+  // be a wiring bug - fail loudly rather than silently decode a short line.
+  const std::size_t n = envelope.size();
+  if (hbeam.size() != n) [[unlikely]]
+    throw std::invalid_argument{"ChromaDecoder: envelope and hbeam rails must be the same length"};
   const auto out = out_.write_n(n);
 
   // The APC frequency pull feeds BACK into pass 1's mix, so a retune must take
@@ -254,15 +261,9 @@ void ChromaDecoder::decode_segment(
     // Snapshot the phasor down to float for the per-sample mix; it still advances
     // in double (drift), but the product only needs float (see the precision rule
     // in CLAUDE.md), as the ComplexAmEnvelope mix already does.
-    const auto re = static_cast<float>(nco_phasor_.real());
-    const auto im = static_cast<float>(nco_phasor_.imag());
-    mu[k] = chroma[k] * re;
-    mv[k] = chroma[k] * im;
-    nco_phasor_ = dsp::cmul(nco_phasor_, nco_step_);
-    if (++since_renorm_ >= 1024) {
-      nco_phasor_ /= std::abs(nco_phasor_);
-      since_renorm_ = 0;
-    }
+    mu[k] = chroma[k] * nco_phasor_.real_f();
+    mv[k] = chroma[k] * nco_phasor_.imag_f();
+    nco_phasor_.advance(nco_step_);
   }
 
   // Pass 2: band-limit the quadratures to the chroma bandwidth (this is where the

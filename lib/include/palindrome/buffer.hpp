@@ -78,10 +78,24 @@ public:
   // exceeds capacity() -- the stage was handed a bigger block than prepare()
   // budgeted for. No allocation, no zero-init, no capacity branch in the loop.
   [[nodiscard]] std::span<T> write_n(std::size_t n) {
-    if (n > capacity_)
+    if (n > capacity_) [[unlikely]]
       throw std::length_error("Buffer::write_n exceeds reserved capacity");
     size_ = n;
     return {data(), n};
+  }
+
+  // Extend by one and return the new slot to store into (contents unspecified,
+  // like write_n's). Capacity is still the caller's job (throws like write_n
+  // when full), so the no-allocation contract of the streaming path holds; this
+  // exists so appenders don't reach through write_n(size()+1), whose span's
+  // PREVIOUS contents are unspecified. Slot-returning rather than value-taking:
+  // the splat recorder assigns a braced 24-byte record straight into the slot,
+  // where a by-value/by-ref append measured ~3% of the serial decode
+  // materialising the temporary first.
+  [[nodiscard]] T &push() {
+    if (size_ >= capacity_) [[unlikely]]
+      throw std::length_error("Buffer::push exceeds reserved capacity");
+    return data()[size_++]; // via data() for the same alignment promise write_n makes
   }
 
   void clear() noexcept { size_ = 0; }

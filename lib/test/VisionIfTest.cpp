@@ -112,7 +112,8 @@ TEST_CASE("find_vision_carrier recovers the carrier of an AM signal") {
                               + 0.2 * std::cos(two_pi * (kFc + 6.0e6) * t)); // sound
   }
   const auto found = demod::find_vision_carrier(x, kRate, 1.0e6, 9.5e6);
-  CHECK_THAT(found, WithinAbs(kFc, 20.0)); // sub-bin: within 20 Hz of 3.0517 MHz
+  REQUIRE(found.has_value());
+  CHECK_THAT(*found, WithinAbs(kFc, 20.0)); // sub-bin: within 20 Hz of 3.0517 MHz
 }
 
 TEST_CASE("find_vision_carrier rejects bad parameters") {
@@ -120,9 +121,19 @@ TEST_CASE("find_vision_carrier rejects bad parameters") {
   CHECK_THROWS_AS(demod::find_vision_carrier(x, 0.0, 1.0e6, 5.0e6), std::invalid_argument); // rate
   CHECK_THROWS_AS(demod::find_vision_carrier(x, kRate, 5.0e6, 1.0e6), std::invalid_argument); // lo >= hi
   CHECK_THROWS_AS(demod::find_vision_carrier(x, kRate, 1.0e6, kRate), std::invalid_argument); // hi >= Nyquist
-  std::vector<float> one(1, 0.0f);
-  CHECK_THROWS_AS(demod::find_vision_carrier(one, kRate, 1.0e6, 5.0e6), std::invalid_argument); // too short
-  CHECK_THROWS_AS(demod::find_vision_carrier(x, kRate, 1.0e6, 5.0e6), std::invalid_argument); // all-zero: no energy
+}
+
+TEST_CASE("find_vision_carrier reports data it can't scan as errors, not throws") {
+  // Data outcomes come back as CarrierScanError so the live path can read more
+  // signal and retry; only caller errors (above) throw.
+  const std::vector<float> one(1, 0.0f);
+  const auto too_short = demod::find_vision_carrier(one, kRate, 1.0e6, 5.0e6);
+  REQUIRE_FALSE(too_short.has_value());
+  CHECK(too_short.error() == demod::CarrierScanError::too_few_samples);
+  const std::vector<float> silent(4096, 0.0f);
+  const auto no_signal = demod::find_vision_carrier(silent, kRate, 1.0e6, 5.0e6);
+  REQUIRE_FALSE(no_signal.has_value());
+  CHECK(no_signal.error() == demod::CarrierScanError::no_signal);
 }
 
 TEST_CASE("VisionIf is one-sided: a bare carrier gives a flat envelope at the flank level") {

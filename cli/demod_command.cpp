@@ -20,7 +20,8 @@ void DemodCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
   cli.add_argument(lyra::command("demod", [this, &action](const lyra::group &) { action = [this] { return run(); }; })
           .help("AM-demodulate a recording's vision carrier to a WAV for inspection")
           .add_argument(lyra::opt(output_, "file")["-o"]["--output"]("Output WAV (default: <recording>.wav)"))
-          .add_argument(lyra::opt(carrier_, "hz")["--carrier"]("Carrier Hz (default: rx888:vision_if_hz)"))
+          .add_argument(lyra::opt(carrier_, "hz")["--carrier"](
+              "Carrier Hz (default: the metadata's vision_if_hz, or a signal scan if it has none)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 output sample per N inputs"))
           .add_argument(lyra::opt(slowdown_, "factor")["--slowdown"]("Stamp WAV rate as output/factor"))

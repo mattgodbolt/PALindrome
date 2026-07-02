@@ -1,6 +1,6 @@
 ensure_catch2()
 
-add_executable(palindrome_test SigmfTest.cpp DemodTest.cpp FirTest.cpp MixerTest.cpp BiquadTest.cpp DcBlockerTest.cpp WavTest.cpp ImageTest.cpp BufferTest.cpp PipelineTest.cpp PipelineRunTest.cpp RestrictPtrTest.cpp PhaseTest.cpp GaussianTest.cpp VideoTest.cpp VisionIfTest.cpp FftTest.cpp SplatTest.cpp)
+add_executable(palindrome_test SigmfTest.cpp DemodTest.cpp FirTest.cpp MixerTest.cpp BiquadTest.cpp DcBlockerTest.cpp WavTest.cpp ImageTest.cpp BufferTest.cpp PipelineRunTest.cpp RestrictPtrTest.cpp PhaseTest.cpp GaussianTest.cpp VideoTest.cpp VisionIfTest.cpp FftTest.cpp SplatTest.cpp)
 target_link_libraries(palindrome_test PRIVATE palindrome Catch2::Catch2WithMain opt::pedantic)
 
 # Point the corpus-loading test at the real committed .sigmf-meta files.

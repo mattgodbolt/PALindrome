@@ -79,7 +79,10 @@ samples?* → `double`; otherwise `float`, and snapshot any `double` it touches.
   of lossy float ops. The Mixer already lives here (block-invariant only to ~1e-7,
   tested with a tolerance, not `==`). When you make that trade: switch that stage's
   block-invariance test from `==` to a tolerance, say why in the comment, and
-  regenerate the golden image - it's a regression *tool*, not a contract.
+  re-baseline the reference renders (there is no automated golden-image harness:
+  the "golden" is a corpus render, hash-compared before/after and re-verified by
+  eye or the blind-verification workflow when it legitimately changes) - it's a
+  regression *tool*, not a contract.
 
   Two things stay strict, because keeping them costs nothing: (1) **thread /
   scheduling invariance** - the threaded `render` pins each stage to one in-order

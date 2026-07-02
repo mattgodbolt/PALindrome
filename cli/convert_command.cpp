@@ -3,6 +3,7 @@
 #include <iostream>
 #include <print>
 #include <string_view>
+#include <utility>
 
 namespace palindrome::cli {
 
@@ -12,10 +13,13 @@ struct Names {
   std::string_view help;
 };
 
+// No default: a new Direction fails to compile until it's named here.
 Names names_for(ConvertCommand::Direction direction) {
-  if (direction == ConvertCommand::Direction::Encode)
-    return {"encode", "Encode an input into a PAL signal"};
-  return {"decode", "Decode a PAL signal back to an image"};
+  switch (direction) {
+    case ConvertCommand::Direction::Encode: return {"encode", "Encode an input into a PAL signal"};
+    case ConvertCommand::Direction::Decode: return {"decode", "Decode a PAL signal back to an image"};
+  }
+  std::unreachable();
 }
 } // namespace
 

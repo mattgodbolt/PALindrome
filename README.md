@@ -1,6 +1,9 @@
 ## PALindrome
 
-Convert to and from PAL with a variety of techniques to try and capture that authentic 1980s/1990s vibe in your emulator.
+Decode real PAL RF - captured off a console with an SDR - the way a 1980s
+television did, to recreate that authentic 1980s/1990s look. (The eventual goal
+includes encoding back to PAL for emulators; the `encode`/`decode` subcommands
+are stubs today - `render` is the working end.)
 
 ## Where we're at
 
@@ -43,6 +46,22 @@ references chroma to it, blanking hides the retrace, and the RGB matrix matches
 the TDA3561A datasheet. Both SDRs decode
 colour with the same default burst gate - the AirSpy's old per-SDR skew was a
 10 MS/s near-Nyquist artifact, gone now it captures the channel at 20 MS/s.
+
+## Building
+
+Needs CMake 3.30+, Ninja, and g++-15 (pinned by `cmake/toolchains/gcc.cmake`;
+the project is C++26). All third-party dependencies arrive via CPM (see Notes) -
+no system packages. The `corpus/*.sigmf-data` masters are git-LFS objects, so
+`git lfs pull` before decoding anything.
+
+```
+cmake --preset release && cmake --build --preset release
+ctest --preset release
+build/release/cli/palindrome render corpus/wb3_airspy --colour -o /tmp/wb3.png
+```
+
+Presets: `debug`, `release` (RelWithDebInfo, LTO, `-march=native`), and
+`sanitize` (ASan+UBSan).
 
 ## Capturing reference clips
 
@@ -357,7 +376,17 @@ debugging/inspection tool. Flags: `--carrier`, `--cutoff`, `--decimate`,
 histogram (line-sync vs the vertical-interval broad/equalising pulses), the
 line-sync spacing jitter, the vertical field structure (broad-pulse runs, field
 period), and the horizontal/vertical locks. No picture - just the numbers that
-tell you whether the sync chain is healthy.
+tell you whether the sync chain is healthy. Note `sync` (and `demod`) read the
+signal through the legacy flat front end - the ideal low-pass - so the
+microscope measures the signal itself, not a SAW curve; `render`'s default IF
+is `saw80`.
+
+### `info` - what a recording is
+
+`palindrome info corpus/wb3` summarises a SigMF recording: datatype, sample
+rate, duration, and the capture metadata (including the `rx888:*`/`airspy:*`
+carrier fields the decoder reads). The quick "what is this file" check before
+reaching for `inspect_capture.py`'s deeper signal QC.
 
 ### `tools/tune.py` - dialling the knobs
 
@@ -370,6 +399,23 @@ sequence it produces. It binds `0.0.0.0` by default so you can drive it from
 another machine (`--host`, `--port`, `--binary` to override); it's
 unauthenticated, so keep it to a trusted network. Every knob it offers is just a
 `render` flag, so anything you settle on is reproducible from the CLI.
+
+### `render --live` + `tools/live_view.py` - the live decode
+
+`render --live` decodes a continuous real-int16 SDR stream from stdin instead
+of a recording: the vision carrier is scanned off the opening samples (a live
+pipe has no metadata - and a silent warm-up head just extends the scan), and
+decoded frames leave as raw RGB writes on `--frame-fd`, so the decoder stays a
+plain CLI and whoever owns the fd does the image encoding. `--frame-stride`
+sets the snapshot cadence (default every 5th field, ~10 fps);
+`--deposit-threads 8` buys the real-time margin at 20 MS/s colour.
+
+`tools/live_view.py` wires the whole thing up: it spawns
+`airspy_rx -r /dev/stdout | palindrome render --live --frame-fd ...`,
+JPEG-encodes the frames off the pipe (keeping the encode out of the decoder),
+and serves an MJPEG stream the browser renders as live video in a plain
+`<img>`. `tools/live_view.py --frequency <vision carrier> --gain 9` and open
+`http://localhost:8080`.
 
 ## Roadmap
 
@@ -397,12 +443,15 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
   rewrite of the DSP loops (see the SIMD note).
 - **Multi-threading.** ✅ `render` runs a 3-stage stdexec pipeline (front-end |
   decode | screen), default-on, bit-identical to serial, bounded-memory
-  (`--no-threads` for serial). The colour decode is front-end-bound today (the
-  vision-IF FIR), so further speed lives in the DSP loops, not the screen.
-- **Live mode.** The whole point: decode a live RF stream off the SDR, not just
-  finite corpus files. The graph is bounded-memory and block-driven for exactly
-  this, and the front end now finds its own carrier by spectrum scan (no
-  metadata needed; `--scan`) - the first brick of a metadata-free live decode.
+  (`--no-threads` for serial), plus a per-field threaded splat deposit
+  (`--deposit-threads`). Where the time goes is recorded in
+  `docs/performance.md` - a BALANCED pipeline (source ≈ decode ≈ deposit), so
+  further speed comes from cutting total work, not re-staging.
+- **Live mode.** ✅ First light: `render --live` decodes a continuous SDR
+  stream off stdin (carrier scanned, no metadata) and `tools/live_view.py`
+  serves it as browser MJPEG, in colour, in real time (~13% margin at 20 MS/s -
+  see above). Remaining: continuous AFC drift tracking for long sessions
+  (issue #58) and a higher snapshot-cadence ceiling (issue #56).
 
 ## Backlog
 

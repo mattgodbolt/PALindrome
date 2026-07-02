@@ -1,6 +1,5 @@
 #include "palindrome/demod.hpp"
 
-#include "palindrome/cmul.hpp"
 #include "palindrome/fft.hpp"
 #include "palindrome/restrict_ptr.hpp"
 
@@ -9,6 +8,7 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <expected>
 #include <numbers>
 #include <span>
 #include <stdexcept>
@@ -232,7 +232,8 @@ IfTemplate saw90_template() {
   };
 }
 
-double find_vision_carrier(std::span<const float> samples, double sample_rate_hz, double lo_hz, double hi_hz) {
+std::expected<double, CarrierScanError> find_vision_carrier(
+    std::span<const float> samples, double sample_rate_hz, double lo_hz, double hi_hz) {
   if (!(sample_rate_hz > 0.0))
     throw std::invalid_argument{"find_vision_carrier: sample rate must be positive"};
   if (!(lo_hz >= 0.0) || !(hi_hz > lo_hz) || !(hi_hz < sample_rate_hz / 2.0))
@@ -243,7 +244,7 @@ double find_vision_carrier(std::span<const float> samples, double sample_rate_hz
   // bound never underflows (it is unsigned); the parabolic refine then always
   // has both neighbours of any peak it picks.
   if (n < 4)
-    throw std::invalid_argument{"find_vision_carrier: need at least 4 samples"};
+    return std::unexpected{CarrierScanError::too_few_samples};
 
   // Hann-window the block before the transform: the carrier is a strong line on
   // a broad video pedestal, and the window's low sidelobes stop that pedestal's
@@ -278,7 +279,7 @@ double find_vision_carrier(std::span<const float> samples, double sample_rate_hz
     }
   }
   if (!(best > 0.0))
-    throw std::invalid_argument{"find_vision_carrier: no spectral energy in the band"};
+    return std::unexpected{CarrierScanError::no_signal};
 
   // Parabolic interpolation through the log of the three bins: a windowed line's
   // main lobe is near-Gaussian, so the parabola's vertex lands on the true
@@ -340,8 +341,8 @@ void VisionIf::quasi_sync_detect(
   for (std::size_t k = 0; k < n; ++k) {
     // Snapshot the double phasor down to float at the point of use; the video
     // is per-sample flow, only the phase is the accumulator.
-    const auto pr = static_cast<float>(nco_.real());
-    const auto pim = static_cast<float>(nco_.imag());
+    const auto pr = nco_.real_f();
+    const auto pim = nco_.imag_f();
     const float yr = i[k] * pr - q[k] * pim;
     const float yi = i[k] * pim + q[k] * pr;
     out[k] = 2.0f * yr;
@@ -354,17 +355,9 @@ void VisionIf::quasi_sync_detect(
     // the RX888 corpus did.
     const double e = static_cast<double>(yi * inv[k]);
     freq_ = std::clamp(freq_ + kQsKi * e, -kQsMaxFreq, kQsMaxFreq);
-    // Advance by the nominal carrier, then trim by the loop: a first-order
-    // rotation (1 - j*a) is exact enough for the tiny correction angle, and
-    // the renorm below absorbs its second-order magnitude drift - the same
-    // idiom as ComplexAmEnvelope's mix phasor.
-    const double a = kQsKp * e + freq_;
-    nco_ = dsp::cmul(nco_, step_);
-    nco_ = std::complex<double>{nco_.real() + a * nco_.imag(), nco_.imag() - a * nco_.real()};
-    if (++since_renorm_ >= 1024) {
-      nco_ /= std::abs(nco_);
-      since_renorm_ = 0;
-    }
+    // Advance by the nominal carrier, then trim by the loop (the locked-loop
+    // NCO idiom Phasor carries - the same as ComplexAmEnvelope's mix phasor).
+    nco_.advance_trimmed(step_, kQsKp * e + freq_);
   }
 }
 
@@ -416,15 +409,11 @@ std::span<const float> ComplexAmEnvelope::process(std::span<const std::complex<f
     dc_prev_out_re_ = hp_re;
     dc_prev_out_im_ = hp_im;
 
-    const std::complex<float> p{static_cast<float>(phasor_.real()), static_cast<float>(phasor_.imag())};
+    const std::complex<float> p{phasor_.real_f(), phasor_.imag_f()};
     const std::complex<float> m = std::complex<float>{static_cast<float>(hp_re), static_cast<float>(hp_im)} * p;
     mi[k] = m.real();
     mq[k] = m.imag();
-    phasor_ = dsp::cmul(phasor_, step_);
-    if (++since_renorm_ >= 1024) {
-      phasor_ /= std::abs(phasor_); // keep |phasor_| == 1 against accumulated drift
-      since_renorm_ = 0;
-    }
+    phasor_.advance(step_);
   }
 
   const auto filtered_i = i_filter_.process(mi);

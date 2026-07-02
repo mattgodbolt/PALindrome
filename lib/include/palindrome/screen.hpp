@@ -23,7 +23,9 @@ struct ScreenConfig {
   // brightness where it lands; each pixel then decays exponentially with this
   // time constant. ~1 field means roughly the last two fields survive — so an
   // interlaced frame builds up and older content (and the startup junk) fades.
-  double persistence_fields = 1.2;
+  // This (and beam_sigma below) IS the shipped look: the CLI defaults its flags
+  // from these members, so there is exactly one place to retune.
+  double persistence_fields = 1.6;
   // Beam-spot size: each sample is splatted with a round 2-D Gaussian of this
   // standard deviation. beam_sigma is the vertical extent in SCANLINE PITCHES
   // (the spacing between a field's lines on the output raster) — the spot is a
@@ -31,8 +33,9 @@ struct ScreenConfig {
   // output height or the overscan window does. ~0.5 fills the gaps between
   // scanlines (the focus). beam_sigma_cols is the horizontal extent in output
   // columns and defaults to match the derived row sigma (a round spot) when
-  // negative. 0 => a single pixel (no splat) on that axis.
-  double beam_sigma = 0.43;
+  // negative. 0 => a single pixel (no splat) on that axis. 0.52 ~ the old 1.1
+  // rows: wide enough to also mask the per-field-decay interlace comb.
+  double beam_sigma = 0.52;
   double beam_sigma_cols = -1.0; // < 0 => match the derived row sigma (round spot)
   // Electron-gun gamma: beam current rises as drive^gamma. The source pre-distorts
   // its video (~1/2.2) expecting a CRT to undo it, so ~2.2-2.8 restores the

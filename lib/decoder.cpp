@@ -36,6 +36,20 @@ template<class C>
     return std::nullopt;
   return Agc{with_rate(cfg.agc, cfg.sample_rate_hz)};
 }
+
+// The screen carries the caller's config plus the genuinely derived fields:
+// the shared rate, the colour/level switches (stamped so they can't be
+// half-mixed with the decode side's), and the picture registration - in colour
+// the picture rail lags the timing rails by the chroma group delay; mono is
+// the raw envelope (no lag).
+[[nodiscard]] ScreenConfig screen_config(const DecoderConfig &cfg, const ChromaDecoder &chroma) {
+  auto sc = cfg.screen;
+  sc.sample_rate_hz = cfg.sample_rate_hz;
+  sc.colour = cfg.colour;
+  sc.tracked_white = cfg.agc_mode == AgcMode::adaptive;
+  sc.picture_lag_samples = cfg.colour ? static_cast<double>(chroma.group_delay_samples()) : 0.0;
+  return sc;
+}
 } // namespace
 
 Decoder::Decoder(const DecoderConfig &cfg) :
@@ -43,35 +57,7 @@ Decoder::Decoder(const DecoderConfig &cfg) :
     sync_lp_{dsp::lowpass_kernel(kSyncLpTaps, cfg.sample_rate_hz, cfg.sync_lp_cutoff_hz)},
     sep_{with_mode(with_rate(cfg.sep, cfg.sample_rate_hz), cfg.agc_mode)},
     hsweep_{with_rate(cfg.hsweep, cfg.sample_rate_hz)}, vsync_{with_rate(cfg.vsync, cfg.sample_rate_hz)},
-    chroma_{with_rate(cfg.chroma, cfg.sample_rate_hz)},
-    screen_{ScreenConfig{.width = cfg.width,
-        .height = cfg.height,
-        .sample_rate_hz = cfg.sample_rate_hz,
-        .persistence_fields = cfg.persistence_fields,
-        .beam_sigma = cfg.beam_sigma,
-        .beam_sigma_cols = cfg.beam_sigma_cols,
-        .gamma = cfg.gamma,
-        .colour = cfg.colour,
-        .saturation = cfg.saturation,
-        .contrast = cfg.contrast,
-        .tracked_white = cfg.agc_mode == AgcMode::adaptive,
-        .pwl_threshold = cfg.pwl_threshold,
-        .readout_gamma = cfg.readout_gamma,
-        .h_blank = cfg.h_blank,
-        // Register the picture: in colour it lags the timing rails by the chroma
-        // group delay. Mono is the raw envelope (no lag).
-        .picture_lag_samples = cfg.colour ? static_cast<double>(chroma_.group_delay_samples()) : 0.0,
-        .h_window_lo = cfg.h_window_lo,
-        .h_window_hi = cfg.h_window_hi,
-        .v_window_lo = cfg.v_window_lo,
-        .v_window_hi = cfg.v_window_hi,
-        .eht_sag = cfg.eht_sag,
-        .eht_tc_fields = cfg.eht_tc_fields,
-        .eht_focus = cfg.eht_focus,
-        .line_pull = cfg.line_pull,
-        .bcl_threshold = cfg.bcl_threshold,
-        .bcl_tc_fields = cfg.bcl_tc_fields,
-        .deposit_lanes = cfg.deposit_lanes}} {}
+    chroma_{with_rate(cfg.chroma, cfg.sample_rate_hz)}, screen_{screen_config(cfg, chroma_)} {}
 
 void Decoder::prepare(std::size_t max_in) {
   if (agc_)

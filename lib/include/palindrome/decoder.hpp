@@ -21,8 +21,6 @@ namespace palindrome::video {
 
 struct DecoderConfig {
   double sample_rate_hz;
-  std::size_t width;
-  std::size_t height;
   // The sync separator slices a low-passed copy of the envelope, not the full
   // one: sync only needs the slow pulse shapes, and the chroma/HF that the
   // picture rail keeps would otherwise chatter the slicer (badly so on a noisy
@@ -43,39 +41,16 @@ struct DecoderConfig {
   // switch so the modes can't be half-mixed.
   AgcMode agc_mode = AgcMode::sync_tip;
   AgcConfig agc{}; // sample_rate_hz filled in at construction
-  // Peak-white limiter threshold (see ScreenConfig::pwl_threshold); only
-  // meaningful with sync_tip levels. 0 disables.
-  double pwl_threshold = 1.25;
-  // Phosphor persistence, in field periods (see ScreenConfig). Higher evens out
-  // the brightness between the two interlaced fields; lower sharpens motion.
-  double persistence_fields = 1.2;
-  // Beam-spot size (see ScreenConfig::beam_sigma — in scanline pitches — and
-  // beam_sigma_cols). cols < 0 => round.
-  double beam_sigma = 0.43;
-  double beam_sigma_cols = -1.0;
-  double gamma = 1.0; // electron-gun gamma (see ScreenConfig::gamma)
   // Colour: decode chroma and render an RGB triad. Off => the grey rail (the
-  // luma envelope straight to the screen, chroma untouched). saturation scales
-  // the colour-difference signals into the gun matrix (see ScreenConfig).
+  // luma envelope straight to the screen, chroma untouched). Stamped into the
+  // screen config too, so the pair can't be half-mixed.
   bool colour = false;
-  double saturation = 1.0;
-  double contrast = 1.0; // readout white point (see ScreenConfig::contrast)
-  double readout_gamma = 1.0; // the PNG "camera" encode (see ScreenConfig::readout_gamma)
-  double eht_sag = 0.0; // beam loading (see ScreenConfig): EHT sag at full white
-  double eht_tc_fields = 2.0; // sag/recovery time constant, field periods
-  double eht_focus = 0.3; // spot growth at full sag
-  double line_pull = 0.0; // per-line width stretch after a full-white line
-  double bcl_threshold = 0.0; // beam-current limiter: average-load threshold (0 = off)
-  double bcl_tc_fields = 0.5; // BCL response time constant
-  double h_blank = 0.16; // retrace blanking end, h_phase (see ScreenConfig::h_blank)
-  // The scan window mapped to the frame (see ScreenConfig) — the driver derives
-  // these from its overscan setting; [0,1]x[0,1] shows the whole scan.
-  double h_window_lo = 0.0;
-  double h_window_hi = 1.0;
-  double v_window_lo = 0.0;
-  double v_window_hi = 1.0;
   ChromaDecoderConfig chroma{}; // sample_rate_hz filled in at construction
-  std::size_t deposit_lanes = 1; // screen deposit threads (see ScreenConfig::deposit_lanes); 1 = serial
+  // The CRT, like the other sub-stage configs. The genuinely derived fields are
+  // stamped at construction - sample_rate_hz, colour, tracked_white (from
+  // agc_mode) and picture_lag_samples (the chroma path's group delay) - so
+  // leave those alone here and set everything else directly.
+  ScreenConfig screen{};
 };
 
 // The decode stages' output for one block: the picture rail plus the two timing

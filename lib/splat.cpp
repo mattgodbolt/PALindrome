@@ -124,11 +124,8 @@ void SplatDeposit::bin(std::span<const SplatRecord> recs) {
       continue; // fully off-frame: no band
     const unsigned b_lo = row_band_[static_cast<std::size_t>(lo)];
     const unsigned b_hi = row_band_[static_cast<std::size_t>(hi - 1)];
-    for (unsigned b = b_lo; b <= b_hi; ++b) {
-      auto &bucket = buckets_[b];
-      const auto out = bucket.write_n(bucket.size() + 1); // append (capacity from prepare)
-      out.back() = static_cast<std::uint32_t>(i);
-    }
+    for (unsigned b = b_lo; b <= b_hi; ++b)
+      buckets_[b].push() = static_cast<std::uint32_t>(i); // capacity from prepare
   }
 }
 

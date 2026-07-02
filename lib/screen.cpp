@@ -23,55 +23,85 @@ constexpr double kSystemIWhiteDrive = 0.76 - 0.20;
 // gain returns from a deep limit over roughly half a field once the overdrive
 // clears. Attack is per-line (the charge path is fast by design).
 constexpr double kPwlRecover = 1.005;
-} // namespace
 
-Screen::Screen(const ScreenConfig &cfg) :
-    cfg_{cfg}, channels_{cfg.colour ? std::size_t{3} : std::size_t{1}}, tracking_{cfg.tracked_white},
-    bright_(cfg.width * cfg.height * (cfg.colour ? 3 : 1), 0.0f) {
-  if (cfg_.width == 0 || cfg_.height == 0)
+// Validated on the way into the first mem-initialiser (the ChromaDecoder
+// pattern), so a bad config throws before the width*height framebuffer - whose
+// product an absurd config could overflow - is ever sized.
+const ScreenConfig &validate(const ScreenConfig &cfg) {
+  if (cfg.width == 0 || cfg.height == 0)
     throw std::invalid_argument{"Screen: width and height must be positive"};
   // Splat positions are stored as int16 in SplatRecord (floor of the beam x/y,
   // which overscan magnification and the yoke tilt push a little past the frame).
   // Bound the dimensions well inside int16 so that can never overflow silently.
-  if (cfg_.width > 16384 || cfg_.height > 16384)
+  if (cfg.width > 16384 || cfg.height > 16384)
     throw std::invalid_argument{"Screen: width and height must be <= 16384 (splat coordinates are int16)"};
-  if (!(cfg_.saturation >= 0.0))
+  if (!(cfg.saturation >= 0.0))
     throw std::invalid_argument{"Screen: saturation must be non-negative"};
-  if (!(cfg_.sample_rate_hz > 0.0 && cfg_.field_hz > 0.0))
+  if (!(cfg.sample_rate_hz > 0.0 && cfg.field_hz > 0.0))
     throw std::invalid_argument{"Screen: sample_rate_hz and field_hz must be positive"};
   // Upper bound keeps the per-field decay safely away from a degenerate 1.0
   // (no fade); 64 fields is already far longer than any real phosphor.
-  if (!(cfg_.persistence_fields > 0.0 && cfg_.persistence_fields <= 64.0))
+  if (!(cfg.persistence_fields > 0.0 && cfg.persistence_fields <= 64.0))
     throw std::invalid_argument{"Screen: persistence_fields must be in (0, 64]"};
-  if (!(cfg_.beam_sigma >= 0.0))
+  if (!(cfg.beam_sigma >= 0.0))
     throw std::invalid_argument{"Screen: beam_sigma must be non-negative"};
-  if (!(cfg_.nominal_line_hz > cfg_.field_hz))
+  if (!(cfg.nominal_line_hz > cfg.field_hz))
     throw std::invalid_argument{"Screen: nominal_line_hz must exceed field_hz"};
-  if (!(cfg_.h_window_lo < cfg_.h_window_hi && cfg_.v_window_lo < cfg_.v_window_hi))
+  if (!(cfg.h_window_lo < cfg.h_window_hi && cfg.v_window_lo < cfg.v_window_hi))
     throw std::invalid_argument{"Screen: scan windows need lo < hi"};
-  if (!(cfg_.readout_gamma > 0.0))
+  if (!(cfg.readout_gamma > 0.0))
     throw std::invalid_argument{"Screen: readout_gamma must be positive"};
-  if (!(cfg_.eht_sag >= 0.0 && cfg_.eht_sag < 0.5))
+  if (!(cfg.eht_sag >= 0.0 && cfg.eht_sag < 0.5))
     throw std::invalid_argument{"Screen: eht_sag must be in [0, 0.5)"};
   // Lower bound keeps the per-line integrator step alpha = 1/(tc * lines per
   // field) at or below 1, so eht_ stays a convex combination and can't ring
   // (the same guard VerticalSync places on its integrator).
-  if (!(cfg_.eht_tc_fields * cfg_.nominal_line_hz / cfg_.field_hz >= 1.0))
+  if (!(cfg.eht_tc_fields * cfg.nominal_line_hz / cfg.field_hz >= 1.0))
     throw std::invalid_argument{"Screen: eht_tc_fields too small (the integrator step would exceed 1)"};
-  if (!(cfg_.eht_focus >= 0.0 && cfg_.eht_focus <= 1.0))
+  if (!(cfg.eht_focus >= 0.0 && cfg.eht_focus <= 1.0))
     throw std::invalid_argument{"Screen: eht_focus must be in [0, 1]"};
-  if (!(cfg_.line_pull >= 0.0 && cfg_.line_pull < 0.1))
+  if (!(cfg.line_pull >= 0.0 && cfg.line_pull < 0.1))
     throw std::invalid_argument{"Screen: line_pull must be in [0, 0.1)"};
-  if (!(cfg_.bcl_threshold >= 0.0 && cfg_.bcl_threshold <= 1.5))
+  if (!(cfg.bcl_threshold >= 0.0 && cfg.bcl_threshold <= 1.5))
     throw std::invalid_argument{"Screen: bcl_threshold must be in [0, 1.5] (0 disables)"};
   // Only meaningful (and only used) when the limiter is enabled.
-  if (cfg_.bcl_threshold > 0.0 && !(cfg_.bcl_tc_fields * cfg_.nominal_line_hz / cfg_.field_hz >= 1.0))
+  if (cfg.bcl_threshold > 0.0 && !(cfg.bcl_tc_fields * cfg.nominal_line_hz / cfg.field_hz >= 1.0))
     throw std::invalid_argument{"Screen: bcl_tc_fields too small (the integrator step would exceed 1)"};
-  if (!(cfg_.contrast >= 0.0))
+  if (!(cfg.contrast >= 0.0))
     throw std::invalid_argument{"Screen: contrast must be non-negative"};
-  if (!(cfg_.pwl_threshold >= 0.0 && cfg_.pwl_threshold <= 4.0))
+  if (!(cfg.pwl_threshold >= 0.0 && cfg.pwl_threshold <= 4.0))
     throw std::invalid_argument{"Screen: pwl_threshold must be in [0, 4] (0 disables)"};
 
+  // The mapped beam coordinates are cast to int16 per sample with no clamp (the
+  // frame clip happens later, in the deposit), so an out-of-range double there is
+  // UB, not just a stray pixel. Bound the mapping's extremes here instead: the
+  // sweeps emit phases wrapped to [0, 1) (a small margin covers the picture-lag
+  // shift), grown by the worst-case EHT deflection (the line load clamps at 1.5
+  // in start_line) and line pull. Rejecting the config keeps the per-sample path
+  // branch-free; an absurd centring shift or window lands here.
+  const double x_scale = static_cast<double>(cfg.width) / (cfg.h_window_hi - cfg.h_window_lo);
+  const double y_scale = static_cast<double>(cfg.height) / (cfg.v_window_hi - cfg.v_window_lo);
+  const double grow =
+      (cfg.eht_sag > 0.0 ? 1.0 / std::sqrt(1.0 - 1.5 * cfg.eht_sag) : 1.0) * (1.0 + cfg.line_pull * 1.5);
+  const double tilt_rows = y_scale * cfg.field_hz / cfg.nominal_line_hz;
+  constexpr double kPhaseMargin = 0.25;
+  constexpr double kCoordLimit = 32000.0; // int16 max, less the largest spot radius
+  for (const double g: {1.0, grow}) {
+    for (const double p: {-kPhaseMargin, 1.0 + kPhaseMargin}) {
+      const double x = (p - cfg.h_window_lo) * x_scale * g + 0.5 * static_cast<double>(cfg.width) * (1.0 - g);
+      const double y = (p - cfg.v_window_lo) * y_scale * g + 0.5 * static_cast<double>(cfg.height) * (1.0 - g);
+      if (std::abs(x) > kCoordLimit || std::abs(y) + tilt_rows * g * (1.0 + kPhaseMargin) > kCoordLimit)
+        throw std::invalid_argument{
+            "Screen: the scan window / centring shift maps the beam outside the int16 splat range"};
+    }
+  }
+  return cfg;
+}
+} // namespace
+
+Screen::Screen(const ScreenConfig &cfg) :
+    cfg_{validate(cfg)}, channels_{cfg.colour ? std::size_t{3} : std::size_t{1}}, tracking_{cfg.tracked_white},
+    bright_(cfg.width * cfg.height * (cfg.colour ? 3 : 1), 0.0f) {
   // Decay per sample so that brightness falls by 1/e over persistence_fields
   // field periods: tau_samples = persistence * (sample_rate / field_hz).
   const double tau_samples = cfg_.persistence_fields * cfg_.sample_rate_hz / cfg_.field_hz;
@@ -255,6 +285,9 @@ constexpr double kBu = 2.032;
 // brightness factor). Runs at line rate, keyed off the per-sample line_start
 // flag, so it is chunking- and thread-invariant like the rest of the stage.
 void Screen::start_line() {
+  // Load is clamped at 1.5x a full-white line: past that the supply is already
+  // at its worst case, and the bound is what lets the ctor prove the deflection
+  // growth (hence the splat coordinates) stays in range.
   const double load = line_load_n_ > 0 && white_ref_ > 0.0
                           ? std::min(1.5, static_cast<double>(line_load_sum_) /
                                               (static_cast<double>(line_load_n_ * channels_) * white_ref_))
@@ -270,6 +303,9 @@ void Screen::start_line() {
     // real BCL's negative feedback into the contrast stage does.
     const double alpha = 1.0 / (cfg_.bcl_tc_fields * cfg_.nominal_line_hz / cfg_.field_hz);
     bcl_state_ += alpha * (load - bcl_state_);
+    // 0.05 integral gain per line: full correction over ~20 lines, well inside
+    // bcl_tc's smoothing so the two-stage loop can't hunt. The 0.05 floor keeps
+    // a black-capable picture (a real BCL dims, it never blanks).
     const double err = (bcl_state_ - cfg_.bcl_threshold) / cfg_.bcl_threshold;
     bcl_gain_ = std::clamp(bcl_gain_ * (1.0 - 0.05 * err), 0.05, 1.0);
   }
@@ -324,7 +360,11 @@ void Screen::start_line() {
 
 void Screen::process(std::span<const ChromaSample> picture, std::span<const BeamSample> hbeam,
     std::span<const VSample> vbeam, const FieldCallback &on_field) {
-  const std::size_t n = std::min({picture.size(), hbeam.size(), vbeam.size()});
+  // The three rails are per-sample views of one block, so a length mismatch can
+  // only be a wiring bug - fail loudly rather than silently paint a short line.
+  const std::size_t n = picture.size();
+  if (hbeam.size() != n || vbeam.size() != n) [[unlikely]]
+    throw std::invalid_argument{"Screen: picture/hbeam/vbeam rails must be the same length"};
   for (std::size_t i = 0; i < n; ++i) {
     // A field boundary closes off a completed field: the buffer IS the displayed
     // image (no per-pixel fade), so snapshot it, then fade the whole phosphor by
@@ -432,8 +472,7 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // Append, growing the buffer if this field overran the reserve.
     if (splats_.size() >= splats_.capacity())
       splats_.reserve(splats_.capacity() ? splats_.capacity() * 2 : std::size_t{1} << 16);
-    const auto slot = splats_.write_n(splats_.size() + 1);
-    slot.back() = SplatRecord{.x_pixel = static_cast<std::int16_t>(xf_floor),
+    splats_.push() = SplatRecord{.x_pixel = static_cast<std::int16_t>(xf_floor),
         .y_pixel = static_cast<std::int16_t>(yc_floor),
         .x_bin = static_cast<std::uint16_t>(bin_x),
         .y_bin = static_cast<std::uint16_t>(bin_y),

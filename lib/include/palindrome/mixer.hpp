@@ -1,6 +1,7 @@
 #pragma once
 
 #include "palindrome/buffer.hpp"
+#include "palindrome/phasor.hpp"
 #include "palindrome/restrict_ptr.hpp"
 
 #include <array>
@@ -65,8 +66,7 @@ private:
   std::array<float, kLanes> rot_im_{}; // -sin(omega*l) = Im(step^l)
   std::complex<double> step_; // e^{-i*omega}; advances `base` one sample at a time
   std::complex<double> step_block_; // step^kLanes; advances `base` a whole group
-  std::complex<double> base_{1.0, 0.0}; // phase at the current group boundary
-  unsigned groups_since_renorm_{}; // groups since `base` was last renormalised
+  Phasor base_; // phase at the current group boundary (counted renorm inside)
   Buffer<float> i_out_; // owned I plane, reused across calls
   Buffer<float> q_out_; // owned Q plane, reused across calls
 };

@@ -5,9 +5,10 @@
 // on this shared vocabulary, not on its sibling stages.
 namespace palindrome::video {
 
-// PAL-B/G nominal timing (625 lines, 2:1 interlace at 50 fields/s). These are
-// fixed facts of the standard, not tuning knobs — every config that needs a
-// nominal line or field rate defaults from these.
+// 625-line PAL nominal timing (2:1 interlace at 50 fields/s) — the rates are
+// common to System I and B/G alike, though the levels story elsewhere is
+// System I. Fixed facts of the standard, not tuning knobs — every config that
+// needs a nominal line or field rate defaults from these.
 inline constexpr double kNominalLineHz = 15625.0; // 625 lines × 25 frames/s
 inline constexpr double kNominalFieldHz = 50.0;
 

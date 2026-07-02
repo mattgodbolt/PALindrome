@@ -10,15 +10,21 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cmath>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <format>
+#include <initializer_list>
 #include <iostream>
+#include <optional>
 #include <print>
 #include <span>
+#include <string>
+#include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace palindrome::cli {
@@ -33,11 +39,55 @@ std::filesystem::path numbered_path(const std::filesystem::path &base, std::size
 // 0.7*Nyquist of the decimated rate — so it stays out of the anti-alias roll-off
 // where group delay climbs (the AirSpy's near-Nyquist problem). Decimating is
 // purely a speed lever, so take as much as the signal allows: RX888 32 MS/s ->
-// /2, AirSpy 10 MS/s -> /1. An explicit --decimate overrides this.
+// /2, AirSpy 20 MS/s raw -> /1. An explicit --decimate overrides this.
 std::size_t auto_decimate(double sample_rate_hz, double subcarrier_hz) {
   constexpr double kMaxSubcarrierNyquistFraction = 0.7;
   const double n = kMaxSubcarrierNyquistFraction * 0.5 * sample_rate_hz / subcarrier_hz;
   return std::max<std::size_t>(1, static_cast<std::size_t>(n));
+}
+
+// One table-driven parser for the string mode flags, so the error message is
+// derived from the same table as the matching and the two can't drift.
+template<class E>
+std::optional<E> parse_choice(
+    std::string_view flag, std::string_view value, std::initializer_list<std::pair<std::string_view, E>> choices) {
+  std::string valid;
+  for (const auto &[name, mode]: choices) {
+    if (value == name)
+      return mode;
+    valid = valid.empty() ? std::string{name} : std::format("{}, {}", valid, name);
+  }
+  std::println(std::cerr, "render: --{} must be one of: {}", flag, valid);
+  return std::nullopt;
+}
+
+// Debug: fold the raw envelope into the frame (sample i -> x = i % width,
+// y = i / width), bypassing the sync graph. Set --width to samples/line to
+// straighten it. Shows whether the picture is in the envelope at all.
+int render_unsynced(const LoadedRecording &loaded, const EnvelopeOptions &opts, std::size_t width, std::size_t height,
+    std::filesystem::path output) {
+  std::vector<float> env;
+  stream_envelope(loaded, opts, [&](std::span<const float> e) { env.insert(env.end(), e.begin(), e.end()); });
+  if (env.empty()) {
+    std::println(std::cerr, "render: no samples read from {}", loaded.data_path.string());
+    return 1;
+  }
+  const auto n = std::min(env.size(), width * height);
+  auto hi = env[0];
+  auto lo = env[0];
+  for (std::size_t i = 0; i < n; ++i) {
+    hi = std::max(hi, env[i]);
+    lo = std::min(lo, env[i]);
+  }
+  const auto span = hi > lo ? hi - lo : 1.0f;
+  std::vector<std::uint8_t> grey(width * height, 0);
+  for (std::size_t i = 0; i < n; ++i)
+    grey[i] = static_cast<std::uint8_t>(std::clamp((hi - env[i]) / span, 0.0f, 1.0f) * 255.0f + 0.5f);
+  if (output.empty())
+    output = std::format("{}.png", loaded.meta_path.stem().string());
+  image::write_png_grey(output, grey, static_cast<unsigned>(width), static_cast<unsigned>(height));
+  std::println("wrote {} ({}x{}, naive envelope fold, no sync)", output.string(), width, height);
+  return 0;
 }
 } // namespace
 
@@ -121,7 +171,7 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(contrast_, "x")["--contrast"](
               "The contrast pot: video gain ahead of the gun (default 1.6, turned up for the under-modulated "
               "SMS corpus; broadcast wants ~1.0). In --agc adaptive: the readout white point, default 0.85"))
-          .add_argument(lyra::opt(h_blank_, "x")["--h-blank"]("Retrace blanking end (h_phase; ~0.21 at 10 MS/s)"))
+          .add_argument(lyra::opt(h_blank_, "x")["--h-blank"]("Retrace blanking end, as an h_phase fraction"))
           .add_argument(
               lyra::opt(subcarrier_, "hz")["--subcarrier"]("Colour: subcarrier crystal Hz (default 4.43361875 MHz)"))
           .add_argument(lyra::opt(uv_bandwidth_, "hz")["--uv-bandwidth"](
@@ -129,7 +179,7 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(band_lo_, "hz")["--band-lo"]("Colour: chroma band-pass low edge Hz"))
           .add_argument(lyra::opt(band_hi_, "hz")["--band-hi"]("Colour: chroma band-pass high edge Hz"))
           .add_argument(
-              lyra::opt(burst_gate_lo_, "x")["--burst-lo"]("Colour: burst gate start (h_phase; ~0.16 at 10 MS/s)"))
+              lyra::opt(burst_gate_lo_, "x")["--burst-lo"]("Colour: burst gate start, as an h_phase fraction"))
           .add_argument(lyra::opt(burst_gate_hi_, "x")["--burst-hi"]("Colour: burst gate end (h_phase)"))
           .add_argument(lyra::opt(comb_mode_, "mode")["--comb-mode"](
               "Colour: 1H comb — off (PAL-S) | delay-line (PAL-D, adaptive depth) | glass (PAL-D, the real fixed "
@@ -214,24 +264,16 @@ int RenderCommand::run() const {
   const auto envelope_rate = loaded.sample_rate_hz / static_cast<double>(decimate);
 
   EnvelopeOptions opts{.cutoff_hz = cutoff_, .decimation = decimate};
-  if (if_mode_ == "saw80")
-    opts.if_mode = IfMode::saw80;
-  else if (if_mode_ == "saw90")
-    opts.if_mode = IfMode::saw90;
-  else if (if_mode_ == "flat")
-    opts.if_mode = IfMode::flat;
-  else {
-    std::println(std::cerr, "render: --if must be saw80, saw90, or flat");
+  const auto if_mode = parse_choice<IfMode>(
+      "if", if_mode_, {{"saw80", IfMode::saw80}, {"saw90", IfMode::saw90}, {"flat", IfMode::flat}});
+  if (!if_mode)
     return 1;
-  }
-  if (detector_ == "quasi-sync")
-    opts.detector = palindrome::demod::Detector::quasi_sync;
-  else if (detector_ == "envelope")
-    opts.detector = palindrome::demod::Detector::envelope;
-  else {
-    std::println(std::cerr, "render: --detector must be quasi-sync or envelope");
+  opts.if_mode = *if_mode;
+  const auto detector = parse_choice<demod::Detector>(
+      "detector", detector_, {{"quasi-sync", demod::Detector::quasi_sync}, {"envelope", demod::Detector::envelope}});
+  if (!detector)
     return 1;
-  }
+  opts.detector = *detector;
   // The flag sentinels (negative = "use the template's value") become absent
   // options here, so EnvelopeOptions carries intent, not magic numbers.
   if (sound_notch_db_ >= 0.0)
@@ -239,149 +281,17 @@ int RenderCommand::run() const {
   if (gd_ripple_ >= 0.0)
     opts.gd_ripple_ns = gd_ripple_;
 
-  if (no_sync_) {
-    // Debug: fold the raw envelope into the frame (sample i -> x = i % width,
-    // y = i / width), bypassing the sync graph. Set --width to samples/line to
-    // straighten it. Shows whether the picture is in the envelope at all.
-    std::vector<float> env;
-    stream_envelope(loaded, opts, [&](std::span<const float> e) { env.insert(env.end(), e.begin(), e.end()); });
-    if (env.empty()) {
-      std::println(std::cerr, "render: no samples read from {}", loaded.data_path.string());
-      return 1;
-    }
-    const auto n = std::min(env.size(), width_ * height_);
-    auto hi = env[0];
-    auto lo = env[0];
-    for (std::size_t i = 0; i < n; ++i) {
-      hi = std::max(hi, env[i]);
-      lo = std::min(lo, env[i]);
-    }
-    const auto span = hi > lo ? hi - lo : 1.0f;
-    std::vector<std::uint8_t> grey(width_ * height_, 0);
-    for (std::size_t i = 0; i < n; ++i)
-      grey[i] = static_cast<std::uint8_t>(std::clamp((hi - env[i]) / span, 0.0f, 1.0f) * 255.0f + 0.5f);
-    std::filesystem::path out = output_;
-    if (out.empty())
-      out = std::format("{}.png", loaded.meta_path.stem().string());
-    image::write_png_grey(out, grey, static_cast<unsigned>(width_), static_cast<unsigned>(height_));
-    std::println("wrote {} ({}x{}, naive envelope fold, no sync)", out.string(), width_, height_);
-    return 0;
-  }
+  if (no_sync_)
+    return render_unsynced(loaded, opts, width_, height_, output_);
 
   // The whole video graph as one composite node: it fans the separator's sync
   // bit to the horizontal sweep and vertical sync, then joins both timebases
   // with the picture rail at the phosphor screen. We pump the recording through
   // in blocks, so nothing ever materialises the whole envelope.
-  video::DecoderConfig dc{
-      .sample_rate_hz = envelope_rate, .width = width_, .height = height_, .sync_lp_cutoff_hz = sync_cutoff_};
-  if (agc_mode_ == "sync-tip")
-    dc.agc_mode = video::AgcMode::sync_tip;
-  else if (agc_mode_ == "adaptive")
-    dc.agc_mode = video::AgcMode::adaptive;
-  else {
-    std::println(std::cerr, "render: --agc must be sync-tip or adaptive");
+  const auto dc = decoder_config(envelope_rate);
+  if (!dc)
     return 1;
-  }
-  const bool adaptive = dc.agc_mode == video::AgcMode::adaptive;
-  dc.persistence_fields = persistence_;
-  dc.beam_sigma = beam_sigma_;
-  dc.beam_sigma_cols = beam_sigma_x_;
-  dc.gamma = gamma_;
-  dc.colour = colour_;
-  // The pot defaults follow the level scheme (see render_command.hpp): the
-  // sync-tip values are the provisional SMS calibration, the adaptive ones
-  // are what every pre-AGC render used, so the legacy mode looks legacy.
-  dc.saturation = saturation_ >= 0.0 ? saturation_ : (adaptive ? 0.17 : 0.085);
-  dc.contrast = contrast_ >= 0.0 ? contrast_ : (adaptive ? 0.85 : 1.6);
-  dc.deposit_lanes = deposit_threads_;
-  dc.readout_gamma = readout_gamma_;
-  dc.eht_sag = eht_sag_;
-  dc.eht_tc_fields = eht_tc_;
-  dc.eht_focus = eht_focus_;
-  dc.line_pull = line_pull_;
-  dc.bcl_threshold = bcl_;
-  dc.bcl_tc_fields = bcl_tc_;
-  dc.h_blank = h_blank_;
-  // Overscan: map the nominal active picture box — the 52 us active line of
-  // the 64 us period, and the picture lines after the vertical interval —
-  // cropped by the overscan fraction (half per side) onto the full frame, so
-  // blanking and the picture edges live behind the bezel as on a real set. A
-  // negative overscan keeps the old full-scan framing (the whole 64 us line).
-  if (overscan_ >= 0.0) {
-    if (overscan_ >= 0.5) {
-      std::println(std::cerr, "render: --overscan must be below 0.5 (got {:g})", overscan_);
-      return 1;
-    }
-    // The visible window sits ~1 us EARLIER in the line than the textbook
-    // active region (10.5..62.5 us): an average set's sweep reached the tube
-    // face while the line was still blanked, so the left edge showed a sliver
-    // of blanking-black before active video began — the factory framing that
-    // consoles (whose content hugs the start of active) relied on to keep
-    // their left edge on screen, with no adjustment needed.
-    constexpr double kActiveHLo = 9.5 / 64.0;
-    constexpr double kActiveHHi = 61.5 / 64.0;
-    constexpr double kActiveVLo = 25.0 / 312.5; // the vertical interval's blanked lines
-    constexpr double kActiveVHi = 1.0;
-    const double crop_h = 0.5 * overscan_ * (kActiveHHi - kActiveHLo);
-    const double crop_v = 0.5 * overscan_ * (kActiveVHi - kActiveVLo);
-    dc.h_window_lo = kActiveHLo + crop_h;
-    dc.h_window_hi = kActiveHHi - crop_h;
-    dc.v_window_lo = kActiveVLo + crop_v;
-    dc.v_window_hi = kActiveVHi - crop_v;
-  }
-  // The centring pots: moving the WINDOW left shows content further left, i.e.
-  // the picture moves right — the H-shift adjustment on a real set's back
-  // panel, which is how a console picture that hugs one edge of the nominal
-  // active box gets centred. Applied to whichever framing is in effect.
-  dc.h_window_lo -= h_shift_;
-  dc.h_window_hi -= h_shift_;
-  dc.v_window_lo -= v_shift_;
-  dc.v_window_hi -= v_shift_;
-  if (subcarrier_ > 0.0) // else the crystal default (textbook fsc)
-    dc.chroma.subcarrier_hz = subcarrier_;
-  if (uv_bandwidth_ > 0.0)
-    dc.chroma.uv_bandwidth_hz = uv_bandwidth_;
-  if (band_lo_ > 0.0)
-    dc.chroma.band_lo_hz = band_lo_;
-  if (band_hi_ > 0.0)
-    dc.chroma.band_hi_hz = band_hi_;
-  dc.chroma.burst_gate_lo = burst_gate_lo_;
-  dc.chroma.burst_gate_hi = burst_gate_hi_;
-  dc.chroma.ref_tc_lines = ref_tc_;
-  if (no_killer_)
-    dc.chroma.killer_threshold = 0.0;
-  dc.chroma.apc_catch_range_hz = apc_catch_;
-  dc.chroma.apc_pull = apc_pull_;
-  if (no_delay_line_) // deprecated alias, overridden by an explicit --comb-mode
-    dc.chroma.comb_mode = video::CombMode::off;
-  if (!comb_mode_.empty()) {
-    if (comb_mode_ == "off")
-      dc.chroma.comb_mode = video::CombMode::off;
-    else if (comb_mode_ == "post")
-      dc.chroma.comb_mode = video::CombMode::post;
-    else if (comb_mode_ == "delay-line")
-      dc.chroma.comb_mode = video::CombMode::delay_line;
-    else if (comb_mode_ == "glass")
-      dc.chroma.comb_mode = video::CombMode::glass;
-    else {
-      std::println(std::cerr, "render: --comb-mode must be off, post, delay-line, or glass");
-      return 1;
-    }
-  }
-  dc.pwl_threshold = pwl_;
-  dc.sep.slice_depth = slice_depth_;
-  dc.sep.sync_level = sync_level_;
-  dc.hsweep.pll_kp = h_kp_;
-  dc.hsweep.pll_ki = h_ki_;
-  dc.hsweep.acq_kp = h_acq_kp_;
-  dc.hsweep.acq_ki = h_acq_ki_;
-  dc.hsweep.omega_clamp = h_clamp_;
-  dc.vsync.vsync_level = v_level_;
-  dc.vsync.pll_kp = v_kp_;
-  dc.vsync.pll_ki = v_ki_;
-  dc.vsync.integrator_tc_lines = v_tc_;
-  dc.vsync.min_field_fraction = v_minfield_;
-  video::Decoder decoder{dc};
+  video::Decoder decoder{*dc};
 
   constexpr std::size_t kBlock = std::size_t{1} << 16;
   decoder.prepare(kBlock);
@@ -500,6 +410,121 @@ int RenderCommand::run() const {
       100.0 * (line_hz - video::kNominalLineHz) / video::kNominalLineHz, decoder.detected_fields(), field_hz,
       100.0 * (field_hz - video::kNominalFieldHz) / video::kNominalFieldHz);
   return 0;
+}
+
+std::optional<video::DecoderConfig> RenderCommand::decoder_config(double envelope_rate) const {
+  video::DecoderConfig dc{.sample_rate_hz = envelope_rate, .sync_lp_cutoff_hz = sync_cutoff_};
+  const auto agc = parse_choice<video::AgcMode>(
+      "agc", agc_mode_, {{"sync-tip", video::AgcMode::sync_tip}, {"adaptive", video::AgcMode::adaptive}});
+  if (!agc)
+    return std::nullopt;
+  dc.agc_mode = *agc;
+  const bool adaptive = dc.agc_mode == video::AgcMode::adaptive;
+  dc.colour = colour_;
+
+  auto &screen = dc.screen;
+  screen.width = width_;
+  screen.height = height_;
+  screen.persistence_fields = persistence_;
+  screen.beam_sigma = beam_sigma_;
+  screen.beam_sigma_cols = beam_sigma_x_;
+  screen.gamma = gamma_;
+  // The pot defaults follow the level scheme (see render_command.hpp): the
+  // sync-tip values are the provisional SMS calibration, the adaptive ones
+  // are what every pre-AGC render used, so the legacy mode looks legacy.
+  screen.saturation = saturation_ >= 0.0 ? saturation_ : (adaptive ? 0.17 : 0.085);
+  screen.contrast = contrast_ >= 0.0 ? contrast_ : (adaptive ? 0.85 : 1.6);
+  screen.deposit_lanes = deposit_threads_;
+  screen.readout_gamma = readout_gamma_;
+  screen.eht_sag = eht_sag_;
+  screen.eht_tc_fields = eht_tc_;
+  screen.eht_focus = eht_focus_;
+  screen.line_pull = line_pull_;
+  screen.bcl_threshold = bcl_;
+  screen.bcl_tc_fields = bcl_tc_;
+  screen.h_blank = h_blank_;
+  screen.pwl_threshold = pwl_;
+  // Overscan: map the nominal active picture box — the 52 us active line of
+  // the 64 us period, and the picture lines after the vertical interval —
+  // cropped by the overscan fraction (half per side) onto the full frame, so
+  // blanking and the picture edges live behind the bezel as on a real set. A
+  // negative overscan keeps the old full-scan framing (the whole 64 us line).
+  if (overscan_ >= 0.0) {
+    if (overscan_ >= 0.5) {
+      std::println(std::cerr, "render: --overscan must be below 0.5 (got {:g})", overscan_);
+      return std::nullopt;
+    }
+    // The visible window sits ~1 us EARLIER in the line than the textbook
+    // active region (10.5..62.5 us): an average set's sweep reached the tube
+    // face while the line was still blanked, so the left edge showed a sliver
+    // of blanking-black before active video began — the factory framing that
+    // consoles (whose content hugs the start of active) relied on to keep
+    // their left edge on screen, with no adjustment needed.
+    constexpr double kActiveHLo = 9.5 / 64.0;
+    constexpr double kActiveHHi = 61.5 / 64.0;
+    constexpr double kActiveVLo = 25.0 / 312.5; // the vertical interval's blanked lines
+    constexpr double kActiveVHi = 1.0;
+    const double crop_h = 0.5 * overscan_ * (kActiveHHi - kActiveHLo);
+    const double crop_v = 0.5 * overscan_ * (kActiveVHi - kActiveVLo);
+    screen.h_window_lo = kActiveHLo + crop_h;
+    screen.h_window_hi = kActiveHHi - crop_h;
+    screen.v_window_lo = kActiveVLo + crop_v;
+    screen.v_window_hi = kActiveVHi - crop_v;
+  }
+  // The centring pots: moving the WINDOW left shows content further left, i.e.
+  // the picture moves right — the H-shift adjustment on a real set's back
+  // panel, which is how a console picture that hugs one edge of the nominal
+  // active box gets centred. Applied to whichever framing is in effect. A shift
+  // past a full line/field is meaningless (and an extreme value would map the
+  // beam outside the splat coordinate range, which the Screen also rejects).
+  if (std::abs(h_shift_) > 1.0 || std::abs(v_shift_) > 1.0) {
+    std::println(std::cerr, "render: --h-shift and --v-shift must be within [-1, 1]");
+    return std::nullopt;
+  }
+  screen.h_window_lo -= h_shift_;
+  screen.h_window_hi -= h_shift_;
+  screen.v_window_lo -= v_shift_;
+  screen.v_window_hi -= v_shift_;
+
+  if (subcarrier_ > 0.0) // else the crystal default (textbook fsc)
+    dc.chroma.subcarrier_hz = subcarrier_;
+  if (uv_bandwidth_ > 0.0)
+    dc.chroma.uv_bandwidth_hz = uv_bandwidth_;
+  if (band_lo_ > 0.0)
+    dc.chroma.band_lo_hz = band_lo_;
+  if (band_hi_ > 0.0)
+    dc.chroma.band_hi_hz = band_hi_;
+  dc.chroma.burst_gate_lo = burst_gate_lo_;
+  dc.chroma.burst_gate_hi = burst_gate_hi_;
+  dc.chroma.ref_tc_lines = ref_tc_;
+  if (no_killer_)
+    dc.chroma.killer_threshold = 0.0;
+  dc.chroma.apc_catch_range_hz = apc_catch_;
+  dc.chroma.apc_pull = apc_pull_;
+  if (no_delay_line_) // deprecated alias, overridden by an explicit --comb-mode
+    dc.chroma.comb_mode = video::CombMode::off;
+  if (!comb_mode_.empty()) {
+    const auto comb = parse_choice<video::CombMode>("comb-mode", comb_mode_,
+        {{"off", video::CombMode::off}, {"post", video::CombMode::post}, {"delay-line", video::CombMode::delay_line},
+            {"glass", video::CombMode::glass}});
+    if (!comb)
+      return std::nullopt;
+    dc.chroma.comb_mode = *comb;
+  }
+
+  dc.sep.slice_depth = slice_depth_;
+  dc.sep.sync_level = sync_level_;
+  dc.hsweep.pll_kp = h_kp_;
+  dc.hsweep.pll_ki = h_ki_;
+  dc.hsweep.acq_kp = h_acq_kp_;
+  dc.hsweep.acq_ki = h_acq_ki_;
+  dc.hsweep.omega_clamp = h_clamp_;
+  dc.vsync.vsync_level = v_level_;
+  dc.vsync.pll_kp = v_kp_;
+  dc.vsync.pll_ki = v_ki_;
+  dc.vsync.integrator_tc_lines = v_tc_;
+  dc.vsync.min_field_fraction = v_minfield_;
+  return dc;
 }
 
 } // namespace palindrome::cli

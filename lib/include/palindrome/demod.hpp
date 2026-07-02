@@ -2,10 +2,12 @@
 
 #include "palindrome/buffer.hpp"
 #include "palindrome/fir.hpp"
+#include "palindrome/phasor.hpp"
 #include "palindrome/restrict_ptr.hpp"
 
 #include <complex>
 #include <cstddef>
+#include <expected>
 #include <span>
 #include <utility>
 #include <vector>
@@ -51,8 +53,7 @@ public:
 
 private:
   std::complex<double> step_; // e^{-i*omega}; advances the mix phasor one sample
-  std::complex<double> phasor_{1.0, 0.0}; // running mix phase, carried across calls
-  std::size_t since_renorm_ = 0; // samples since phasor_ was renormalised
+  dsp::Phasor phasor_; // running mix phase, carried across calls (counted renorm inside)
   // Complex one-pole DC blocker on the input: kills the zero-IF LO-leakage
   // spike at DC, which would otherwise mix onto the carrier and beat into the
   // envelope (the AirSpy's equivalent of the real path's dsp::DcBlocker). The
@@ -113,6 +114,16 @@ struct IfTemplate {
 [[nodiscard]] IfTemplate saw80_template();
 [[nodiscard]] IfTemplate saw90_template();
 
+// Why a carrier scan came back empty. These are DATA outcomes, not caller
+// errors: a silent or truncated head (a tuner still warming up, a dead
+// capture, a pipe that closed early) is an expected event on the live path,
+// where the right response is to read more signal and rescan - not to unwind
+// the whole decode. Argument errors still throw (see below).
+enum class CarrierScanError {
+  too_few_samples, // fewer than 4 usable samples: nothing to transform
+  no_signal, // the band holds no spectral energy (an all-zero head)
+};
+
 // A coarse vision-carrier estimate from a block of real IF samples: the
 // dominant narrowband line in [lo_hz, hi_hz]. Under negative modulation the
 // vision carrier is the strongest spectral line (it sits at the sync-tip peak
@@ -122,11 +133,11 @@ struct IfTemplate {
 // no carrier metadata at all (the first step of decoding live RF). The estimate
 // is good to a few hundred Hz - the carrier is really a ~300 Hz-wide cluster
 // (sync-rate AM, carrier wander), which bounds any estimator, but the loop pulls
-// in the residual. Uses the largest power of two <= samples.size(). Throws
-// std::invalid_argument if that is < 4, the sample rate is non-positive, the
-// band is not 0 <= lo_hz < hi_hz < sample_rate_hz / 2 (lo_hz may be 0), or the
-// band holds no spectral energy.
-[[nodiscard]] double find_vision_carrier(
+// in the residual. Uses the largest power of two <= samples.size(). Returns a
+// CarrierScanError when the DATA can't yield an estimate (see above); throws
+// std::invalid_argument for caller errors - a non-positive sample rate, a band
+// not 0 <= lo_hz < hi_hz < sample_rate_hz / 2, or one too narrow to hold a bin.
+[[nodiscard]] std::expected<double, CarrierScanError> find_vision_carrier(
     std::span<const float> samples, double sample_rate_hz, double lo_hz, double hi_hz);
 
 // How the vision detector turns the filtered IF into video. quasi_sync (the
@@ -187,9 +198,8 @@ private:
   // advance in double - phase accumulates over millions of samples - and are
   // snapshotted down to float at the point of use.
   std::complex<double> step_{1.0, 0.0}; // e^{-j*omega} per output sample
-  std::complex<double> nco_{1.0, 0.0}; // running carrier-phase estimate (conjugate)
+  dsp::Phasor nco_; // running carrier-phase estimate (conjugate; counted renorm inside)
   double freq_ = 0.0; // PI integrator: tracked carrier offset, rad per output sample
-  std::size_t since_renorm_ = 0; // outputs since nco_ was renormalised
   Buffer<float> inv_mag_; // scratch: 1/|i,q| precomputed feed-forward per block
   Buffer<float> out_; // owned video output, reused across calls
 };

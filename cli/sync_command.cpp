@@ -86,7 +86,8 @@ void print_histogram(std::span<const double> values, double lo, double hi, int b
 void SyncCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
   cli.add_argument(lyra::command("sync", [this, &action](const lyra::group &) { action = [this] { return run(); }; })
           .help("Diagnose the sync chain: slice the composite and report pulse widths, spacing and lock")
-          .add_argument(lyra::opt(carrier_, "hz")["--carrier"]("Carrier Hz (default: rx888:vision_if_hz)"))
+          .add_argument(lyra::opt(carrier_, "hz")["--carrier"](
+              "Carrier Hz (default: the metadata's vision_if_hz, or a signal scan if it has none)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to inspect (e.g. corpus/alex_kidd)")));
