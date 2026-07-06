@@ -20,7 +20,9 @@ int as_byte_kernel(float v) { return static_cast<std::uint8_t>(255.0f * v + 0.5f
 } // namespace
 
 TEST_CASE("pow01 endpoints are exact") {
-  for (const float e: {1.0f / 2.2f, 1.0f / 2.6f, 0.5f, 1.0f, 2.2f}) {
+  // 1/25 sits below the 40/127 threshold where zero's raw bit-pattern log
+  // (-127) would escape the range clamp and lift exact black off byte 0.
+  for (const float e: {1.0f / 25.0f, 1.0f / 2.2f, 1.0f / 2.6f, 0.5f, 1.0f, 2.2f}) {
     CHECK(pow01(1.0f, e) == 1.0f);
     CHECK(as_byte_kernel(pow01(0.0f, e)) == 0);
     // -0.0 passes a [0, 1] clamp; without log2_poly's sign strip it would
