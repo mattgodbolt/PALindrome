@@ -1,10 +1,13 @@
 #include "palindrome/screen.hpp"
 
 #include "palindrome/gaussian.hpp"
+#include "palindrome/pow01.hpp"
+#include "palindrome/restrict_ptr.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -23,6 +26,25 @@ constexpr double kSystemIWhiteDrive = 0.76 - 0.20;
 // gain returns from a deep limit over roughly half a field once the overdrive
 // clears. Attack is per-line (the charge path is fast by design).
 constexpr double kPwlRecover = 1.005;
+
+// The readout kernels take restrict_ptr because the byte stores would
+// otherwise be assumed to alias everything (char aliases all) - including the
+// framebuffer and the vectors' own control blocks - which blocks the
+// autovectorisation both loops rely on. pow01 rather than std::pow in the
+// encoded kernel for the same reason: an errno-setting libm call pins the
+// loop scalar (issue #60).
+void readout_linear(restrict_ptr<const float> bright, restrict_ptr<std::uint8_t> px, std::size_t n, float scale) {
+  for (std::size_t idx = 0; idx < n; ++idx)
+    px[idx] = static_cast<std::uint8_t>(std::clamp(bright[idx] * scale, 0.0f, 255.0f) + 0.5f);
+}
+
+void readout_encoded(
+    restrict_ptr<const float> bright, restrict_ptr<std::uint8_t> px, std::size_t n, float scale, float inv) {
+  for (std::size_t idx = 0; idx < n; ++idx) {
+    const float lit = std::clamp(bright[idx] * scale, 0.0f, 1.0f);
+    px[idx] = static_cast<std::uint8_t>(255.0f * dsp::pow01(lit, inv) + 0.5f);
+  }
+}
 
 // Validated on the way into the first mem-initialiser (the ChromaDecoder
 // pattern), so a bad config throws before the width*height framebuffer - whose
@@ -502,19 +524,14 @@ Screen::Frame Screen::quantise(const std::vector<float> &bright, double white_re
     // Linear readout: the raw phosphor light, straight scale-and-quantise (the
     // buffer already holds the displayed charge; decay is applied per field).
     const float scale = white > 0.0 ? static_cast<float>(255.0 * readout / white) : 0.0f;
-    for (std::size_t idx = 0; idx < bright.size(); ++idx)
-      pixels[idx] = static_cast<std::uint8_t>(std::clamp(bright[idx] * scale, 0.0f, 255.0f) + 0.5f);
+    readout_linear(bright.data(), pixels.data(), bright.size(), scale);
   }
   else {
     // The "camera": encode the linear light for a display that will decode it
     // with readout_gamma, so the viewer sees the phosphor's light and not a
     // double-gamma'd version. Once per emitted frame, not per sample.
     const float scale = white > 0.0 ? static_cast<float>(readout / white) : 0.0f;
-    const auto inv = static_cast<float>(1.0 / cfg_.readout_gamma);
-    for (std::size_t idx = 0; idx < bright.size(); ++idx) {
-      const float lit = std::clamp(bright[idx] * scale, 0.0f, 1.0f);
-      pixels[idx] = static_cast<std::uint8_t>(255.0f * std::pow(lit, inv) + 0.5f);
-    }
+    readout_encoded(bright.data(), pixels.data(), bright.size(), scale, static_cast<float>(1.0 / cfg_.readout_gamma));
   }
   return Frame{.pixels = std::move(pixels), .width = cfg_.width, .height = cfg_.height, .channels = channels_};
 }

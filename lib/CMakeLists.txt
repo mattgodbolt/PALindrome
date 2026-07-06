@@ -26,6 +26,7 @@ target_sources(palindrome
         include/palindrome/cmul.hpp
         include/palindrome/phase.hpp
         include/palindrome/phasor.hpp
+        include/palindrome/pow01.hpp
         include/palindrome/gaussian.hpp
         include/palindrome/pipeline_run.hpp
         include/palindrome/restrict_ptr.hpp
