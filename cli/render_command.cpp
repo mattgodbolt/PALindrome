@@ -335,8 +335,6 @@ int RenderCommand::run() const {
   };
   // ~10 frames/sec at 50 fields/s, throttling the snapshot + downstream encode (the
   // phosphor still paints every field; this only caps how often we snapshot it).
-  // The snapshot's gamma quantise runs on this (deposit) thread, so the cadence
-  // trades directly against real-time headroom - keep it modest.
   const std::size_t live_stride = frame_stride_ != 0 ? frame_stride_ : 5;
   const video::Screen::FieldCallback on_field = [&](const video::Screen::FieldEvent &e) {
     if (live_) {
