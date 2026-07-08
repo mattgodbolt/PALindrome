@@ -253,7 +253,9 @@ TEST_CASE("FirPair matches two independent Firs bit-exactly, whole and chunked")
   // its own Fir would produce. The tap counts land the strip loops on all
   // three tiers (32-wide, 8-wide, scalar tail); the ragged chunking makes the
   // shared decimation phase straddle blocks.
-  const auto num_taps = GENERATE(std::size_t{7}, std::size_t{64}, std::size_t{255});
+  // 1 and 2 pin the polyphase tier's degenerate tap walks (trailing even tap
+  // with an empty pair loop; exactly one even/odd pair).
+  const auto num_taps = GENERATE(std::size_t{1}, std::size_t{2}, std::size_t{7}, std::size_t{64}, std::size_t{255});
   const auto decimation = GENERATE(std::size_t{1}, std::size_t{2}, std::size_t{3});
   const auto re_taps = dsp::lowpass_kernel(num_taps, 1000.0, 120.0);
   const auto im_taps = dsp::bandpass_kernel(num_taps, 1000.0, 60.0, 200.0);

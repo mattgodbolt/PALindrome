@@ -98,11 +98,13 @@ private:
 // re/im halves of a complex-coefficient filter on a real signal (VisionIf's IF
 // strip). One shared window (one history+block copy per call, not two) and,
 // per tap, each window load feeds both accumulator strips, so the pair costs
-// far less than two Firs: the d==1 strip tier is load-port-bound and the d==2
-// tier is shuffle-bound, and fusion shares exactly those resources while the
-// FMA count is unchanged. Bit-exact against two independent Firs: each output
-// still accumulates its own taps in natural order with the same single-rounded
-// FMAs; only the interleaving of the two output streams changes.
+// far less than two Firs: the d==1 tier shares its load-port bound, and the
+// d==2 tier is polyphase - the window pre-split into even/odd sample planes
+// once per block - running at the d==1 FMA bound with no per-tap shuffles at
+// all. The FMA count is unchanged either way. Bit-exact against two
+// independent Firs: each output still accumulates its own taps in natural
+// order with the same single-rounded FMAs on the same operand values; only
+// where they are loaded from and how the two output streams interleave change.
 class FirPair {
 public:
   // Both output spans are owned by the filter and valid until the next

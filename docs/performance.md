@@ -68,16 +68,24 @@ downstream work), so the balance legitimately differs between them.
   ~10% off the RX888 /2 render, but only ~3% on the AirSpy /1 live path (where the
   deposit dominates and the demod is a smaller slice). Bit-exact block-invariance
   preserved.
-- **Fused vision FIR pair (#62).** `VisionIf` ran two independent 255-tap Firs
-  over the same input; `FirPair` evaluates both tap sets in one pass with one
-  shared window, each window load (and each d==2 deinterleave shuffle) feeding
-  both accumulator strips. Those are exactly the resources the strip tiers are
-  bound on - load ports at d==1, port-5 shuffles at d==2 - so the pair costs
-  ~40% less at an unchanged FMA count, bit-exact (renders byte-identical).
-  Kernel -39%/-41%; DemodBench VisionIf 1.16 -> 0.74 ms/block; the 32 MS/s wall
-  -16% (its limiter was the source thread, 71% of which was the pair), the
-  AirSpy live wall unchanged (decode limits there). The win stopped exactly
-  where the moving-limiter model said: at the decode thread's level.
+- **Fused vision FIR pair (#62), then polyphase d==2.** `VisionIf` ran two
+  independent 255-tap Firs over the same input; `FirPair` evaluates both tap
+  sets in one pass with one shared window, each window load feeding both
+  accumulator strips - the load ports the d==1 tier is bound on. Kernel -39%
+  (d==1) / -41% (d==2, shuffles shared); DemodBench VisionIf 1.16 -> 0.74
+  ms/block; the 32 MS/s wall -16% (its limiter was the source thread, 71% of
+  which was the pair), the AirSpy live wall unchanged (decode limits there).
+  The win stopped exactly where the moving-limiter model said: at the decode
+  thread's level. A second pass then removed the d==2 tier's per-tap
+  deinterleave entirely (it was port-5 shuffle-bound, 8 uops/tap re-splitting
+  the same data 255 times): the window is split into even/odd sample planes
+  once per block and the tap loop walks (2u, 2u+1) pairs against the planes -
+  the strip runs at the d==1 FMA bound, and the old over-read guards vanish
+  because the polyphase loads are exactly the samples each output needs.
+  Fused-pair kernel 0.69 -> 0.34 ms/block (2x; ~4.5 cycles/tap, issue-width
+  bound just above the 4-cycle FMA floor); 32 MS/s source-thread CPU -18%
+  (cumulatively -40% from pre-#62); wall -2.3% more, capped by decode. All of
+  it bit-exact - renders byte-identical at every step.
 
 ## Dead ends (measured, do not repeat)
 
