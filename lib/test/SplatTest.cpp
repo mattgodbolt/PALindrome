@@ -78,6 +78,53 @@ TEST_CASE("SplatDeposit is bit-exact across thread counts") {
   }
 }
 
+TEST_CASE("SplatDeposit matches a naive reference everywhere, edges included") {
+  // The deposit dispatches interior spots to a padded vector row loop and edge
+  // spots to the scalar fallback; both must be bit-identical to the plain
+  // per-pixel loop (w = rw*cw, then one fma per channel). Sweep every column so
+  // the left clip, the interior, the right clip and the pad-width boundary near
+  // the right edge are all crossed.
+  std::vector<SplatRecord> recs;
+  for (std::int32_t x = -kRadius; x < static_cast<std::int32_t>(kWidth) + kRadius; ++x)
+    recs.push_back(SplatRecord{.x_pixel = static_cast<std::int16_t>(x),
+        .y_pixel = static_cast<std::int16_t>((x * 11) % kHeight),
+        .x_bin = 0,
+        .y_bin = 0,
+        .gun = {0.3f, 0.5f, 0.7f},
+        .klass = 0});
+
+  std::vector<float> ref(kWidth * kHeight * kChannels, 0.0f);
+  for (const auto &s: recs) {
+    for (std::int32_t k = 0; k < kSpot; ++k) {
+      const std::int32_t row = s.y_pixel - kRadius + k;
+      if (row < 0 || row >= static_cast<std::int32_t>(kHeight))
+        continue;
+      for (std::int32_t j = 0; j < kSpot; ++j) {
+        const std::int32_t col = s.x_pixel - kRadius + j;
+        if (col < 0 || col >= static_cast<std::int32_t>(kWidth))
+          continue;
+        const float w = kWeights[static_cast<std::size_t>(k)] * kWeights[static_cast<std::size_t>(j)];
+        float *cell = &ref[(static_cast<std::size_t>(row) * kWidth + static_cast<std::size_t>(col)) * kChannels];
+        cell[0] += s.gun[0] * w;
+        cell[1] += s.gun[1] * w;
+        cell[2] += s.gun[2] * w;
+      }
+    }
+  }
+
+  for (const std::size_t lanes: {std::size_t{1}, std::size_t{4}}) {
+    const auto fb = deposit_with(lanes, recs);
+    bool identical = true;
+    for (std::size_t i = 0; i < ref.size(); ++i)
+      if (fb[i] != ref[i]) {
+        identical = false;
+        break;
+      }
+    INFO("lanes = " << lanes);
+    CHECK(identical);
+  }
+}
+
 TEST_CASE("SplatDeposit clips spots that fall off the frame") {
   // A spot straddling the top edge deposits only its on-frame rows; a fully
   // off-frame spot deposits nothing. Threaded and serial agree.
