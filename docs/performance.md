@@ -17,30 +17,35 @@ FIFO worker thread per stage, bit-identical to the serial `--no-threads` decode:
 The deposit additionally fans one field's work across a worker pool (see below),
 so it is data-parallel *within* the stage as well as pipelined.
 
-## The shape of the workload: a balanced pipeline
+## The shape of the workload: a nearly balanced pipeline with a moving limiter
 
-For the live case (AirSpy, 20 MS/s real, decimate 1, 720x576 colour, 8 deposit
-threads) the per-thread CPU time is roughly:
+The three heavy stages sit close together, so the limiter is config-dependent
+and *moves as levers land*. Per-thread busy fractions, measured directly from
+`/proc/<pid>/task/*/stat` over a looped decode (2026-07-09, post #60/#62,
+8 deposit threads):
 
-    source ~= decode ~= sink(deposit coordinator) ~= 3000-3200 samples
-    deposit apply helpers                          ~= 1000-1100 each (x7)
+    AirSpy 20 MS/s d==1 live:  source 80%   decode 94%   sink 82%   <- decode limits
+    RX888  32 MS/s d==2 path:  source 88%   decode 96%   sink 82%   <- decode limits
+                               (source was 96% and the limiter before #62)
 
-The three heavy stages sit within ~10% of each other - none is even 1.1x another.
-There is **no single dominant bottleneck**. This is the key fact and it has a hard
-consequence:
+Hard consequences, measured repeatedly:
 
 - **Splitting a stage does not move the wall.** It just hands the bound to the
   next near-equal stage. Measured directly: splitting the decode into sync+chroma
   stages was wall-neutral; a projected front-end (IF-FIR vs detector) split
   measured ~2%. Re-staging a balanced pipeline buys nothing.
-- To go faster you must cut **total work** (e.g. wider-SIMD FIRs, or drop a stage
-  entirely), not re-shuffle the stages.
+- **Only cutting the limiter thread's work moves the wall**, and only down to
+  the next stage's level - then the bottleneck hands over (see #62's landing:
+  a 40% cut to the source thread's fattest kernel moved the 32 MS/s wall by
+  exactly the source-over-decode gap, 16%, and the live wall by nothing).
+- To go faster, find the limiter *for the config you care about* first, and cut
+  **total work on that thread**.
 
 Caution when measuring this: per-thread `perf` sample counts rank threads only
-coarsely. Stages within ~10% are co-saturated, not "one is the bottleneck" - do
-not chase differences that small between near-equal stages. And always fix one
-config: the RX888 corpus decimates /2, the AirSpy live path decimates /1 (~2x the
-downstream work), so the bottleneck legitimately differs between them.
+coarsely - use `/proc/<pid>/task/*/stat` utime+stime for the busy fractions.
+Stages within ~10% are co-saturated, not "one is the bottleneck". And always
+fix one config: the RX888 path decimates /2, the AirSpy live path /1 (~2x the
+downstream work), so the balance legitimately differs between them.
 
 ## What moved the wall
 
@@ -63,6 +68,16 @@ downstream work), so the bottleneck legitimately differs between them.
   ~10% off the RX888 /2 render, but only ~3% on the AirSpy /1 live path (where the
   deposit dominates and the demod is a smaller slice). Bit-exact block-invariance
   preserved.
+- **Fused vision FIR pair (#62).** `VisionIf` ran two independent 255-tap Firs
+  over the same input; `FirPair` evaluates both tap sets in one pass with one
+  shared window, each window load (and each d==2 deinterleave shuffle) feeding
+  both accumulator strips. Those are exactly the resources the strip tiers are
+  bound on - load ports at d==1, port-5 shuffles at d==2 - so the pair costs
+  ~40% less at an unchanged FMA count, bit-exact (renders byte-identical).
+  Kernel -39%/-41%; DemodBench VisionIf 1.16 -> 0.74 ms/block; the 32 MS/s wall
+  -16% (its limiter was the source thread, 71% of which was the pair), the
+  AirSpy live wall unchanged (decode limits there). The win stopped exactly
+  where the moving-limiter model said: at the decode thread's level.
 
 ## Dead ends (measured, do not repeat)
 
@@ -111,22 +126,34 @@ neutrality:
 Size any deposit work in *burst latency on the critical path*, never in % of
 program cycles - a pipelined decode hides everything that is not the limiter.
 But bottlenecks move: cut the current limiter and the next-slowest stage
-inherits the wall. If the FIR work below lands, or the output grows (higher
-resolution, more channels), the deposit can become limiting again - that is the
-day PR #70 merges, and the line-run accumulator sketched on #61 (mean real run
-length 24.7, cuts framebuffer traffic ~7x, attacks the memory bound directly)
-becomes the follow-on. Measurement caveat for all splat-loop work: Skylake-X's
+inherits the wall (#62 landed and handed the 32 MS/s wall from source to
+decode, not to the deposit). If enough decode-side work lands, or the output
+grows (higher resolution, more channels), the deposit can become limiting
+again - that is the day PR #70 merges, and the line-run accumulator sketched
+on #61 (mean real run length 24.7, cuts framebuffer traffic ~7x, attacks the
+memory bound directly) becomes the follow-on. Measurement caveat for all splat-loop work: Skylake-X's
 JCC erratum swings identical tight loops up to 35% across code layouts - judge
 changes on the full-render A/B, never a microbench delta.
 
 ## Levers not yet pulled
 
-- **Wider-SIMD FIRs - the *current* wall lever.** The limiting stages are
-  source/decode, and the FIRs are what they spend: `Fir::process` is 22% of
-  cycles and `VisionIf` another 8%, on the two heaviest threads. Fusing
-  VisionIf's re/im FIR pair into one shared-window complex convolve is issue
-  #62; beyond that, the `d==1` (non-decimating, i.e. the AirSpy live path)
-  `convolve_strip` tier is AVX2 (256-bit) on a box that has AVX-512. Held
-  pending the `std::simd` toolchain direction rather than hand-rolled AVX-512.
+- **The decode thread - the *current* wall lever on both paths** (post #62 it
+  limits everywhere; see the busy-fraction table above). Its spend: its own
+  `Fir::process` share (chroma band-pass, U/V low-pass pair, sync low-pass -
+  ~34% of the thread), `Decoder::decode_into` (~33%: AGC, mixers, comb
+  dispatch), the sweeps (~23%). Issue #63 (chroma pass-3 precision discipline,
+  per-line control snapshots, comb dispatch hoist) is the named workpiece. The
+  U/V low-pass pair shares *taps* but not input, so the #62 fusion shape does
+  not transfer; its sharable resource is only the tap broadcast (~10% by the
+  same port math - probably not worth the surface).
+- **Wider SIMD via std::simd (gcc 16+).** The strip tiers are AVX2 (256-bit) on
+  a box with AVX-512 and two 512-bit FMA units; 512-bit lanes would halve the
+  strip count. Held for `std::simd` rather than hand-rolled AVX-512. The
+  inventory of conversion sites is marked `TODO(std::simd)` in the code -
+  currently `fir.cpp` (`convolve_strip` + `convolve_strip_pair`, the fused
+  structure carries over unchanged) and `demod.cpp` (`inv_magnitude`'s
+  `[[gnu::optimize]]` fast-math island; gcc 16.1's `<simd>` lacks simd-math
+  sqrt, so it waits on that specifically) - grep for the tag rather than
+  trusting this list.
 - **GPU deposit.** The 24-byte `SplatRecord` field buffer is exactly the batch a
   GPU scatter would consume; a CUDA path is a scheduler swap, not a rewrite.
