@@ -287,6 +287,7 @@ TEST_CASE("FirPair matches two independent Firs bit-exactly, whole and chunked")
     im_chunked.insert(im_chunked.end(), piece.im.begin(), piece.im.end());
   }
   REQUIRE(re_chunked.size() == re_want.size());
+  REQUIRE(im_chunked.size() == im_want.size());
   for (std::size_t k = 0; k < re_want.size(); ++k) {
     CHECK(re_chunked[k] == re_want[k]);
     CHECK(im_chunked[k] == im_want[k]);

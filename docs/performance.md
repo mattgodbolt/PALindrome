@@ -21,7 +21,7 @@ so it is data-parallel *within* the stage as well as pipelined.
 
 The three heavy stages sit close together, so the limiter is config-dependent
 and *moves as levers land*. Per-thread busy fractions, measured directly from
-`/proc/<pid>/task/*/stat` over a looped decode (2026-07-09, post #60/#62,
+`/proc/<pid>/task/*/stat` over a looped decode (2026-07-08, post #60/#62,
 8 deposit threads):
 
     AirSpy 20 MS/s d==1 live:  source 80%   decode 94%   sink 82%   <- decode limits

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <numbers>
 #include <stdexcept>
 #include <utility>
@@ -47,7 +48,7 @@ float convolve(const float *taps, const float *window, std::size_t n) {
 // at full rate, then keep every dth" and the stream independent of how it's chunked
 // (the block-invariance guarantee).
 void convolve_strip(const float *taps, const float *window, float *y, std::size_t n, std::size_t outputs, std::size_t d,
-    std::size_t win_len) {
+    [[maybe_unused]] std::size_t win_len) {
   std::size_t k = 0;
 #if defined(__AVX2__) && defined(__FMA__)
   if (d == 1) {
@@ -146,7 +147,7 @@ void convolve_strip(const float *taps, const float *window, float *y, std::size_
 // when GCC 16's <simd> is production-ready - the fused structure carries over
 // unchanged, and 512-bit lanes would halve the strip count on this box.
 void convolve_strip_pair(const float *rtaps, const float *itaps, const float *window, float *yr, float *yi,
-    std::size_t n, std::size_t outputs, std::size_t d, std::size_t win_len) {
+    std::size_t n, std::size_t outputs, std::size_t d, [[maybe_unused]] std::size_t win_len) {
   std::size_t k = 0;
 #if defined(__AVX2__) && defined(__FMA__)
   if (d == 1) {
@@ -430,9 +431,10 @@ FirPair::FirPair(std::vector<float> re_taps, std::vector<float> im_taps, std::si
   if (re_taps_.empty())
     throw std::invalid_argument("FIR pair needs at least one tap");
   if (re_taps_.size() != im_taps_.size())
-    throw std::invalid_argument("FIR pair needs equal-length tap sets");
+    throw std::invalid_argument(
+        std::format("FIR pair needs equal-length tap sets ({} vs {})", re_taps_.size(), im_taps_.size()));
   if (decimation_ == 0)
-    throw std::invalid_argument("FIR decimation must be >= 1");
+    throw std::invalid_argument("FIR pair decimation must be >= 1");
   std::ranges::reverse(re_taps_);
   std::ranges::reverse(im_taps_);
   history_.assign(re_taps_.size() - 1, 0.0f);
