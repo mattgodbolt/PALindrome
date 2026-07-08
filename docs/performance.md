@@ -81,13 +81,52 @@ downstream work), so the bottleneck legitimately differs between them.
 - Earlier deposit-layout micro-experiments (RGBA-pad, SoA-planar, per-block SIMD
   splat) all measured losses; see git history around the `perf`/`screen-gun-inline`
   branches.
+- **More than 8 deposit threads.** 16 lanes measures *slower* than 8 on the live
+  path: the wider burst lights up more cores at once and Skylake-X drops its
+  all-core turbo (~7.5% clock, measured), context switches go 2.6x, and 15
+  workers + 3 pipeline threads exactly fills the 18 physical cores. 8 lanes is
+  the sweet spot on this box for a reason, not by luck.
+
+## Measured neutral, kept for later (issue #61, draft PR #70)
+
+A bit-exact 2x on the splat inner loop - the hottest symbol in the program at
+30.4% of cycles - moved **neither the wall nor total CPU** on the live path.
+The implementation (pad the per-record kernel pattern to whole 8-float lanes,
+deposit each interior row as one contiguous vector op, patterns built through a
+64-record arena because Skylake cannot forward pending scalar stores into a
+vector load) is verified byte-identical to the scalar loop and lives on branch
+`perf/splat-pad24` (PR #70), unmerged. Two structural reasons for the
+neutrality:
+
+1. **The burst is hidden.** At 8 lanes the per-field deposit burst fits inside
+   the pipeline's slack; the wall is set by the source/decode stages, so no
+   deposit-side improvement of any size can move it. (The 4-lane -> 8-lane wall
+   gain is the burst still poking out at 4 lanes, not a per-lane cost that
+   keeps paying.)
+2. **Fanned out, the deposit is memory-bound.** With 8 band workers running
+   concurrently, `SplatBench` times are identical before and after the 2x
+   instruction cut; only the 1-thread run shows it (-23%). Instruction cuts do
+   not cut time in a bandwidth-bound regime.
+
+Size any deposit work in *burst latency on the critical path*, never in % of
+program cycles - a pipelined decode hides everything that is not the limiter.
+But bottlenecks move: cut the current limiter and the next-slowest stage
+inherits the wall. If the FIR work below lands, or the output grows (higher
+resolution, more channels), the deposit can become limiting again - that is the
+day PR #70 merges, and the line-run accumulator sketched on #61 (mean real run
+length 24.7, cuts framebuffer traffic ~7x, attacks the memory bound directly)
+becomes the follow-on. Measurement caveat for all splat-loop work: Skylake-X's
+JCC erratum swings identical tight loops up to 35% across code layouts - judge
+changes on the full-render A/B, never a microbench delta.
 
 ## Levers not yet pulled
 
-- **Wider-SIMD FIRs.** The `d==1` (non-decimating, i.e. the AirSpy live path)
-  `convolve_strip` tier is AVX2 (256-bit) on a box that has AVX-512. The FIRs are
-  ~20% of the work and appear on both the source and decode threads, so widening
-  them cuts total work on the two heaviest stages at once. Held pending the
-  `std::simd` toolchain direction rather than hand-rolled AVX-512.
+- **Wider-SIMD FIRs - the *current* wall lever.** The limiting stages are
+  source/decode, and the FIRs are what they spend: `Fir::process` is 22% of
+  cycles and `VisionIf` another 8%, on the two heaviest threads. Fusing
+  VisionIf's re/im FIR pair into one shared-window complex convolve is issue
+  #62; beyond that, the `d==1` (non-decimating, i.e. the AirSpy live path)
+  `convolve_strip` tier is AVX2 (256-bit) on a box that has AVX-512. Held
+  pending the `std::simd` toolchain direction rather than hand-rolled AVX-512.
 - **GPU deposit.** The 24-byte `SplatRecord` field buffer is exactly the batch a
   GPU scatter would consume; a CUDA path is a scheduler swap, not a rewrite.
