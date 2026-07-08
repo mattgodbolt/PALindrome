@@ -132,6 +132,10 @@ private:
   std::vector<float> im_taps_;
   std::vector<float> history_; // last size()-1 input samples, shared by both halves
   Buffer<float> window_; // scratch: history followed by the current block
+  // Polyphase scratch for decimation 2: the window deinterleaved into even/odd
+  // sample planes once per block, so the tap loop needs no per-tap shuffles.
+  Buffer<float> even_;
+  Buffer<float> odd_;
   Buffer<float> out_re_; // owned outputs, reused across calls
   Buffer<float> out_im_;
   std::size_t decimation_;
