@@ -94,4 +94,48 @@ private:
   std::size_t phase_{}; // inputs still to skip before the next kept output
 };
 
+// Two equal-length FIRs over the SAME input, evaluated in one fused pass - the
+// re/im halves of a complex-coefficient filter on a real signal (VisionIf's IF
+// strip). One shared window (one history+block copy per call, not two) and,
+// per tap, each window load feeds both accumulator strips, so the pair costs
+// far less than two Firs: the d==1 strip tier is load-port-bound and the d==2
+// tier is shuffle-bound, and fusion shares exactly those resources while the
+// FMA count is unchanged. Bit-exact against two independent Firs: each output
+// still accumulates its own taps in natural order with the same single-rounded
+// FMAs; only the interleaving of the two output streams changes.
+class FirPair {
+public:
+  // Both output spans are owned by the filter and valid until the next
+  // process() call.
+  struct Outputs {
+    std::span<const float> re;
+    std::span<const float> im;
+  };
+
+  // Same contract as Fir, for two tap sets of equal length. Throws
+  // std::invalid_argument on empty or mismatched taps, or decimation < 1.
+  FirPair(std::vector<float> re_taps, std::vector<float> im_taps, std::size_t decimation = 1);
+
+  void prepare(std::size_t max_in);
+
+  [[nodiscard]] Outputs process(std::span<const float> in);
+
+  [[nodiscard]] std::size_t max_output_for(std::size_t n_in) const noexcept {
+    return (n_in + decimation_ - 1) / decimation_;
+  }
+  [[nodiscard]] std::size_t input_multiple() const noexcept { return decimation_; }
+  [[nodiscard]] std::size_t size() const noexcept { return re_taps_.size(); }
+  [[nodiscard]] std::size_t decimation() const noexcept { return decimation_; }
+
+private:
+  std::vector<float> re_taps_; // both reversed, as Fir's are
+  std::vector<float> im_taps_;
+  std::vector<float> history_; // last size()-1 input samples, shared by both halves
+  Buffer<float> window_; // scratch: history followed by the current block
+  Buffer<float> out_re_; // owned outputs, reused across calls
+  Buffer<float> out_im_;
+  std::size_t decimation_;
+  std::size_t phase_{}; // inputs still to skip before the next kept output
+};
+
 } // namespace palindrome::dsp

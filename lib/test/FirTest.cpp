@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 namespace dsp = palindrome::dsp;
@@ -244,4 +245,59 @@ TEST_CASE("Fir rejects bad construction") {
   CHECK_THROWS_AS(dsp::Fir{std::vector<float>{}}, std::invalid_argument);
   CHECK_THROWS_AS((dsp::Fir{dsp::lowpass_kernel(5, 1000.0, 100.0), 0}), std::invalid_argument);
   CHECK(dsp::Fir{dsp::lowpass_kernel(5, 1000.0, 100.0)}.decimation() == 1); // default
+}
+
+TEST_CASE("FirPair matches two independent Firs bit-exactly, whole and chunked") {
+  // The fused pass shares the window sweep (and the d == 2 deinterleave)
+  // between the two tap sets, but each output must still be the exact result
+  // its own Fir would produce. The tap counts land the strip loops on all
+  // three tiers (32-wide, 8-wide, scalar tail); the ragged chunking makes the
+  // shared decimation phase straddle blocks.
+  const auto num_taps = GENERATE(std::size_t{7}, std::size_t{64}, std::size_t{255});
+  const auto decimation = GENERATE(std::size_t{1}, std::size_t{2}, std::size_t{3});
+  const auto re_taps = dsp::lowpass_kernel(num_taps, 1000.0, 120.0);
+  const auto im_taps = dsp::bandpass_kernel(num_taps, 1000.0, 60.0, 200.0);
+  const auto x = tone(1000.0, 40.0, 2000);
+
+  dsp::Fir re_ref{re_taps, decimation};
+  dsp::Fir im_ref{im_taps, decimation};
+  re_ref.prepare(x.size());
+  im_ref.prepare(x.size());
+  const std::span<const float> re_want = re_ref.process(x);
+  const std::span<const float> im_want = im_ref.process(x);
+
+  dsp::FirPair whole{re_taps, im_taps, decimation};
+  whole.prepare(x.size());
+  const auto got = whole.process(x);
+  REQUIRE(got.re.size() == re_want.size());
+  REQUIRE(got.im.size() == im_want.size());
+  for (std::size_t k = 0; k < re_want.size(); ++k) {
+    CHECK(got.re[k] == re_want[k]);
+    CHECK(got.im[k] == im_want[k]);
+  }
+
+  std::vector<float> re_chunked;
+  std::vector<float> im_chunked;
+  dsp::FirPair dut{re_taps, im_taps, decimation};
+  constexpr std::size_t chunk = 91; // ragged blocks straddle the decimation phase
+  dut.prepare(chunk);
+  for (std::size_t off = 0; off < x.size(); off += chunk) {
+    const auto piece = dut.process(std::span{x}.subspan(off, std::min(chunk, x.size() - off)));
+    re_chunked.insert(re_chunked.end(), piece.re.begin(), piece.re.end());
+    im_chunked.insert(im_chunked.end(), piece.im.begin(), piece.im.end());
+  }
+  REQUIRE(re_chunked.size() == re_want.size());
+  for (std::size_t k = 0; k < re_want.size(); ++k) {
+    CHECK(re_chunked[k] == re_want[k]);
+    CHECK(im_chunked[k] == im_want[k]);
+  }
+}
+
+TEST_CASE("FirPair rejects bad construction") {
+  const auto taps5 = dsp::lowpass_kernel(5, 1000.0, 100.0);
+  const auto taps7 = dsp::lowpass_kernel(7, 1000.0, 100.0);
+  CHECK_THROWS_AS((dsp::FirPair{std::vector<float>{}, std::vector<float>{}}), std::invalid_argument);
+  CHECK_THROWS_AS((dsp::FirPair{taps5, taps7}), std::invalid_argument);
+  CHECK_THROWS_AS((dsp::FirPair{taps5, taps5, 0}), std::invalid_argument);
+  CHECK(dsp::FirPair{taps5, taps5}.decimation() == 1); // default
 }
