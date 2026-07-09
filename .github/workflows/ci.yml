@@ -21,6 +21,25 @@ jobs:
       - name: Test
         run: env CTEST_PARALLEL_LEVEL=$(nproc) ctest --preset ${{ matrix.preset }}
 
+  # The runners have AVX2, so -march=native never compiles the scalar fallback
+  # tiers (the DSP kernels' non-AVX2 paths, and the WASM target's whole world).
+  # Build and test the plain x86-64 baseline so those paths stay honest.
+  build-and-test-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install GCC 15
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update -y
+          sudo apt-get install -y gcc-15 g++-15
+      - name: Configure
+        run: cmake --preset release -DPALINDROME_ARCH=x86-64
+      - name: Build
+        run: cmake --build --preset release
+      - name: Test
+        run: env CTEST_PARALLEL_LEVEL=$(nproc) ctest --preset release
+
   check-pre-commits:
     runs-on: ubuntu-latest
     steps:
