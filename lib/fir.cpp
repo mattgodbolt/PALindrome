@@ -238,6 +238,8 @@ void convolve_strip_pair(const float *rtaps, const float *itaps, const float *wi
 // (microseconds, off the binding ports - plain C++ on purpose) and runs even
 // when the non-AVX2 tail below is the only consumer of the window: the
 // portable path pays it for a uniform contract.
+// TODO(std::simd): port alongside convolve_strip_pair's tiers; this polyphase
+// shape (not convolve_strip's shuffle tier) is the right basis for d == 2.
 void convolve_strip_pair_decim2(const float *rtaps, const float *itaps, const float *window, float *even_plane,
     float *odd_plane, float *yr, float *yi, std::size_t n, std::size_t outputs, std::size_t win_len) {
   if (outputs == 0)
