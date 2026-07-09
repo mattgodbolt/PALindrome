@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <numbers>
 #include <stdexcept>
 #include <utility>
@@ -47,7 +48,7 @@ float convolve(const float *taps, const float *window, std::size_t n) {
 // at full rate, then keep every dth" and the stream independent of how it's chunked
 // (the block-invariance guarantee).
 void convolve_strip(const float *taps, const float *window, float *y, std::size_t n, std::size_t outputs, std::size_t d,
-    std::size_t win_len) {
+    [[maybe_unused]] std::size_t win_len) {
   std::size_t k = 0;
 #if defined(__AVX2__) && defined(__FMA__)
   if (d == 1) {
@@ -132,6 +133,207 @@ void convolve_strip(const float *taps, const float *window, float *y, std::size_
 #endif
   for (; k < outputs; ++k)
     y[k] = convolve(taps, window + d * k, n);
+}
+
+// Deinterleave a window into its even/odd sample planes (E[i] = w[2i],
+// O[i] = w[2i+1]) for the polyphase d == 2 pair tier below. One pass over the
+// block (microseconds) instead of the shuffle work the tier used to repeat per
+// tap. Plain C++ on purpose: this is off the binding port either way, so it
+// earns no intrinsics.
+void split_even_odd(const float *w, float *even_plane, float *odd_plane, std::size_t win_len) {
+  const std::size_t pairs = win_len / 2;
+  for (std::size_t i = 0; i < pairs; ++i) {
+    even_plane[i] = w[2 * i];
+    odd_plane[i] = w[2 * i + 1];
+  }
+  if (win_len % 2 != 0)
+    even_plane[pairs] = w[win_len - 1]; // an odd window's last sample is an even-plane entry
+}
+
+// The fused-pair counterpart of convolve_strip: two tap sets, one window sweep,
+// with every window load feeding both accumulator sets - the load ports the
+// d == 1 tier is bound on, which is where the pair's ~40% comes from; the FMA
+// count is unchanged. Every output accumulates its own taps in natural order
+// with the same single-rounded FMAs as convolve_strip, so the pair is
+// bit-identical to two independent passes. Decimation 2 does not come here: it
+// has its own polyphase path (convolve_strip_pair_decim2, below), dispatched
+// explicitly by FirPair::process.
+// TODO(std::simd): re-express these tiers (and convolve_strip's) in std::simd
+// when GCC 16's <simd> is production-ready - the fused structure carries over
+// unchanged, and 512-bit lanes would halve the strip count on this box.
+void convolve_strip_pair(const float *rtaps, const float *itaps, const float *window, float *yr, float *yi,
+    std::size_t n, std::size_t outputs, std::size_t d) {
+  std::size_t k = 0;
+#if defined(__AVX2__) && defined(__FMA__)
+  if (d == 1) {
+    for (; k + 32 <= outputs; k += 32) {
+      __m256 a0 = _mm256_setzero_ps();
+      __m256 a1 = _mm256_setzero_ps();
+      __m256 a2 = _mm256_setzero_ps();
+      __m256 a3 = _mm256_setzero_ps();
+      __m256 b0 = _mm256_setzero_ps();
+      __m256 b1 = _mm256_setzero_ps();
+      __m256 b2 = _mm256_setzero_ps();
+      __m256 b3 = _mm256_setzero_ps();
+      const float *wb = window + k;
+      for (std::size_t t = 0; t < n; ++t) {
+        const __m256 tr = _mm256_broadcast_ss(rtaps + t);
+        const __m256 ti = _mm256_broadcast_ss(itaps + t);
+        const __m256 l0 = _mm256_loadu_ps(wb + t + 0);
+        const __m256 l1 = _mm256_loadu_ps(wb + t + 8);
+        const __m256 l2 = _mm256_loadu_ps(wb + t + 16);
+        const __m256 l3 = _mm256_loadu_ps(wb + t + 24);
+        a0 = _mm256_fmadd_ps(tr, l0, a0);
+        a1 = _mm256_fmadd_ps(tr, l1, a1);
+        a2 = _mm256_fmadd_ps(tr, l2, a2);
+        a3 = _mm256_fmadd_ps(tr, l3, a3);
+        b0 = _mm256_fmadd_ps(ti, l0, b0);
+        b1 = _mm256_fmadd_ps(ti, l1, b1);
+        b2 = _mm256_fmadd_ps(ti, l2, b2);
+        b3 = _mm256_fmadd_ps(ti, l3, b3);
+      }
+      _mm256_storeu_ps(yr + k + 0, a0);
+      _mm256_storeu_ps(yr + k + 8, a1);
+      _mm256_storeu_ps(yr + k + 16, a2);
+      _mm256_storeu_ps(yr + k + 24, a3);
+      _mm256_storeu_ps(yi + k + 0, b0);
+      _mm256_storeu_ps(yi + k + 8, b1);
+      _mm256_storeu_ps(yi + k + 16, b2);
+      _mm256_storeu_ps(yi + k + 24, b3);
+    }
+    for (; k + 8 <= outputs; k += 8) {
+      __m256 a = _mm256_setzero_ps();
+      __m256 b = _mm256_setzero_ps();
+      const float *wb = window + k;
+      for (std::size_t t = 0; t < n; ++t) {
+        const __m256 l = _mm256_loadu_ps(wb + t);
+        a = _mm256_fmadd_ps(_mm256_broadcast_ss(rtaps + t), l, a);
+        b = _mm256_fmadd_ps(_mm256_broadcast_ss(itaps + t), l, b);
+      }
+      _mm256_storeu_ps(yr + k, a);
+      _mm256_storeu_ps(yi + k, b);
+    }
+  }
+#endif
+  for (; k < outputs; ++k) {
+    yr[k] = convolve(rtaps, window + d * k, n);
+    yi[k] = convolve(itaps, window + d * k, n);
+  }
+}
+
+// The decimation-2 pair, polyphase. The shuffle-tier approach (convolve_strip's
+// d == 2) re-deinterleaves the window's even lanes per tap - 8 port-5 uops per
+// tap per strip, the binding resource, paid n times over the same data. Here
+// the window is split into even/odd sample planes once per call instead, and
+// the tap loop alternates planes: output k's tap t is window[2k + t] =
+// (t even ? even_plane : odd_plane)[k + t/2], so walking taps in pairs
+// (2u, 2u+1) shares one plane offset and the strip runs at the d == 1 FMA
+// bound with no shuffles at all (~2x the shuffling pair, measured). Natural t
+// order per output and the same single-rounded FMAs on the same operand
+// values, so the result is bit-identical to two independent Firs. The
+// polyphase loads are exactly the samples each output needs (no over-read),
+// so there is no window-length guard to carry; the planes are written here,
+// never null, and sized by the caller to win_len/2 + 1 (FirPair::prepare
+// budgets them). The split is a couple of passes over the block
+// (microseconds, off the binding ports - plain C++ on purpose) and runs even
+// when the non-AVX2 tail below is the only consumer of the window: the
+// portable path pays it for a uniform contract.
+// TODO(std::simd): port alongside convolve_strip_pair's tiers; this polyphase
+// shape (not convolve_strip's shuffle tier) is the right basis for d == 2.
+void convolve_strip_pair_decim2(const float *rtaps, const float *itaps, const float *window, float *even_plane,
+    float *odd_plane, float *yr, float *yi, std::size_t n, std::size_t outputs, std::size_t win_len) {
+  if (outputs == 0)
+    return;
+  split_even_odd(window, even_plane, odd_plane, win_len);
+  std::size_t k = 0;
+#if defined(__AVX2__) && defined(__FMA__)
+  for (; k + 32 <= outputs; k += 32) {
+    __m256 a0 = _mm256_setzero_ps();
+    __m256 a1 = _mm256_setzero_ps();
+    __m256 a2 = _mm256_setzero_ps();
+    __m256 a3 = _mm256_setzero_ps();
+    __m256 b0 = _mm256_setzero_ps();
+    __m256 b1 = _mm256_setzero_ps();
+    __m256 b2 = _mm256_setzero_ps();
+    __m256 b3 = _mm256_setzero_ps();
+    const float *eb = even_plane + k;
+    const float *ob = odd_plane + k;
+    std::size_t t = 0;
+    for (; t + 2 <= n; t += 2) {
+      const std::size_t u = t / 2;
+      const __m256 tre = _mm256_broadcast_ss(rtaps + t);
+      const __m256 tie = _mm256_broadcast_ss(itaps + t);
+      const __m256 e0 = _mm256_loadu_ps(eb + u);
+      const __m256 e1 = _mm256_loadu_ps(eb + u + 8);
+      const __m256 e2 = _mm256_loadu_ps(eb + u + 16);
+      const __m256 e3 = _mm256_loadu_ps(eb + u + 24);
+      a0 = _mm256_fmadd_ps(tre, e0, a0);
+      a1 = _mm256_fmadd_ps(tre, e1, a1);
+      a2 = _mm256_fmadd_ps(tre, e2, a2);
+      a3 = _mm256_fmadd_ps(tre, e3, a3);
+      b0 = _mm256_fmadd_ps(tie, e0, b0);
+      b1 = _mm256_fmadd_ps(tie, e1, b1);
+      b2 = _mm256_fmadd_ps(tie, e2, b2);
+      b3 = _mm256_fmadd_ps(tie, e3, b3);
+      const __m256 tro = _mm256_broadcast_ss(rtaps + t + 1);
+      const __m256 tio = _mm256_broadcast_ss(itaps + t + 1);
+      const __m256 o0 = _mm256_loadu_ps(ob + u);
+      const __m256 o1 = _mm256_loadu_ps(ob + u + 8);
+      const __m256 o2 = _mm256_loadu_ps(ob + u + 16);
+      const __m256 o3 = _mm256_loadu_ps(ob + u + 24);
+      a0 = _mm256_fmadd_ps(tro, o0, a0);
+      a1 = _mm256_fmadd_ps(tro, o1, a1);
+      a2 = _mm256_fmadd_ps(tro, o2, a2);
+      a3 = _mm256_fmadd_ps(tro, o3, a3);
+      b0 = _mm256_fmadd_ps(tio, o0, b0);
+      b1 = _mm256_fmadd_ps(tio, o1, b1);
+      b2 = _mm256_fmadd_ps(tio, o2, b2);
+      b3 = _mm256_fmadd_ps(tio, o3, b3);
+    }
+    for (; t < n; ++t) { // odd tap count: one trailing even-plane tap
+      const std::size_t u = t / 2;
+      const __m256 tre = _mm256_broadcast_ss(rtaps + t);
+      const __m256 tie = _mm256_broadcast_ss(itaps + t);
+      const __m256 e0 = _mm256_loadu_ps(eb + u);
+      const __m256 e1 = _mm256_loadu_ps(eb + u + 8);
+      const __m256 e2 = _mm256_loadu_ps(eb + u + 16);
+      const __m256 e3 = _mm256_loadu_ps(eb + u + 24);
+      a0 = _mm256_fmadd_ps(tre, e0, a0);
+      a1 = _mm256_fmadd_ps(tre, e1, a1);
+      a2 = _mm256_fmadd_ps(tre, e2, a2);
+      a3 = _mm256_fmadd_ps(tre, e3, a3);
+      b0 = _mm256_fmadd_ps(tie, e0, b0);
+      b1 = _mm256_fmadd_ps(tie, e1, b1);
+      b2 = _mm256_fmadd_ps(tie, e2, b2);
+      b3 = _mm256_fmadd_ps(tie, e3, b3);
+    }
+    _mm256_storeu_ps(yr + k, a0);
+    _mm256_storeu_ps(yr + k + 8, a1);
+    _mm256_storeu_ps(yr + k + 16, a2);
+    _mm256_storeu_ps(yr + k + 24, a3);
+    _mm256_storeu_ps(yi + k, b0);
+    _mm256_storeu_ps(yi + k + 8, b1);
+    _mm256_storeu_ps(yi + k + 16, b2);
+    _mm256_storeu_ps(yi + k + 24, b3);
+  }
+  for (; k + 8 <= outputs; k += 8) {
+    __m256 a = _mm256_setzero_ps();
+    __m256 b = _mm256_setzero_ps();
+    const float *eb = even_plane + k;
+    const float *ob = odd_plane + k;
+    for (std::size_t t = 0; t < n; ++t) {
+      const __m256 l = _mm256_loadu_ps((t % 2 == 0 ? eb : ob) + t / 2);
+      a = _mm256_fmadd_ps(_mm256_broadcast_ss(rtaps + t), l, a);
+      b = _mm256_fmadd_ps(_mm256_broadcast_ss(itaps + t), l, b);
+    }
+    _mm256_storeu_ps(yr + k, a);
+    _mm256_storeu_ps(yi + k, b);
+  }
+#endif
+  for (; k < outputs; ++k) {
+    yr[k] = convolve(rtaps, window + 2 * k, n);
+    yi[k] = convolve(itaps, window + 2 * k, n);
+  }
 }
 
 } // namespace
@@ -292,6 +494,69 @@ std::span<const float> Fir::process(std::span<const float> in) {
     std::ranges::copy(window.end() - static_cast<std::ptrdiff_t>(carry), window.end(), history_.begin());
 
   return out_.view();
+}
+
+FirPair::FirPair(std::vector<float> re_taps, std::vector<float> im_taps, std::size_t decimation) :
+    re_taps_{std::move(re_taps)}, im_taps_{std::move(im_taps)}, decimation_{decimation} {
+  if (re_taps_.empty())
+    throw std::invalid_argument("FIR pair needs at least one tap");
+  if (re_taps_.size() != im_taps_.size())
+    throw std::invalid_argument(
+        std::format("FIR pair needs equal-length tap sets ({} vs {})", re_taps_.size(), im_taps_.size()));
+  if (decimation_ == 0)
+    throw std::invalid_argument("FIR pair decimation must be >= 1");
+  std::ranges::reverse(re_taps_);
+  std::ranges::reverse(im_taps_);
+  history_.assign(re_taps_.size() - 1, 0.0f);
+}
+
+void FirPair::prepare(std::size_t max_in) {
+  window_.reserve(history_.size() + max_in);
+  out_re_.reserve(max_output_for(max_in));
+  out_im_.reserve(max_output_for(max_in));
+  if (decimation_ == 2) {
+    even_.reserve((history_.size() + max_in) / 2 + 1);
+    odd_.reserve((history_.size() + max_in) / 2 + 1);
+  }
+}
+
+// Fir::process with one window layout serving both halves; see that function
+// for the window/phase mechanics.
+FirPair::Outputs FirPair::process(std::span<const float> in) {
+  const auto n = re_taps_.size();
+  const auto m = in.size();
+  if (m == 0)
+    return {};
+
+  const auto carry = history_.size();
+  const auto window = window_.write_n(carry + m);
+  std::ranges::copy(history_, window.begin());
+  std::ranges::copy(in, window.begin() + static_cast<std::ptrdiff_t>(carry));
+
+  const std::size_t outputs = (m > phase_) ? (m - phase_ + decimation_ - 1) / decimation_ : 0;
+  auto *yr = out_re_.write_n(outputs).data();
+  auto *yi = out_im_.write_n(outputs).data();
+  const auto *w = window.data();
+  if (decimation_ == 2) {
+    // The polyphase path, dispatched explicitly: the kernel writes and reads
+    // the even/odd plane scratch itself, so the planes' contract lives in one
+    // place and they are never null. phase_ shifts which input sample is
+    // "even", hence the split source is w + phase_, fresh each call.
+    const auto win_len = carry + m - phase_;
+    const auto ev = even_.write_n(win_len / 2 + 1);
+    const auto od = odd_.write_n(win_len / 2 + 1);
+    convolve_strip_pair_decim2(
+        re_taps_.data(), im_taps_.data(), w + phase_, ev.data(), od.data(), yr, yi, n, outputs, win_len);
+  }
+  else {
+    convolve_strip_pair(re_taps_.data(), im_taps_.data(), w + phase_, yr, yi, n, outputs, decimation_);
+  }
+  phase_ = phase_ + outputs * decimation_ - m;
+
+  if (carry != 0)
+    std::ranges::copy(window.end() - static_cast<std::ptrdiff_t>(carry), window.end(), history_.begin());
+
+  return {.re = out_re_.view(), .im = out_im_.view()};
 }
 
 } // namespace palindrome::dsp

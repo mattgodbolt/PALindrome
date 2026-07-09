@@ -179,9 +179,9 @@ public:
   // span is owned by the stage, valid until the next process() call.
   [[nodiscard]] std::span<const float> process(std::span<const float> in);
 
-  [[nodiscard]] std::size_t max_output_for(std::size_t n_in) const noexcept { return re_filter_.max_output_for(n_in); }
-  [[nodiscard]] std::size_t input_multiple() const noexcept { return re_filter_.input_multiple(); }
-  [[nodiscard]] std::size_t decimation() const noexcept { return re_filter_.decimation(); }
+  [[nodiscard]] std::size_t max_output_for(std::size_t n_in) const noexcept { return filter_.max_output_for(n_in); }
+  [[nodiscard]] std::size_t input_multiple() const noexcept { return filter_.input_multiple(); }
+  [[nodiscard]] std::size_t decimation() const noexcept { return filter_.decimation(); }
 
 private:
   VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, Detector detector, double omega_per_output,
@@ -189,8 +189,10 @@ private:
   void quasi_sync_detect(
       restrict_ptr<const float> i, restrict_ptr<const float> q, restrict_ptr<float> out, std::size_t n);
 
-  dsp::Fir re_filter_; // the complex kernel's real part over the real input
-  dsp::Fir im_filter_; // ... and its imaginary part
+  // The complex kernel's real and imaginary parts over the real input, as one
+  // fused pass: the two halves share the window sweep (and the d == 2 tier's
+  // deinterleave), which two independent Firs would each pay in full.
+  dsp::FirPair filter_;
   Detector detector_;
   // Quasi-sync carrier recovery: a conjugate-rotating NCO phasor stepped at the
   // nominal carrier (per OUTPUT sample, so decimation folds in) and trimmed by

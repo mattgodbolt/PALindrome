@@ -319,14 +319,13 @@ VisionIf::VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &s
 
 VisionIf::VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, Detector detector, double omega_per_output,
     std::size_t decimation) :
-    re_filter_{std::move(taps.first), decimation}, im_filter_{std::move(taps.second), decimation}, detector_{detector},
+    filter_{std::move(taps.first), std::move(taps.second), decimation}, detector_{detector},
     step_{std::polar(1.0, -omega_per_output)} {}
 
 void VisionIf::prepare(std::size_t max_in) {
-  re_filter_.prepare(max_in);
-  im_filter_.prepare(max_in);
-  inv_mag_.reserve(re_filter_.max_output_for(max_in));
-  out_.reserve(re_filter_.max_output_for(max_in));
+  filter_.prepare(max_in);
+  inv_mag_.reserve(filter_.max_output_for(max_in));
+  out_.reserve(filter_.max_output_for(max_in));
 }
 
 void VisionIf::quasi_sync_detect(
@@ -362,8 +361,7 @@ void VisionIf::quasi_sync_detect(
 }
 
 std::span<const float> VisionIf::process(std::span<const float> in) {
-  const auto i = re_filter_.process(in);
-  const auto q = im_filter_.process(in);
+  const auto [i, q] = filter_.process(in);
   const std::size_t m = i.size();
   const auto out = out_.write_n(m);
   // No default: a new Detector fails to compile until it's handled here.
