@@ -8,6 +8,7 @@
 #include <format>
 #include <numbers>
 #include <stdexcept>
+#include <utility>
 
 namespace palindrome::video {
 
@@ -88,6 +89,21 @@ ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
   glass_len_ = static_cast<std::size_t>(std::lround(kGlassDelayCycles * cfg_.sample_rate_hz / cfg_.subcarrier_hz));
   if (cfg_.comb_mode == CombMode::glass && glass_len_ >= ring_cap_)
     throw std::invalid_argument{"ChromaDecoder: glass delay exceeds the comb ring (subcarrier far below nominal?)"};
+  snapshot_controls();
+}
+
+void ChromaDecoder::snapshot_controls() {
+  // ACC normalisation, gated by the killer. The gate is a SWITCH with a
+  // ramped opening, not a proportional fader: below the switch point the
+  // chroma is fully muted (the TDA3561A kills > 50 dB — and the unbounded
+  // ACC 1/burst would otherwise amplify any leakage on a noise "burst"),
+  // above it the slow ramp plays out as the saturation fading in. Computed in
+  // double once per line, snapshotted down to float for pass 3's per-sample
+  // flow, with the ±1 V-switch folded into the V side.
+  const double gate = kill_gain_ >= kKillerSwitch ? kill_gain_ : 0.0;
+  const double scale = burst_amp_ > 1e-9 ? gate / burst_amp_ : 0.0;
+  scale_u_ = static_cast<float>(scale);
+  scale_v_ = static_cast<float>(v_flip_ * scale);
 }
 
 void ChromaDecoder::prepare(std::size_t max_in) {
@@ -198,8 +214,9 @@ void ChromaDecoder::finalize_line() {
   // De-rotate by π - psi_axis so the -U axis lands on the negative-real axis;
   // U = -Re, V = Im (switch-corrected by v_flip_) then follow in process().
   const double psi = std::numbers::pi - psi_axis;
-  psi_cos_ = std::cos(psi);
-  psi_sin_ = std::sin(psi);
+  psi_cos_ = static_cast<float>(std::cos(psi));
+  psi_sin_ = static_cast<float>(std::sin(psi));
+  snapshot_controls();
 }
 
 std::span<const ChromaSample> ChromaDecoder::process(
@@ -220,6 +237,8 @@ std::span<const ChromaSample> ChromaDecoder::process(
   // runs at the frequency set by the previous gate close. With the pull
   // disabled nothing feeds back and the whole block is one segment.
   std::size_t start = 0;
+  const auto gate_lo = static_cast<float>(cfg_.burst_gate_lo);
+  const auto gate_hi = static_cast<float>(cfg_.burst_gate_hi);
   while (start < n) {
     std::size_t end = n;
     if (cfg_.apc_catch_range_hz > 0.0) {
@@ -230,8 +249,7 @@ std::span<const ChromaSample> ChromaDecoder::process(
         if (hbeam[k].line_start)
           gate_prev = false;
         const float hp = hbeam[k].h_phase;
-        const bool in_gate =
-            hp >= static_cast<float>(cfg_.burst_gate_lo) && hp < static_cast<float>(cfg_.burst_gate_hi);
+        const bool in_gate = hp >= gate_lo && hp < gate_hi;
         const bool closes = !in_gate && gate_prev;
         gate_prev = in_gate;
         if (closes) {
@@ -276,102 +294,160 @@ void ChromaDecoder::decode_segment(
   // this line's rotation), then de-rotate each sample to transmitted U/V, flip V
   // on PAL-style lines, and run the 1H comb. Chroma is normalised by the smoothed
   // burst amplitude (ACC), so the saturation knob is capture-independent.
+  switch (cfg_.comb_mode) {
+    case CombMode::off: return decode_pass3<CombMode::off>(raw_u, raw_v, luma, hbeam, out);
+    case CombMode::post: return decode_pass3<CombMode::post>(raw_u, raw_v, luma, hbeam, out);
+    case CombMode::delay_line: return decode_pass3<CombMode::delay_line>(raw_u, raw_v, luma, hbeam, out);
+    case CombMode::glass: return decode_pass3<CombMode::glass>(raw_u, raw_v, luma, hbeam, out);
+  }
+  std::unreachable();
+}
+
+template<CombMode Mode>
+void ChromaDecoder::decode_pass3(std::span<const float> raw_u, std::span<const float> raw_v,
+    std::span<const float> luma, std::span<const BeamSample> hbeam, std::span<ChromaSample> out) {
+  const std::size_t n = out.size();
+  const auto gate_lo = static_cast<float>(cfg_.burst_gate_lo);
+  const auto gate_hi = static_cast<float>(cfg_.burst_gate_hi);
+
+  // The loop's mutable state lives in locals, written back on exit: the float
+  // stores to out/the comb ring could alias float members for all the compiler
+  // knows, so member-resident state would reload and store every sample.
+  auto ring_pos = ring_pos_;
+  auto sample_index = sample_index_;
+  auto last_line_start = last_line_start_;
+  auto line_len = line_len_;
+  auto in_gate_prev = in_gate_prev_;
+  // The burst accumulator: summed in double from the float quadratures, exactly
+  // as the member form was, so finalize_line sees bit-identical sums and the
+  // APC/ident/killer loop is untouched by the float flow below.
+  auto burst_c = burst_acc_.real();
+  auto burst_s = burst_acc_.imag();
+  auto burst_count = burst_count_;
+  const auto ring_cap = ring_cap_;
+  [[maybe_unused]] const auto glass_len = glass_len_; // unused outside the glass instantiation
+  float *const u_ring = u_ring_.data();
+  float *const v_ring = v_ring_.data();
+
+  // This line's rotation and scales, refreshed at each gate close (the only
+  // place they change). The PAL-D sum/difference halving folds into the scale.
+  constexpr bool kPalD = Mode == CombMode::delay_line || Mode == CombMode::glass;
+  float pc{};
+  float ps{};
+  float u_scale{};
+  float v_scale{};
+  const auto reload_controls = [&] {
+    pc = psi_cos_;
+    ps = psi_sin_;
+    u_scale = kPalD ? 0.5f * scale_u_ : scale_u_;
+    v_scale = kPalD ? 0.5f * scale_v_ : scale_v_;
+  };
+  reload_controls();
+
   for (std::size_t k = 0; k < n; ++k) {
     if (hbeam[k].line_start) {
-      const std::size_t len = sample_index_ - last_line_start_;
-      if (len > 0 && len < ring_cap_)
-        line_len_ = len;
-      last_line_start_ = sample_index_;
-      burst_acc_ = {0.0, 0.0};
-      burst_count_ = 0;
-      in_gate_prev_ = false;
+      const std::size_t len = sample_index - last_line_start;
+      if (len > 0 && len < ring_cap)
+        line_len = len;
+      last_line_start = sample_index;
+      burst_c = 0.0;
+      burst_s = 0.0;
+      burst_count = 0;
+      in_gate_prev = false;
     }
 
-    const double i = static_cast<double>(raw_u[k]);
-    const double q = static_cast<double>(raw_v[k]);
+    const float i = raw_u[k];
+    const float q = raw_v[k];
 
     // Gate the burst on h_phase, which is anchored to the sync leading edge (it
     // wraps to 0 there) — unlike line_start, which fires at the trailing edge.
     const float hp = hbeam[k].h_phase;
-    const bool in_gate = hp >= static_cast<float>(cfg_.burst_gate_lo) && hp < static_cast<float>(cfg_.burst_gate_hi);
+    const bool in_gate = hp >= gate_lo && hp < gate_hi;
     if (in_gate) {
-      burst_acc_ += std::complex<double>{i, q};
-      ++burst_count_;
+      burst_c += static_cast<double>(i);
+      burst_s += static_cast<double>(q);
+      ++burst_count;
     }
-    else if (in_gate_prev_) {
-      finalize_line(); // gate closed — recover this line's rotation and class
+    else if (in_gate_prev) {
+      // Gate closed — recover this line's rotation and class. This sample
+      // already flows with the refreshed controls.
+      burst_acc_ = {burst_c, burst_s};
+      burst_count_ = burst_count;
+      finalize_line();
+      burst_c = 0.0;
+      burst_s = 0.0;
+      burst_count = 0;
+      reload_controls();
     }
-    in_gate_prev_ = in_gate;
-    ++sample_index_;
-
-    // The comb's read index, one delay back: the measured line for the
-    // adaptive modes, the fixed glass length for CombMode::glass. ring_pos_ is
-    // kept wrapped in [0, ring_cap_) so it's a conditional subtract, not a
-    // per-sample modulo; the delay < ring_cap_, so it wraps at most once.
-    const std::size_t delay = cfg_.comb_mode == CombMode::glass ? glass_len_ : line_len_;
-    const std::size_t wi = ring_pos_;
-    const std::size_t ri = wi >= delay ? wi - delay : wi + ring_cap_ - delay;
-    // ACC normalisation, gated by the killer. The gate is a SWITCH with a
-    // ramped opening, not a proportional fader: below the switch point the
-    // chroma is fully muted (the TDA3561A kills > 50 dB — and the unbounded
-    // ACC 1/burst would otherwise amplify any leakage on a noise "burst"),
-    // above it the slow ramp plays out as the saturation fading in.
-    const double gate = kill_gain_ >= kKillerSwitch ? kill_gain_ : 0.0;
-    const double scale = burst_amp_ > 1e-9 ? gate / burst_amp_ : 0.0;
+    in_gate_prev = in_gate;
+    ++sample_index;
 
     float u = 0.0f;
     float v = 0.0f;
-    switch (cfg_.comb_mode) {
-      case CombMode::glass: // the same PAL-D sum/difference, at the fixed glass depth (ri above)
-      case CombMode::delay_line: {
-        // Period-correct PAL-D: the 1H comb sits on the chroma BEFORE the per-line
-        // de-rotation (a delay line on the modulated chroma; the continuous NCO
-        // demod has already cancelled the inter-line carrier advance, so adjacent
-        // lines' raw quadratures are aligned to within the slow crystal-vs-source
-        // drift). U comes from the SUM (the opposite-switch V cancels) and V from
-        // the DIFFERENCE (U cancels), each on its own demod axis — the TDA3561A's
-        // two delay-line demodulators. Unlike `post`, the delayed line is NOT
-        // individually phase-corrected, so a source off the nominal line rate
-        // leaves the authentic residual. The ring holds the raw quadratures.
-        const double id = u_ring_[ri];
-        const double qd = v_ring_[ri];
-        u_ring_[wi] = static_cast<float>(i);
-        v_ring_[wi] = static_cast<float>(q);
-        if (++ring_pos_ == ring_cap_)
-          ring_pos_ = 0;
-        const double su = i + id; // sum: U-bearing (V cancels)
-        const double sq = q + qd;
-        const double du = i - id; // difference: V-bearing (U cancels)
-        const double dq = q - qd;
-        u = static_cast<float>(0.5 * (psi_cos_ * su - psi_sin_ * sq) * scale);
-        v = static_cast<float>(0.5 * (psi_sin_ * du + psi_cos_ * dq) * v_flip_ * scale);
-        break;
-      }
-      case CombMode::off:
-        // R(ψ): U = cosψ·rawU - sinψ·rawV; V_mod = sinψ·rawU + cosψ·rawV. V flips
-        // on PAL-style lines to recover transmitted V.
-        u = static_cast<float>((psi_cos_ * i - psi_sin_ * q) * scale);
-        v = static_cast<float>((psi_sin_ * i + psi_cos_ * q) * v_flip_ * scale);
-        break;
-      case CombMode::post: {
-        // Same R(ψ) as `off`, then the DSP-era convenience: average the recovered
-        // baseband U/V across a line pair (both lines already de-rotated and
-        // V-un-flipped, so a straight mean).
-        u = static_cast<float>((psi_cos_ * i - psi_sin_ * q) * scale);
-        v = static_cast<float>((psi_sin_ * i + psi_cos_ * q) * v_flip_ * scale);
-        const float u_avg = 0.5f * (u + u_ring_[ri]);
-        const float v_avg = 0.5f * (v + v_ring_[ri]);
-        u_ring_[wi] = u;
-        v_ring_[wi] = v;
-        u = u_avg;
-        v = v_avg;
-        if (++ring_pos_ == ring_cap_)
-          ring_pos_ = 0;
-        break;
-      }
+    if constexpr (kPalD) {
+      // Period-correct PAL-D: the 1H comb sits on the chroma BEFORE the per-line
+      // de-rotation (a delay line on the modulated chroma; the continuous NCO
+      // demod has already cancelled the inter-line carrier advance, so adjacent
+      // lines' raw quadratures are aligned to within the slow crystal-vs-source
+      // drift). U comes from the SUM (the opposite-switch V cancels) and V from
+      // the DIFFERENCE (U cancels), each on its own demod axis — the TDA3561A's
+      // two delay-line demodulators. Unlike `post`, the delayed line is NOT
+      // individually phase-corrected, so a source off the nominal line rate
+      // leaves the authentic residual. The ring holds the raw quadratures.
+      //
+      // The read index sits one delay back: the measured line for delay_line,
+      // the fixed glass length for glass. ring_pos is kept wrapped in
+      // [0, ring_cap) so it's a conditional subtract, not a per-sample modulo;
+      // the delay < ring_cap, so it wraps at most once.
+      const std::size_t delay = Mode == CombMode::glass ? glass_len : line_len;
+      const std::size_t wi = ring_pos;
+      const std::size_t ri = wi >= delay ? wi - delay : wi + ring_cap - delay;
+      const float id = u_ring[ri];
+      const float qd = v_ring[ri];
+      u_ring[wi] = i;
+      v_ring[wi] = q;
+      if (++ring_pos == ring_cap)
+        ring_pos = 0;
+      const float su = i + id; // sum: U-bearing (V cancels)
+      const float sq = q + qd;
+      const float du = i - id; // difference: V-bearing (U cancels)
+      const float dq = q - qd;
+      u = (pc * su - ps * sq) * u_scale;
+      v = (ps * du + pc * dq) * v_scale;
+    }
+    if constexpr (Mode == CombMode::off) {
+      // R(ψ): U = cosψ·rawU - sinψ·rawV; V_mod = sinψ·rawU + cosψ·rawV. V flips
+      // on PAL-style lines to recover transmitted V (folded into v_scale).
+      u = (pc * i - ps * q) * u_scale;
+      v = (ps * i + pc * q) * v_scale;
+    }
+    if constexpr (Mode == CombMode::post) {
+      // Same R(ψ) as `off`, then the DSP-era convenience: average the recovered
+      // baseband U/V across a line pair (both lines already de-rotated and
+      // V-un-flipped, so a straight mean).
+      u = (pc * i - ps * q) * u_scale;
+      v = (ps * i + pc * q) * v_scale;
+      const std::size_t wi = ring_pos;
+      const std::size_t ri = wi >= line_len ? wi - line_len : wi + ring_cap - line_len;
+      const float u_avg = 0.5f * (u + u_ring[ri]);
+      const float v_avg = 0.5f * (v + v_ring[ri]);
+      u_ring[wi] = u;
+      v_ring[wi] = v;
+      u = u_avg;
+      v = v_avg;
+      if (++ring_pos == ring_cap)
+        ring_pos = 0;
     }
     out[k] = ChromaSample{.luma = luma[k], .u = u, .v = v};
   }
+
+  ring_pos_ = ring_pos;
+  sample_index_ = sample_index;
+  last_line_start_ = last_line_start;
+  line_len_ = line_len;
+  in_gate_prev_ = in_gate_prev;
+  burst_acc_ = {burst_c, burst_s};
+  burst_count_ = burst_count;
 }
 
 } // namespace palindrome::video
