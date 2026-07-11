@@ -29,12 +29,18 @@ and *moves as levers land*. Per-thread busy fractions, measured directly from
                                (source was 96% and the limiter before #62)
 
 2026-07-10, post #63: the decode thread's CPU dropped ~8% (RX888) / ~10%
-(AirSpy), but the *live* walls did not move - with the MJPEG frame encode
-active the sink thread was already within a few percent of decode (RX888
-live, fixed workload: sink 21.8 vs decode 21.4 Gcyc), so the cut handed the
-wall straight to the sink. The file renders, which carry no encode work,
-showed the win: AirSpy wall -6%. The live-path lever is now the sink thread
-(deposit coordination + JPEG encode); the decode cut banks as headroom there.
+(AirSpy), and the sink thread - unchanged - is now the heaviest on both live
+paths (RX888: sink 21.6 vs decode 19.8 Gcyc; AirSpy: 27.1 vs 26.1), i.e. sink
+and decode are co-saturated with sink slightly ahead. The sink's load is NOT
+the MJPEG encode (it never even samples in the profile): it is the deposit
+path's per-sample *control pass* - Screen::process inlined into
+Decoder::deposit (~50% of the thread: gun-LUT lookups, DC restore + colour
+matrix, beam-position/bin math, splat-record append) - plus the sink's own
+share of the banded apply (~39%) and Screen::flush (~8%). The AirSpy file
+render showed the decode win directly (wall -6%); live walls moved less
+because the sink inherits. Day-to-day wall variance on this box is several
+percent (turbo/thermal/code layout), so judge wall claims across days on the
+per-thread cycle counts, not the stopwatch.
 
 Hard consequences, measured repeatedly:
 
@@ -186,10 +192,16 @@ changes on the full-render A/B, never a microbench delta.
   is re-measured. The U/V low-pass pair shares *taps* but not input, so the
   #62 fusion shape does not transfer; its sharable resource is only the tap
   broadcast (~10% by the same port math - probably not worth the surface).
-- **The sink thread on the live path** (deposit coordination + MJPEG frame
-  encode): post #63 it co-limits the live decode, so it is where live-path
-  wall gains now live - encode cost scales with `--frame-stride`, and the
-  deposit side has PR #70 banked (see above).
+- **The sink thread's deposit control pass** - post #63 the sink co-limits the
+  live paths, and half its cycles are the per-sample control pass
+  (Screen::process: gun-LUT, DC restore, colour matrix, beam position, record
+  append), a scalar per-sample loop of the same character pass 3 was. Same
+  playbook applies (hoist/localise, snapshot controls); unlike the *apply*
+  loop (memory-bound when fanned, see #61) this pass is single-threaded and
+  instruction-bound, so cuts should pay - but only down to decode's level
+  (~4-8% of live wall), and the file renders don't care (decode-bound). The
+  banked PR #70 attacks the apply side, still hidden while bursts fit the
+  pipeline slack.
 - **Wider SIMD via std::simd (gcc 16+).** The strip tiers are AVX2 (256-bit) on
   a box with AVX-512 and two 512-bit FMA units; 512-bit lanes would halve the
   strip count. Held for `std::simd` rather than hand-rolled AVX-512. The
