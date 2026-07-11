@@ -28,6 +28,14 @@ and *moves as levers land*. Per-thread busy fractions, measured directly from
     RX888  32 MS/s d==2 path:  source 88%   decode 96%   sink 82%   <- decode limits
                                (source was 96% and the limiter before #62)
 
+2026-07-10, post #63: the decode thread's CPU dropped ~8% (RX888) / ~10%
+(AirSpy), but the *live* walls did not move - with the MJPEG frame encode
+active the sink thread was already within a few percent of decode (RX888
+live, fixed workload: sink 21.8 vs decode 21.4 Gcyc), so the cut handed the
+wall straight to the sink. The file renders, which carry no encode work,
+showed the win: AirSpy wall -6%. The live-path lever is now the sink thread
+(deposit coordination + JPEG encode); the decode cut banks as headroom there.
+
 Hard consequences, measured repeatedly:
 
 - **Splitting a stage does not move the wall.** It just hands the bound to the
@@ -86,6 +94,23 @@ downstream work), so the balance legitimately differs between them.
   bound just above the 4-cycle FMA floor); 32 MS/s source-thread CPU -18%
   (cumulatively -40% from pre-#62); wall -2.3% more, capped by decode. All of
   it bit-exact - renders byte-identical at every step.
+- **Chroma pass-3 float flow + per-line control snapshots (#63).** Pass 3 ran
+  its per-sample rotate/comb/scale in double off per-line double controls,
+  re-derived the killer-gated ACC scale (a divide) every sample, re-dispatched
+  the loop-invariant comb-mode switch every sample, and kept its mutable state
+  member-resident (~12 loads + 3 stores per sample, sample_index_ a memory
+  RMW). The fix: per-line float snapshots (pre-divided scale, the +/-1
+  V-switch folded in), float flow, a CombMode-templated loop, the gate-bound
+  casts hoisted from both the replay and pass 3, and all loop state in locals
+  with write-back - necessary, not just nice: float members lose the TBAA
+  protection that had let gcc hoist the double controls past the float output
+  stores. decode_into -24% (pass 3 -39%, gate replay -48%; AGC and pass-1 mix
+  untouched); decode thread -8-10%. The APC/ident/killer feedback loop is
+  bit-exact by construction (the burst accumulator still sums the same values
+  in double), so the colour diagnostics are byte-identical; u/v drift is float
+  ULPs (2 pixels x 1 LSB across the whole corpus). Wall -6% where decode had
+  headroom below it (file renders); the live walls handed over to the sink
+  (see the busy-fraction note above).
 
 ## Dead ends (measured, do not repeat)
 
@@ -145,15 +170,26 @@ changes on the full-render A/B, never a microbench delta.
 
 ## Levers not yet pulled
 
-- **The decode thread - the *current* wall lever on both paths** (post #62 it
-  limits everywhere; see the busy-fraction table above). Its spend: its own
-  `Fir::process` share (chroma band-pass, U/V low-pass pair, sync low-pass -
-  ~34% of the thread), `Decoder::decode_into` (~33%: AGC, mixers, comb
-  dispatch), the sweeps (~23%). Issue #63 (chroma pass-3 precision discipline,
-  per-line control snapshots, comb dispatch hoist) is the named workpiece. The
-  U/V low-pass pair shares *taps* but not input, so the #62 fusion shape does
-  not transfer; its sharable resource is only the tap broadcast (~10% by the
-  same port math - probably not worth the surface).
+- **The decode thread** (still the wall on the file renders; on the live paths
+  it now ties with the sink - see above). Post #63 its spend: `Fir::process`
+  ~34% (chroma band-pass, U/V low-pass pair, sync low-pass), `decode_into`
+  ~28% (now mostly the AGC and the pass-1 NCO mix, each latency-bound on an
+  8-cycle loop-carried double chain that scalar micro-opts cannot touch - the
+  AGC's per-sample divide is fully hidden under its chain, don't chase it),
+  the sweeps ~25%. Remaining levers: the std::simd FIR widening below;
+  blocking the pass-1 phasor recurrence (advance by step^8, ~-13% of
+  decode_into) - but that ULP-shifts the NCO *inside the APC feedback loop*,
+  so it needs its own tolerance-based verification protocol, deliberately not
+  bundled into #63; and the event-driven pass-3 restructure sketched on #63
+  (unify the gate replay with event detection, run the flow math branchless
+  over constant-control runs) - worth scoping only after the limiter picture
+  is re-measured. The U/V low-pass pair shares *taps* but not input, so the
+  #62 fusion shape does not transfer; its sharable resource is only the tap
+  broadcast (~10% by the same port math - probably not worth the surface).
+- **The sink thread on the live path** (deposit coordination + MJPEG frame
+  encode): post #63 it co-limits the live decode, so it is where live-path
+  wall gains now live - encode cost scales with `--frame-stride`, and the
+  deposit side has PR #70 banked (see above).
 - **Wider SIMD via std::simd (gcc 16+).** The strip tiers are AVX2 (256-bit) on
   a box with AVX-512 and two 512-bit FMA units; 512-bit lanes would halve the
   strip count. Held for `std::simd` rather than hand-rolled AVX-512. The

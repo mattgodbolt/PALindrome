@@ -142,11 +142,21 @@ public:
   }
 
 private:
-  void finalize_line(); // per-line burst measurement + class assignment at gate close
+  // Per-line burst measurement + class assignment at gate close. Reads only
+  // burst/APC/killer state: pass 3 keeps its loop state (ring, line length,
+  // gate, sample index) local-resident across this call, so a new dependency
+  // on any of those members would silently see stale values.
+  void finalize_line();
+  void snapshot_controls(); // refresh the float per-line controls after they change
   // One internally-chunked piece of process(): the three decode passes over a
   // segment that ends at a burst-gate close, so an NCO retune there reaches
   // the next segment's mix at the same sample whatever the caller's chunking.
   void decode_segment(std::span<const float> envelope, std::span<const BeamSample> hbeam, std::span<ChromaSample> out);
+  // Pass 3 specialised per comb mode, so the dispatch (and each mode's unused
+  // work) is hoisted out of the per-sample loop.
+  template<CombMode Mode>
+  void decode_pass3(std::span<const float> raw_u, std::span<const float> raw_v, std::span<const float> luma,
+      std::span<const BeamSample> hbeam, std::span<ChromaSample> out);
 
   ChromaDecoderConfig cfg_;
   dsp::Fir bandpass_; // isolates the chroma subcarrier from the composite
@@ -175,9 +185,16 @@ private:
   bool in_gate_prev_ = false;
   double burst_amp_ = 0.0; // ACC level = √2·|apc_phasor_| (the swing-averaged burst)
   double burst_ref_ = 0.0; // slow-decay peak burst level for the colour-killer
-  double psi_cos_ = 1.0; // this line's rotation R(ψ)
-  double psi_sin_ = 0.0;
   double v_flip_ = 1.0; // +1 on NTSC-style lines, -1 on PAL-style (V inversion)
+  // Per-line controls, snapshotted down to float for pass 3's per-sample flow
+  // (see the precision rule in CLAUDE.md): the rotation R(ψ), and the ACC
+  // normalisation pre-divided and killer-gated, with the ±1 V-switch folded
+  // into the V side. All derived in double in finalize_line/snapshot_controls;
+  // none accumulates.
+  float psi_cos_ = 1.0f; // this line's rotation R(ψ)
+  float psi_sin_ = 0.0f;
+  float scale_u_ = 0.0f; // killer gate / burst amplitude (0 while killed or unmeasured)
+  float scale_v_ = 0.0f; // scale_u_ × v_flip_
 
   // Automatic phase control: a slow complex EMA of the back-porch burst locks the
   // reference onto the -U axis. The burst swings ±45° about that axis line to line
