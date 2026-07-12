@@ -75,6 +75,7 @@ struct EnvelopeOptions {
 struct EnvelopeStream {
   double rate_hz = 0.0; // envelope sample rate (input rate / decimation)
   double carrier_hz = 0.0; // the vision carrier actually used (resolved by a live scan)
+  double afc_offset_hz = 0.0; // where the quasi-sync AFC left the carrier, Hz from carrier_hz
   std::vector<std::string> warnings; // demod warnings (e.g. cutoff vs decimated Nyquist)
 };
 

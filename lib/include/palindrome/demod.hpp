@@ -183,9 +183,14 @@ public:
   [[nodiscard]] std::size_t input_multiple() const noexcept { return filter_.input_multiple(); }
   [[nodiscard]] std::size_t decimation() const noexcept { return filter_.decimation(); }
 
+  // AFC diagnostic: the carrier offset the quasi-sync loop is currently
+  // tracking, in Hz from the constructed nominal (positive = the real carrier
+  // sits above nominal). The envelope detector doesn't track; it reads 0 there.
+  [[nodiscard]] double afc_offset_hz() const noexcept { return freq_ * hz_per_omega_; }
+
 private:
   VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, Detector detector, double omega_per_output,
-      std::size_t decimation);
+      double output_rate_hz, std::size_t decimation);
   void quasi_sync_detect(
       restrict_ptr<const float> i, restrict_ptr<const float> q, restrict_ptr<float> out, std::size_t n);
 
@@ -202,6 +207,8 @@ private:
   std::complex<double> step_{1.0, 0.0}; // e^{-j*omega} per output sample
   dsp::Phasor nco_; // running carrier-phase estimate (conjugate; counted renorm inside)
   double freq_ = 0.0; // PI integrator: tracked carrier offset, rad per output sample
+  double max_freq_; // AFC catch range as the integrator clamp, rad per output sample
+  double hz_per_omega_; // output_rate / 2pi: converts freq_ to Hz for diagnostics
   Buffer<float> inv_mag_; // scratch: 1/|i,q| precomputed feed-forward per block
   Buffer<float> out_; // owned video output, reused across calls
 };

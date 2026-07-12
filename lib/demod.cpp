@@ -304,23 +304,30 @@ namespace {
 // error. Heavily overdamped, so the lock never rings.
 constexpr double kQsKp = 1.0e-3;
 constexpr double kQsKi = 1.0e-8;
-// Anti-windup bound on the integrator: ~10 kHz at video output rates, far
-// above any believable carrier-metadata error. On a carrier-free stretch
-// (live RF: tuning gaps, dropouts) the normalised error is unit-magnitude
-// noise and the integrator random-walks; unbounded, it could wander past the
-// loop's pull-in range and take the rest of the recording to crawl back.
-constexpr double kQsMaxFreq = 4.0e-3;
+// The AFC catch range: the integrator clamp, denominated in Hz so it doesn't
+// silently shrink with sample rate. This is the set's AFC (the discriminator-
+// to-varicap loop every late-70s-on set had): within range the loop pulls the
+// carrier in from a cold mistune and then tracks modulator/LO drift; outside
+// it the picture detunes honestly, like a real set. A few hundred kHz is the
+// period-plausible order (TDA-era AFT). The clamp is still the anti-windup
+// bound: on a carrier-free stretch the normalised error is unit-magnitude
+// noise and the integrator random-walks, but the walk is slow (kQsKi) and
+// pull-in recovers it in well under a second, so the wider bound costs a
+// bounded re-acquisition, not a lost recording.
+constexpr double kAfcCatchRangeHz = 300.0e3;
 } // namespace
 
 VisionIf::VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &shape, Detector detector,
     std::size_t num_taps, dsp::Window window, std::size_t decimation) :
     VisionIf{if_taps(sample_rate_hz, carrier_hz, shape, num_taps, window), detector,
-        kTwoPi * carrier_hz * static_cast<double>(decimation) / sample_rate_hz, decimation} {}
+        kTwoPi * carrier_hz * static_cast<double>(decimation) / sample_rate_hz,
+        sample_rate_hz / static_cast<double>(decimation), decimation} {}
 
 VisionIf::VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, Detector detector, double omega_per_output,
-    std::size_t decimation) :
+    double output_rate_hz, std::size_t decimation) :
     filter_{std::move(taps.first), std::move(taps.second), decimation}, detector_{detector},
-    step_{std::polar(1.0, -omega_per_output)} {}
+    step_{std::polar(1.0, -omega_per_output)}, max_freq_{kTwoPi * kAfcCatchRangeHz / output_rate_hz},
+    hz_per_omega_{output_rate_hz / kTwoPi} {}
 
 void VisionIf::prepare(std::size_t max_in) {
   filter_.prepare(max_in);
@@ -353,7 +360,7 @@ void VisionIf::quasi_sync_detect(
     // inverted whenever the cold-start phase lands in the wrong half, which
     // the RX888 corpus did.
     const double e = static_cast<double>(yi * inv[k]);
-    freq_ = std::clamp(freq_ + kQsKi * e, -kQsMaxFreq, kQsMaxFreq);
+    freq_ = std::clamp(freq_ + kQsKi * e, -max_freq_, max_freq_);
     // Advance by the nominal carrier, then trim by the loop (the locked-loop
     // NCO idiom Phasor carries - the same as ComplexAmEnvelope's mix phasor).
     nco_.advance_trimmed(step_, kQsKp * e + freq_);
