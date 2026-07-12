@@ -344,3 +344,28 @@ TEST_CASE("quasi-sync locks through a carrier-frequency error") {
   CHECK_THAT(r.mean, WithinAbs(0.5, 0.01));
   CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.03));
 }
+
+TEST_CASE("quasi-sync AFC pulls in a kHz-scale mistune and reports the signed offset") {
+  // The nominal carrier is 5 kHz off the signal - modulator-drift scale, far
+  // beyond metadata error. The integrator (the AFC) must pull in within the
+  // clip and afc_offset_hz must report the error with the documented sign:
+  // positive = the real carrier sits above the constructed nominal.
+  constexpr double kOffset = 5.0e3;
+  std::vector<float> x(1000000);
+  for (std::size_t k = 0; k < x.size(); ++k) {
+    const auto t = static_cast<double>(k) / kRate;
+    x[k] = static_cast<float>((1.0 + 0.5 * std::cos(two_pi * 312.5e3 * t)) * std::cos(two_pi * kCarrier * t));
+  }
+  for (const double expected: {kOffset, -kOffset}) {
+    demod::VisionIf dut{kRate, kCarrier - expected, demod::saw80_template(), demod::Detector::quasi_sync};
+    dut.prepare(x.size());
+    const auto r = measure(dut.process(x), x.size() / 2);
+    CHECK_THAT(r.mean, WithinAbs(0.5, 0.01)); // locked and clean after pull-in
+    CHECK_THAT(dut.afc_offset_hz(), WithinAbs(expected, 250.0));
+  }
+  // The envelope detector has no loop; the diagnostic reads 0.
+  demod::VisionIf env{kRate, kCarrier - kOffset, demod::saw80_template(), demod::Detector::envelope};
+  env.prepare(x.size());
+  [[maybe_unused]] const auto out = env.process(x);
+  CHECK(env.afc_offset_hz() == 0.0);
+}

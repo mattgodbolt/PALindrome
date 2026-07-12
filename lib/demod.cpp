@@ -314,15 +314,26 @@ constexpr double kQsKi = 1.0e-8;
 // S-curve frequency discriminator we don't have), and 100 kHz is several
 // sessions' worth of the ~20 kHz/h bench-modulator wander. The clamp is
 // still the anti-windup bound, though at kQsKi the carrier-free random walk
-// is only ~1 kHz per minute, so it guards little in practice.
+// is only ~1 kHz after the first minute and grows as sqrt(time) - reaching
+// the clamp would take days of dead carrier - so it guards little in practice.
 constexpr double kAfcCatchRangeHz = 100.0e3;
+
+// The output rate the loop constants are denominated against. Guards the
+// decimation here because the delegating constructor divides by it before
+// FirPair would reject 0 - the documented invalid_argument must not route
+// through a formal zero-division first.
+double checked_output_rate(double sample_rate_hz, std::size_t decimation) {
+  if (decimation < 1)
+    throw std::invalid_argument{"VisionIf: decimation must be >= 1"};
+  return sample_rate_hz / static_cast<double>(decimation);
+}
 } // namespace
 
 VisionIf::VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &shape, Detector detector,
     std::size_t num_taps, dsp::Window window, std::size_t decimation) :
     VisionIf{if_taps(sample_rate_hz, carrier_hz, shape, num_taps, window), detector,
         kTwoPi * carrier_hz * static_cast<double>(decimation) / sample_rate_hz,
-        sample_rate_hz / static_cast<double>(decimation), decimation} {}
+        checked_output_rate(sample_rate_hz, decimation), decimation} {}
 
 VisionIf::VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, Detector detector, double omega_per_output,
     double output_rate_hz, std::size_t decimation) :

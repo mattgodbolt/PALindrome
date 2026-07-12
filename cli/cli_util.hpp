@@ -75,7 +75,10 @@ struct EnvelopeOptions {
 struct EnvelopeStream {
   double rate_hz = 0.0; // envelope sample rate (input rate / decimation)
   double carrier_hz = 0.0; // the vision carrier actually used (resolved by a live scan)
-  double afc_offset_hz = 0.0; // where the quasi-sync AFC left the carrier, Hz from carrier_hz
+  // Where the quasi-sync AFC left the carrier, Hz from carrier_hz. Engaged
+  // (and so reported) only when that loop ran: the envelope detector and the
+  // flat chain have no AFC, and "no loop" must not print as "measured zero".
+  std::optional<double> afc_offset_hz{};
   std::vector<std::string> warnings; // demod warnings (e.g. cutoff vs decimated Nyquist)
 };
 

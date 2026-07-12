@@ -233,7 +233,7 @@ EnvelopeStream stream_envelope(const LoadedRecording &loaded, const EnvelopeOpti
 
   auto fe = make_front_end(loaded.sample_rate_hz, loaded.vision_carrier_hz, opts, block_samples, result.warnings);
   stream_ri16le_blocks(loaded.data_path, [&](std::span<const float> x) { on_block(fe.process(x)); }, block_samples);
-  if (fe.saw)
+  if (fe.saw && opts.detector == demod::Detector::quasi_sync)
     result.afc_offset_hz = fe.saw->afc_offset_hz();
   return result;
 }
@@ -279,7 +279,7 @@ EnvelopeStream stream_envelope_live(double sample_rate_hz, double carrier_overri
   for (std::size_t off = 0; off < head.size(); off += block_samples)
     feed(std::span{head}.subspan(off, std::min(block_samples, head.size() - off)));
   stream_ri16le_stdin(feed, block_samples);
-  if (fe.saw)
+  if (fe.saw && opts.detector == demod::Detector::quasi_sync)
     result.afc_offset_hz = fe.saw->afc_offset_hz();
   return result;
 }
