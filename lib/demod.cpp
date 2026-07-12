@@ -308,13 +308,14 @@ constexpr double kQsKi = 1.0e-8;
 // silently shrink with sample rate. This is the set's AFC (the discriminator-
 // to-varicap loop every late-70s-on set had): within range the loop pulls the
 // carrier in from a cold mistune and then tracks modulator/LO drift; outside
-// it the picture detunes honestly, like a real set. A few hundred kHz is the
-// period-plausible order (TDA-era AFT). The clamp is still the anti-windup
-// bound: on a carrier-free stretch the normalised error is unit-magnitude
-// noise and the integrator random-walks, but the walk is slow (kQsKi) and
-// pull-in recovers it in well under a second, so the wider bound costs a
-// bounded re-acquisition, not a lost recording.
-constexpr double kAfcCatchRangeHz = 300.0e3;
+// it the picture detunes honestly, like a real set. Sized by measurement, not
+// by the AFT's own reach: phase-detector pull-in stops acquiring beyond
+// ~50 kHz anyway (measured; a real AFT's wider catch came from a dedicated
+// S-curve frequency discriminator we don't have), and 100 kHz is several
+// sessions' worth of the ~20 kHz/h bench-modulator wander. The clamp is
+// still the anti-windup bound, though at kQsKi the carrier-free random walk
+// is only ~1 kHz per minute, so it guards little in practice.
+constexpr double kAfcCatchRangeHz = 100.0e3;
 } // namespace
 
 VisionIf::VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &shape, Detector detector,
