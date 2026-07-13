@@ -145,10 +145,12 @@ def make_handler(latest):
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--frequency", type=int, default=592_050_000,
+    ap.add_argument("--frequency", type=int, default=591_330_000,
                     help="the source's vision-carrier frequency Hz - the fine-tuned channel preset. The default is "
-                         "this bench's SMS: nominal UK CH36 (591.25 MHz) plus its factory trim, measured 2026-07; "
-                         "nudge it when the picture drifts past the AFC's catch range (it ages ~50 kHz/week)")
+                         "this bench's SMS: nominal UK CH36 (591.25 MHz) plus ~80 kHz of trim, measured 2026-07 by "
+                         "capturing at two tunes (the conversion is spectrum-inverting, so carrier-at-baseband = "
+                         "if_center - (RF - tune)); nudge it when the picture drifts past the AFC's catch range "
+                         "(the RF creeps up ~50 kHz/week)")
     ap.add_argument("--sample-rate", type=int, default=10_000_000,
                     help="AirSpy complex rate; the real ADC stream is 2x this (the decoder's rate)")
     ap.add_argument("--gain", type=int, default=9, help="airspy_rx linearity gain (0-21); 9 = sweet spot")
