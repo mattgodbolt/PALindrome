@@ -98,12 +98,13 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(carrier_, "hz")["--carrier"](
               "Carrier Hz (default: from metadata, or a signal scan if the metadata has none)"))
           .add_argument(lyra::opt(scan_)["--scan"](
-              "Find the carrier by scanning the signal's spectrum, ignoring the metadata (the no-metadata live-RF "
-              "path; here it also validates the metadata's carrier)"))
+              "Find the carrier by scanning a RECORDING's spectrum, ignoring the metadata (bench analysis - also "
+              "validates the metadata's carrier; not a live mode: a set is tuned, it does not scan)"))
           .add_argument(lyra::opt(live_)["--live"](
               "Live mode: decode a continuous real-int16 SDR stream from stdin (e.g. airspy_rx -r /dev/stdout | "
-              "palindrome render --live --sample-rate 20e6), scanning the carrier off the stream, and overwrite "
-              "--output every few fields until the pipe closes"))
+              "palindrome render --live --sample-rate 20e6 --carrier 3e6). Needs --carrier: the tuner's IF-plan "
+              "target, i.e. the channel preset - the AFC absorbs drift from there. Streams raw frames to "
+              "--frame-fd until the pipe closes"))
           .add_argument(lyra::opt(sample_rate_, "hz")["--sample-rate"](
               "Live input real sample rate Hz (required with --live; 20e6 for the AirSpy raw stream)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz (--if flat only)"))
@@ -237,10 +238,20 @@ int RenderCommand::run() const {
       std::println(std::cerr, "render: --live requires --frame-fd (raw frames for the MJPEG viewer)");
       return 1;
     }
+    if (scan_) {
+      std::println(std::cerr, "render: --scan analyses recordings; --live is tuned by --carrier, not by scanning");
+      return 1;
+    }
+    if (!(carrier_ > 0.0)) {
+      std::println(std::cerr,
+          "render: --live requires --carrier - the tuner's IF-plan target (the channel preset; live_view.py "
+          "supplies it). The AFC absorbs drift from there; a set is tuned, it does not scan.");
+      return 1;
+    }
     // Let a closed reader surface as EPIPE from write() rather than killing us
     // with SIGPIPE (the viewer disconnecting is a normal live-stream event).
     std::signal(SIGPIPE, SIG_IGN);
-    loaded.sample_rate_hz = sample_rate_; // carrier is resolved from the stream in stream_envelope_live
+    loaded.sample_rate_hz = sample_rate_; // the carrier is --carrier verbatim (checked above): the tuner's preset
   }
   else {
     loaded = load_recording(recording_, carrier_, scan_);

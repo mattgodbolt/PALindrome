@@ -3,7 +3,6 @@
 #include "palindrome/demod.hpp"
 #include "palindrome/fir.hpp"
 
-#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <format>
@@ -38,7 +37,7 @@ std::filesystem::path resolve_meta(std::filesystem::path path) {
 }
 
 namespace {
-// Carrier-scan geometry, shared by the file and live scans.
+// Carrier-scan geometry for the recording scan.
 constexpr std::size_t kScanSamples = std::size_t{1} << 20; // ~50 ms at 20 MS/s
 constexpr double kScanLoHz = 1.0e6; // a vision IF never sits below ~1 MHz on either SDR's plan
 constexpr double kNyquistGuard = 0.95; // stay off the anti-alias roll-off at the top of the band
@@ -73,8 +72,8 @@ std::vector<float> read_head(const std::filesystem::path &data_path, std::size_t
 // vision carrier is the dominant line within it. The block is long on purpose:
 // finer bins separate the pure carrier line from its close-in video-modulation
 // sidebands, which a short block blurs together and the peak then sits between.
-// For a FILE a failed scan is terminal (the recording is what it is), so the
-// expected converts to a throw here; the live path retries instead.
+// A failed scan is terminal (the recording is what it is), so the expected
+// converts to a throw here.
 double scan_vision_carrier(const std::filesystem::path &data_path, double sample_rate_hz) {
   const auto head = read_head(data_path, kScanSamples);
   const auto carrier =
@@ -145,18 +144,6 @@ void stream_ri16le_blocks(const std::filesystem::path &data_path,
 }
 
 namespace {
-// Read up to `n_samples` real int16 from stdin, scaled to [-1, 1). fread blocks
-// until it has the lot or the stream ends, so on a live pipe this returns a full
-// head buffer after the SDR has produced that many samples.
-std::vector<float> read_stdin_head(std::size_t n_samples) {
-  std::vector<std::int16_t> raw(n_samples);
-  const auto got = std::fread(raw.data(), sizeof(std::int16_t), n_samples, stdin);
-  std::vector<float> out(got);
-  for (std::size_t k = 0; k < got; ++k)
-    out[k] = static_cast<float>(raw[k]) * (1.0f / 32768.0f);
-  return out;
-}
-
 // Stream real int16 from stdin as float blocks until the pipe closes - the
 // live counterpart of stream_ri16le_blocks (which reads a named file).
 void stream_ri16le_stdin(const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples) {
@@ -246,46 +233,23 @@ EnvelopeStream stream_envelope(const LoadedRecording &loaded, const EnvelopeOpti
   return result;
 }
 
-EnvelopeStream stream_envelope_live(double sample_rate_hz, double carrier_override, const EnvelopeOptions &opts,
+EnvelopeStream stream_envelope_live(double sample_rate_hz, double carrier_hz, const EnvelopeOptions &opts,
     const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples) {
   EnvelopeStream result;
   result.rate_hz = sample_rate_hz / static_cast<double>(checked_decimation(opts.decimation));
 
-  // Resolve the carrier. With no metadata on a live stream, scan the opening
-  // samples - but stdin can't be rewound, so the scanned head is replayed
-  // through the front end below rather than discarded. A head with nothing to
-  // find (the SDR still warming up, squelch, a tuning gap) is an expected live
-  // event, not an error: keep reading and rescanning over the growing head,
-  // bounded so a genuinely dead stream still fails with a message.
-  std::vector<float> head;
-  result.carrier_hz = carrier_override;
-  if (!(carrier_override > 0.0)) {
-    constexpr std::size_t kMaxScanSamples = kScanSamples * 8; // ~0.4 s at 20 MS/s
-    head = read_stdin_head(kScanSamples);
-    for (;;) {
-      const auto carrier =
-          demod::find_vision_carrier(head, sample_rate_hz, kScanLoHz, kNyquistGuard * sample_rate_hz / 2.0);
-      if (carrier) {
-        result.carrier_hz = *carrier;
-        break;
-      }
-      if (head.size() >= kMaxScanSamples)
-        throw std::runtime_error{
-            std::format("no vision carrier in the first {} live samples: {}", head.size(), describe(carrier.error()))};
-      const auto more = read_stdin_head(kScanSamples);
-      if (more.empty())
-        throw std::runtime_error{
-            std::format("live stream ended before a vision carrier was found: {}", describe(carrier.error()))};
-      head.insert(head.end(), more.begin(), more.end());
-    }
-  }
+  // The carrier is the input stage's job: the tuner places the vision
+  // carrier at its IF plan's target (live_view.py's tune arithmetic), exactly
+  // as a real set's channel preset does, and the AFC absorbs the drift from
+  // there. No set scans the aether at switch-on - a source that has drifted
+  // past the catch range is retuned at the tuner, not hunted for here.
+  if (!(carrier_hz > 0.0))
+    throw std::runtime_error{
+        "live decode needs --carrier: the tuner's IF-plan target (the channel preset). The AFC pulls in the drift."};
+  result.carrier_hz = carrier_hz;
 
   auto fe = make_front_end(sample_rate_hz, result.carrier_hz, opts, block_samples, result.warnings);
   const auto feed = [&](std::span<const float> x) { on_block(fe.process(x)); };
-  // Replay the scanned head (in front-end-sized blocks), then stream the rest of
-  // stdin until the pipe closes.
-  for (std::size_t off = 0; off < head.size(); off += block_samples)
-    feed(std::span{head}.subspan(off, std::min(block_samples, head.size() - off)));
   stream_ri16le_stdin(feed, block_samples);
   if (fe.saw && opts.detector == demod::Detector::quasi_sync)
     result.afc_offset_hz = fe.saw->afc_offset_hz();

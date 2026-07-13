@@ -420,3 +420,23 @@ TEST_CASE("quasi-sync AFC pulls in a kHz-scale mistune and reports the signed of
   [[maybe_unused]] const auto out = env.process(x);
   CHECK(env.afc_offset_hz() == 0.0);
 }
+
+TEST_CASE("quasi-sync AFC pulls in from the far edge of the catch range") {
+  // 280 kHz stale - near the 300 kHz clamp, the regime the kHz-scale test
+  // above never reaches. The tank discriminator is monotone across the whole
+  // range (no cycle slips), so the pull is slew-limited and completes within
+  // ~t99 0.42 s at this rate; twelve tiled passes cover it with margin. The
+  // tolerance allows the fixed FIR flank's small standing bias (the taps stay
+  // centred on the stale nominal - the honest mistuned-set residual).
+  constexpr double kOffset = 280.0e3;
+  std::vector<float> x(1000000);
+  for (std::size_t k = 0; k < x.size(); ++k) {
+    const auto t = static_cast<double>(k) / kRate;
+    x[k] = static_cast<float>((1.0 + 0.5 * std::cos(two_pi * 312.5e3 * t)) * std::cos(two_pi * kCarrier * t));
+  }
+  demod::VisionIf dut{kRate, kCarrier - kOffset, demod::saw80_template(), demod::Detector::quasi_sync};
+  dut.prepare(x.size());
+  for (int pass = 0; pass < 12; ++pass) [[maybe_unused]]
+    const auto out = dut.process(x);
+  CHECK_THAT(dut.afc_offset_hz(), WithinAbs(kOffset, 5000.0));
+}

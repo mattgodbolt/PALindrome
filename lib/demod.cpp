@@ -303,10 +303,12 @@ namespace {
 // loaded Q of a few tens at the 39.5 MHz IF, i.e. several hundred kHz.
 // Denominated in Hz (converted per instance) so it doesn't shrink with
 // sample rate; this is an era knob for the profile system. FLOOR: keep it
-// at >= ~3x the AFC catch range - narrower, and a mistune near the clamp
-// lets modulation sidebands out-drive the attenuated carrier line inside
-// the tank, the reference wanders, and the quasi-beat this topology exists
-// to prevent returns.
+// at >= 1.5x the AFC catch range, so the carrier stays the dominant line
+// inside the tank (within ~3 dB) at the worst excursion. Measured: mistunes
+// up to ~1x the half-bandwidth cost only the honest cos(theta) contrast
+// wash with no beat and a monotone discriminator; the quasi-beat this
+// topology exists to prevent needs the mistune at MANY times the
+// half-bandwidth (the hazard case had the carrier attenuated to 0.08).
 constexpr double kTankHalfBandwidthHz = 500.0e3;
 
 // AFC integrator gain per output sample, on the tank discriminator
@@ -320,14 +322,16 @@ constexpr double kAfcKi = 1.0e-7;
 // silently shrink with sample rate. This is the set's AFC (the discriminator-
 // to-varicap loop every late-70s-on set had): within range the loop pulls the
 // carrier in from a cold mistune and then tracks modulator/LO drift; outside
-// it the picture detunes honestly, like a real set. 100 kHz is several
-// sessions' worth of the ~20 kHz/h bench-modulator wander. The clamp is
-// still the anti-windup bound, though at kAfcKi the carrier-free random walk
-// grows as sqrt(time) - reaching it would take hours of dead carrier - so it
-// guards little in practice.
-constexpr double kAfcCatchRangeHz = 100.0e3;
-static_assert(kTankHalfBandwidthHz >= 3.0 * kAfcCatchRangeHz,
-    "the reference tank must stay much wider than the AFC catch range (see the floor note above)");
+// it the picture detunes honestly, like a real set. 300 kHz covers around
+// six weeks of the bench modulator's ~50 kHz/week aging from a fresh
+// preset, is period-plausible AFT reach, and the tank discriminator pulls
+// the full range without cycle slips (t90 ~0.24 s). The clamp is still the anti-windup
+// bound, though at kAfcKi the carrier-free random walk grows as sqrt(time)
+// - reaching it would take hours of dead carrier - so it guards little in
+// practice.
+constexpr double kAfcCatchRangeHz = 300.0e3;
+static_assert(kTankHalfBandwidthHz >= 1.5 * kAfcCatchRangeHz,
+    "the reference tank must stay wider than the AFC catch range (see the floor note above)");
 
 // The output rate the loop constants are denominated against. Guards the
 // decimation here because the delegating constructor divides by it before
