@@ -352,10 +352,11 @@ VisionIf::VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, Detec
     step_{std::polar(1.0, omega_per_output)}, tank_k_{kTwoPi * kTankHalfBandwidthHz / output_rate_hz},
     max_freq_{kTwoPi * kAfcCatchRangeHz / output_rate_hz}, hz_per_omega_{output_rate_hz / kTwoPi} {
   // The tank's drive fraction is a per-sample leak: it must stay a convex
-  // blend or the recurrence is no longer a resonator (an output rate under
-  // ~1 MS/s cannot hold the era tank bandwidth).
+  // blend or the recurrence is no longer a resonator. k < 1 needs the
+  // post-decimation output rate above 2*pi*half-bandwidth (~3.1 MS/s at the
+  // era 500 kHz).
   if (!(tank_k_ > 0.0 && tank_k_ < 1.0))
-    throw std::invalid_argument{"VisionIf: sample rate too low for the reference tank bandwidth"};
+    throw std::invalid_argument{"VisionIf: output rate (after decimation) too low for the reference tank bandwidth"};
 }
 
 void VisionIf::prepare(std::size_t max_in) {
