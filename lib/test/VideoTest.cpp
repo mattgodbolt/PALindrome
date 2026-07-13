@@ -335,7 +335,10 @@ TEST_CASE("VerticalSync flags the detected field anchor once per field") {
   // silently. Synthetic sync bits: normal lines ~7% duty, then a vertical
   // interval of three broad-pulse lines (~84% duty) per field; the integrator
   // must cross its slice once per interval, and only there.
-  constexpr std::size_t kLineLen = 1000; // 16 kHz lines, 320/field = 50 Hz at kRate
+  // Everything here is ratio-driven, so run at a small rate to keep the test
+  // light: 64-sample lines, 320/field = 50 Hz fields at 1.024 MS/s.
+  constexpr double kVsRate = 1.024e6;
+  constexpr std::size_t kLineLen = 64;
   constexpr std::size_t kLinesPerField = 320;
   constexpr std::size_t kFields = 4;
   std::vector<video::SyncSample> sync;
@@ -346,7 +349,7 @@ TEST_CASE("VerticalSync flags the detected field anchor once per field") {
         sync.push_back(video::SyncSample{.sync = k < duty});
     }
 
-  video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = kRate}};
+  video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = kVsRate}};
   vsync.prepare(sync.size());
   const auto out = vsync.process(sync);
   std::vector<std::size_t> anchors;
