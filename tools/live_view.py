@@ -6,8 +6,10 @@ Spawns the pipeline
     airspy_rx -r /dev/stdout ... | palindrome render --live --frame-fd ...
 
 so the decoder reads the SDR's raw 20 MS/s real stream straight off stdin (no
-capture file), scans the vision carrier off the opening samples, and writes raw
-RGB frames down a pipe. This process JPEG-encodes them and serves a
+capture file) and writes raw RGB frames down a pipe. The tune arithmetic below
+places the vision carrier at a fixed IF (VISION_IF_TARGET - the set's IF plan),
+which is passed to the decoder as --carrier: the channel preset, with the AFC
+absorbing the source's drift, exactly as a real tuned set. Nothing scans. This process JPEG-encodes them and serves a
 `multipart/x-mixed-replace` stream, which the browser renders as video in a plain
 `<img>` - no polling, no reload. Keeping the encode here (not in the decoder)
 also keeps the JPEG/zlib work off the deposit thread, so the per-field snapshot
@@ -142,8 +144,10 @@ def make_handler(latest):
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--frequency", type=int, default=591_200_000,
-                    help="the source's vision-carrier frequency Hz (we tune ~2 MHz below it)")
+    ap.add_argument("--frequency", type=int, default=592_050_000,
+                    help="the source's vision-carrier frequency Hz - the fine-tuned channel preset. The default is "
+                         "this bench's SMS: nominal UK CH36 (591.25 MHz) plus its factory trim, measured 2026-07; "
+                         "nudge it when the picture drifts past the AFC's catch range (it ages ~50 kHz/week)")
     ap.add_argument("--sample-rate", type=int, default=10_000_000,
                     help="AirSpy complex rate; the real ADC stream is 2x this (the decoder's rate)")
     ap.add_argument("--gain", type=int, default=9, help="airspy_rx linearity gain (0-21); 9 = sweet spot")
@@ -186,6 +190,7 @@ def main():
     airspy_cmd = [airspy, "-r", "/dev/stdout", "-f", f"{tune_hz / 1e6:.6f}",
                   "-a", str(args.sample_rate), "-t", "3", "-g", str(args.gain)]
     render_cmd = [palindrome, "render", "--live", "--sample-rate", str(real_rate),
+                  "--carrier", str(VISION_IF_TARGET),
                   "--width", str(args.width), "--height", str(args.height),
                   "--decimate", str(args.decimate), "--deposit-threads", str(args.deposit_threads),
                   "--frame-fd", str(frame_w)]
