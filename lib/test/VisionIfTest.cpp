@@ -268,15 +268,17 @@ TEST_CASE("VisionIf is bit-exact block-invariant") {
 }
 
 TEST_CASE("VisionIf stays bit-exact block-invariant at a standing AFC offset") {
-  // A 20 kHz mistune holds the loop's integrator at a large standing trim,
-  // which shortens the NCO's adaptive renorm cadence - the renorm instants
-  // are counted per sample from carried state, so chunking must not move
-  // them. This is the regime the accurate-carrier test above never enters.
+  // A 5 kHz mistune pulls in fast (~100k samples) and then holds the loop's
+  // integrator at a standing trim big enough to shorten the NCO's adaptive
+  // renorm cadence (interval ~320, hundreds of renorm instants straddling the
+  // chunk boundaries below) - the instants are counted per sample from
+  // carried state, so chunking must not move them. This is the regime the
+  // accurate-carrier test above never enters; a LARGER mistune would ratchet
+  // in too slowly to cross the cadence threshold inside the clip at all.
   std::vector<float> x(400000);
   for (std::size_t k = 0; k < x.size(); ++k) {
     const auto t = static_cast<double>(k) / kRate;
-    x[k] =
-        static_cast<float>((1.0 + 0.5 * std::cos(two_pi * 312.5e3 * t)) * std::cos(two_pi * (kCarrier + 20.0e3) * t));
+    x[k] = static_cast<float>((1.0 + 0.5 * std::cos(two_pi * 312.5e3 * t)) * std::cos(two_pi * (kCarrier + 5.0e3) * t));
   }
   const auto shape = demod::saw80_template();
   demod::VisionIf one{kRate, kCarrier, shape, demod::Detector::quasi_sync};
