@@ -401,9 +401,10 @@ int RenderCommand::run() const {
                           : (frame_stride_ > 0 ? std::format("wrote {} frames {}_NNNN.png (every {} fields)", written,
                                                      output.stem().string(), frame_stride_)
                                                : std::format("wrote {}", output.string()));
-  std::println("{} ({}x{}); envelope @ {:g} MS/s after /{} decimation, carrier {:.4f} MHz; "
+  const auto afc = es.afc_offset_hz ? std::format(" (AFC {:+.2f} kHz)", *es.afc_offset_hz / 1e3) : std::string{};
+  std::println("{} ({}x{}); envelope @ {:g} MS/s after /{} decimation, carrier {:.4f} MHz{}; "
                "horizontal {} {} edges @ {:.1f} Hz ({:+.2f}%); vertical locked {} fields @ {:.2f} Hz ({:+.2f}%)",
-      what, width_, height_, envelope_rate / 1e6, decimate, es.carrier_hz / 1e6,
+      what, width_, height_, envelope_rate / 1e6, decimate, es.carrier_hz / 1e6, afc,
       decoder.hold_locked() ? "locked" : "STILL ACQUIRING after", decoder.accepted_edges(), line_hz,
       100.0 * (line_hz - video::kNominalLineHz) / video::kNominalLineHz, decoder.detected_fields(), field_hz,
       100.0 * (field_hz - video::kNominalFieldHz) / video::kNominalFieldHz);

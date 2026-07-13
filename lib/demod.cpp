@@ -304,23 +304,63 @@ namespace {
 // error. Heavily overdamped, so the lock never rings.
 constexpr double kQsKp = 1.0e-3;
 constexpr double kQsKi = 1.0e-8;
-// Anti-windup bound on the integrator: ~10 kHz at video output rates, far
-// above any believable carrier-metadata error. On a carrier-free stretch
-// (live RF: tuning gaps, dropouts) the normalised error is unit-magnitude
-// noise and the integrator random-walks; unbounded, it could wander past the
-// loop's pull-in range and take the rest of the recording to crawl back.
-constexpr double kQsMaxFreq = 4.0e-3;
+// The AFC catch range: the integrator clamp, denominated in Hz so it doesn't
+// silently shrink with sample rate. This is the set's AFC (the discriminator-
+// to-varicap loop every late-70s-on set had): within range the loop pulls the
+// carrier in from a cold mistune and then tracks modulator/LO drift; outside
+// it the picture detunes honestly, like a real set. Sized by measurement, not
+// by the AFT's own reach: phase-detector pull-in stops acquiring beyond
+// ~50 kHz anyway (measured; a real AFT's wider catch came from a dedicated
+// S-curve frequency discriminator we don't have), and 100 kHz is several
+// sessions' worth of the ~20 kHz/h bench-modulator wander. The clamp is
+// still the anti-windup bound, though at kQsKi the carrier-free random walk
+// is only ~1 kHz after the first minute and grows as sqrt(time) - reaching
+// the clamp would take days of dead carrier - so it guards little in practice.
+constexpr double kAfcCatchRangeHz = 100.0e3;
+
+// Cap on the NCO's magnitude drift per renorm period: interval * a^2 stays
+// below this, so |nco| excursions stay ~0.1% - far below anything the video
+// path can see. The excursion is a pure simulation artifact (a real set's
+// carrier recovery has no magnitude to drift): left at the default 1024-sample
+// cadence, a standing AFC correction of tens of kHz turns it into an in-band
+// ~19.5 kHz amplitude sawtooth, visible as scrolling shimmer on an otherwise
+// locked picture. Sized so the default cadence already meets the cap up to a
+// ~1 kHz standing offset - beyond every carrier-metadata residual - so
+// accurate-carrier decodes are bit-identical.
+constexpr double kQsMaxRenormDrift = 2.0e-3;
+
+// The renorm cadence that meets kQsMaxRenormDrift at the current tracked
+// offset (rad per output sample), bounded by |trim| <= |freq| + kp.
+unsigned renorm_interval_for(double freq) noexcept {
+  const double a = std::abs(freq) + kQsKp;
+  const double n = kQsMaxRenormDrift / (a * a);
+  if (n >= static_cast<double>(dsp::Phasor::kRenormInterval))
+    return dsp::Phasor::kRenormInterval;
+  return n >= 1.0 ? static_cast<unsigned>(n) : 1u;
+}
+
+// The output rate the loop constants are denominated against. Guards the
+// decimation here because the delegating constructor divides by it before
+// FirPair would reject 0 - the documented invalid_argument must not route
+// through a formal zero-division first.
+double checked_output_rate(double sample_rate_hz, std::size_t decimation) {
+  if (decimation < 1)
+    throw std::invalid_argument{"VisionIf: decimation must be >= 1"};
+  return sample_rate_hz / static_cast<double>(decimation);
+}
 } // namespace
 
 VisionIf::VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &shape, Detector detector,
     std::size_t num_taps, dsp::Window window, std::size_t decimation) :
     VisionIf{if_taps(sample_rate_hz, carrier_hz, shape, num_taps, window), detector,
-        kTwoPi * carrier_hz * static_cast<double>(decimation) / sample_rate_hz, decimation} {}
+        kTwoPi * carrier_hz * static_cast<double>(decimation) / sample_rate_hz,
+        checked_output_rate(sample_rate_hz, decimation), decimation} {}
 
 VisionIf::VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, Detector detector, double omega_per_output,
-    std::size_t decimation) :
+    double output_rate_hz, std::size_t decimation) :
     filter_{std::move(taps.first), std::move(taps.second), decimation}, detector_{detector},
-    step_{std::polar(1.0, -omega_per_output)} {}
+    step_{std::polar(1.0, -omega_per_output)}, max_freq_{kTwoPi * kAfcCatchRangeHz / output_rate_hz},
+    hz_per_omega_{output_rate_hz / kTwoPi} {}
 
 void VisionIf::prepare(std::size_t max_in) {
   filter_.prepare(max_in);
@@ -353,10 +393,14 @@ void VisionIf::quasi_sync_detect(
     // inverted whenever the cold-start phase lands in the wrong half, which
     // the RX888 corpus did.
     const double e = static_cast<double>(yi * inv[k]);
-    freq_ = std::clamp(freq_ + kQsKi * e, -kQsMaxFreq, kQsMaxFreq);
+    freq_ = std::clamp(freq_ + kQsKi * e, -max_freq_, max_freq_);
     // Advance by the nominal carrier, then trim by the loop (the locked-loop
     // NCO idiom Phasor carries - the same as ComplexAmEnvelope's mix phasor).
-    nco_.advance_trimmed(step_, kQsKp * e + freq_);
+    // At each renorm, retune the renorm cadence to the tracked offset (see
+    // kQsMaxRenormDrift); renorm instants are counted per sample, so the
+    // cadence - and hence the output - is independent of input chunking.
+    if (nco_.advance_trimmed(step_, kQsKp * e + freq_)) [[unlikely]]
+      nco_.set_renorm_interval(renorm_interval_for(freq_));
   }
 }
 

@@ -267,6 +267,38 @@ TEST_CASE("VisionIf is bit-exact block-invariant") {
   }
 }
 
+TEST_CASE("VisionIf stays bit-exact block-invariant at a standing AFC offset") {
+  // A 5 kHz mistune pulls in fast (~100k samples) and then holds the loop's
+  // integrator at a standing trim big enough to shorten the NCO's adaptive
+  // renorm cadence (interval ~320, hundreds of renorm instants straddling the
+  // chunk boundaries below) - the instants are counted per sample from
+  // carried state, so chunking must not move them. This is the regime the
+  // accurate-carrier test above never enters; a LARGER mistune would ratchet
+  // in too slowly to cross the cadence threshold inside the clip at all.
+  std::vector<float> x(400000);
+  for (std::size_t k = 0; k < x.size(); ++k) {
+    const auto t = static_cast<double>(k) / kRate;
+    x[k] = static_cast<float>((1.0 + 0.5 * std::cos(two_pi * 312.5e3 * t)) * std::cos(two_pi * (kCarrier + 5.0e3) * t));
+  }
+  const auto shape = demod::saw80_template();
+  demod::VisionIf one{kRate, kCarrier, shape, demod::Detector::quasi_sync};
+  one.prepare(x.size());
+  const auto all = one.process(x);
+  const std::vector<float> whole{all.begin(), all.end()};
+
+  for (const std::size_t chunk: {std::size_t{1}, std::size_t{337}, std::size_t{4096}}) {
+    demod::VisionIf chunked{kRate, kCarrier, shape, demod::Detector::quasi_sync};
+    chunked.prepare(x.size());
+    std::vector<float> pieces;
+    for (std::size_t at = 0; at < x.size(); at += chunk) {
+      const auto n = std::min(chunk, x.size() - at);
+      const auto out = chunked.process(std::span{x}.subspan(at, n));
+      pieces.insert(pieces.end(), out.begin(), out.end());
+    }
+    CHECK(pieces == whole);
+  }
+}
+
 TEST_CASE("quasi-sync removes the envelope detector's VSB quadrature distortion") {
   // The same flank-region AM tones whose asymmetric sidebands lift an envelope
   // detector's mean by a few % (see the flank test): the quasi-sync detector
@@ -343,4 +375,29 @@ TEST_CASE("quasi-sync locks through a carrier-frequency error") {
   const auto r = measure(dut.process(x), x.size() / 2);
   CHECK_THAT(r.mean, WithinAbs(0.5, 0.01));
   CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.03));
+}
+
+TEST_CASE("quasi-sync AFC pulls in a kHz-scale mistune and reports the signed offset") {
+  // The nominal carrier is 5 kHz off the signal - modulator-drift scale, far
+  // beyond metadata error. The integrator (the AFC) must pull in within the
+  // clip and afc_offset_hz must report the error with the documented sign:
+  // positive = the real carrier sits above the constructed nominal.
+  constexpr double kOffset = 5.0e3;
+  std::vector<float> x(1000000);
+  for (std::size_t k = 0; k < x.size(); ++k) {
+    const auto t = static_cast<double>(k) / kRate;
+    x[k] = static_cast<float>((1.0 + 0.5 * std::cos(two_pi * 312.5e3 * t)) * std::cos(two_pi * kCarrier * t));
+  }
+  for (const double expected: {kOffset, -kOffset}) {
+    demod::VisionIf dut{kRate, kCarrier - expected, demod::saw80_template(), demod::Detector::quasi_sync};
+    dut.prepare(x.size());
+    const auto r = measure(dut.process(x), x.size() / 2);
+    CHECK_THAT(r.mean, WithinAbs(0.5, 0.01)); // locked and clean after pull-in
+    CHECK_THAT(dut.afc_offset_hz(), WithinAbs(expected, 250.0));
+  }
+  // The envelope detector has no loop; the diagnostic reads 0.
+  demod::VisionIf env{kRate, kCarrier - kOffset, demod::saw80_template(), demod::Detector::envelope};
+  env.prepare(x.size());
+  [[maybe_unused]] const auto out = env.process(x);
+  CHECK(env.afc_offset_hz() == 0.0);
 }

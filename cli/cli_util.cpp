@@ -225,21 +225,31 @@ VisionFrontEnd make_front_end(double sample_rate_hz, double carrier_hz, const En
 }
 } // namespace
 
+// The demodulators validate decimation themselves, but both stream functions
+// divide by it first - guard here so --decimate 0 throws before any division.
+std::size_t checked_decimation(std::size_t decimation) {
+  if (decimation < 1)
+    throw std::invalid_argument{"decimation must be >= 1"};
+  return decimation;
+}
+
 EnvelopeStream stream_envelope(const LoadedRecording &loaded, const EnvelopeOptions &opts,
     const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples) {
   EnvelopeStream result;
-  result.rate_hz = loaded.sample_rate_hz / static_cast<double>(opts.decimation);
+  result.rate_hz = loaded.sample_rate_hz / static_cast<double>(checked_decimation(opts.decimation));
   result.carrier_hz = loaded.vision_carrier_hz;
 
   auto fe = make_front_end(loaded.sample_rate_hz, loaded.vision_carrier_hz, opts, block_samples, result.warnings);
   stream_ri16le_blocks(loaded.data_path, [&](std::span<const float> x) { on_block(fe.process(x)); }, block_samples);
+  if (fe.saw && opts.detector == demod::Detector::quasi_sync)
+    result.afc_offset_hz = fe.saw->afc_offset_hz();
   return result;
 }
 
 EnvelopeStream stream_envelope_live(double sample_rate_hz, double carrier_override, const EnvelopeOptions &opts,
     const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples) {
   EnvelopeStream result;
-  result.rate_hz = sample_rate_hz / static_cast<double>(opts.decimation);
+  result.rate_hz = sample_rate_hz / static_cast<double>(checked_decimation(opts.decimation));
 
   // Resolve the carrier. With no metadata on a live stream, scan the opening
   // samples - but stdin can't be rewound, so the scanned head is replayed
@@ -277,6 +287,8 @@ EnvelopeStream stream_envelope_live(double sample_rate_hz, double carrier_overri
   for (std::size_t off = 0; off < head.size(); off += block_samples)
     feed(std::span{head}.subspan(off, std::min(block_samples, head.size() - off)));
   stream_ri16le_stdin(feed, block_samples);
+  if (fe.saw && opts.detector == demod::Detector::quasi_sync)
+    result.afc_offset_hz = fe.saw->afc_offset_hz();
   return result;
 }
 
