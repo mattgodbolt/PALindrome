@@ -267,6 +267,36 @@ TEST_CASE("VisionIf is bit-exact block-invariant") {
   }
 }
 
+TEST_CASE("VisionIf stays bit-exact block-invariant at a standing AFC offset") {
+  // A 20 kHz mistune holds the loop's integrator at a large standing trim,
+  // which shortens the NCO's adaptive renorm cadence - the renorm instants
+  // are counted per sample from carried state, so chunking must not move
+  // them. This is the regime the accurate-carrier test above never enters.
+  std::vector<float> x(400000);
+  for (std::size_t k = 0; k < x.size(); ++k) {
+    const auto t = static_cast<double>(k) / kRate;
+    x[k] =
+        static_cast<float>((1.0 + 0.5 * std::cos(two_pi * 312.5e3 * t)) * std::cos(two_pi * (kCarrier + 20.0e3) * t));
+  }
+  const auto shape = demod::saw80_template();
+  demod::VisionIf one{kRate, kCarrier, shape, demod::Detector::quasi_sync};
+  one.prepare(x.size());
+  const auto all = one.process(x);
+  const std::vector<float> whole{all.begin(), all.end()};
+
+  for (const std::size_t chunk: {std::size_t{1}, std::size_t{337}, std::size_t{4096}}) {
+    demod::VisionIf chunked{kRate, kCarrier, shape, demod::Detector::quasi_sync};
+    chunked.prepare(x.size());
+    std::vector<float> pieces;
+    for (std::size_t at = 0; at < x.size(); at += chunk) {
+      const auto n = std::min(chunk, x.size() - at);
+      const auto out = chunked.process(std::span{x}.subspan(at, n));
+      pieces.insert(pieces.end(), out.begin(), out.end());
+    }
+    CHECK(pieces == whole);
+  }
+}
+
 TEST_CASE("quasi-sync removes the envelope detector's VSB quadrature distortion") {
   // The same flank-region AM tones whose asymmetric sidebands lift an envelope
   // detector's mean by a few % (see the flank test): the quasi-sync detector

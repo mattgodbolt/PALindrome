@@ -318,6 +318,27 @@ constexpr double kQsKi = 1.0e-8;
 // the clamp would take days of dead carrier - so it guards little in practice.
 constexpr double kAfcCatchRangeHz = 100.0e3;
 
+// Cap on the NCO's magnitude drift per renorm period: interval * a^2 stays
+// below this, so |nco| excursions stay ~0.1% - far below anything the video
+// path can see. The excursion is a pure simulation artifact (a real set's
+// carrier recovery has no magnitude to drift): left at the default 1024-sample
+// cadence, a standing AFC correction of tens of kHz turns it into an in-band
+// ~19.5 kHz amplitude sawtooth, visible as scrolling shimmer on an otherwise
+// locked picture. Sized so the default cadence already meets the cap up to a
+// ~1 kHz standing offset - beyond every carrier-metadata residual - so
+// accurate-carrier decodes are bit-identical.
+constexpr double kQsMaxRenormDrift = 2.0e-3;
+
+// The renorm cadence that meets kQsMaxRenormDrift at the current tracked
+// offset (rad per output sample), bounded by |trim| <= |freq| + kp.
+unsigned renorm_interval_for(double freq) noexcept {
+  const double a = std::abs(freq) + kQsKp;
+  const double n = kQsMaxRenormDrift / (a * a);
+  if (n >= static_cast<double>(dsp::Phasor::kRenormInterval))
+    return dsp::Phasor::kRenormInterval;
+  return n >= 1.0 ? static_cast<unsigned>(n) : 1u;
+}
+
 // The output rate the loop constants are denominated against. Guards the
 // decimation here because the delegating constructor divides by it before
 // FirPair would reject 0 - the documented invalid_argument must not route
@@ -375,7 +396,11 @@ void VisionIf::quasi_sync_detect(
     freq_ = std::clamp(freq_ + kQsKi * e, -max_freq_, max_freq_);
     // Advance by the nominal carrier, then trim by the loop (the locked-loop
     // NCO idiom Phasor carries - the same as ComplexAmEnvelope's mix phasor).
-    nco_.advance_trimmed(step_, kQsKp * e + freq_);
+    // At each renorm, retune the renorm cadence to the tracked offset (see
+    // kQsMaxRenormDrift); renorm instants are counted per sample, so the
+    // cadence - and hence the output - is independent of input chunking.
+    if (nco_.advance_trimmed(step_, kQsKp * e + freq_)) [[unlikely]]
+      nco_.set_renorm_interval(renorm_interval_for(freq_));
   }
 }
 
