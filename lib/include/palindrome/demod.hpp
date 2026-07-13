@@ -141,13 +141,19 @@ enum class CarrierScanError {
     std::span<const float> samples, double sample_rate_hz, double lo_hz, double hi_hz);
 
 // How the vision detector turns the filtered IF into video. quasi_sync (the
-// period default): an NCO at the carrier with a slow PI phase lock nulling the
-// mean quadrature - the digital stand-in for the TDA-era IC demodulator's
-// high-Q tank - whose in-phase product is the video. Linear through
-// overmodulation (the output swings negative rather than folding) and free of
-// the VSB quadrature distortion an envelope detector folds in on asymmetric
-// sidebands. envelope: the magnitude, a diode detector - simpler, earlier, and
-// carrier-phase indifferent, with the quadrature fold-through to match.
+// period default): the TDA-era topology, literally - the reference channel
+// hard-limits the IF and rings it through a high-Q tank at the (AFC-steered)
+// nominal carrier; the in-phase product against that reference is the video.
+// Being signal-driven, the reference always rings at the received frequency:
+// a mistune gives a static phase error (contrast falls, sync survives), never
+// the beat a free-running reference would produce. Rides through
+// overmodulation briefer than the tank's memory (the output swings negative
+// rather than folding; a sustained inversion re-rings the tank and rectifies
+// - the real deep-overmod buzz), and suppresses the VSB quadrature distortion
+// an envelope detector folds in on asymmetric sidebands, up to the tank's own
+// small sideband leakage. envelope: the magnitude, a diode detector - simpler,
+// earlier, and carrier-phase indifferent, with the quadrature fold-through to
+// match.
 enum class Detector { quasi_sync, envelope };
 
 // The vision IF strip and detector in one stage: a complex-coefficient FIR
@@ -199,17 +205,21 @@ private:
   // deinterleave), which two independent Firs would each pay in full.
   dsp::FirPair filter_;
   Detector detector_;
-  // Quasi-sync carrier recovery: a conjugate-rotating NCO phasor stepped at the
-  // nominal carrier (per OUTPUT sample, so decimation folds in) and trimmed by
-  // a slow PI loop nulling the normalised quadrature. The phasor and integrator
-  // advance in double - phase accumulates over millions of samples - and are
-  // snapshotted down to float at the point of use.
-  std::complex<double> step_{1.0, 0.0}; // e^{-j*omega} per output sample
-  dsp::Phasor nco_; // running carrier-phase estimate (conjugate; counted renorm inside)
-  double freq_ = 0.0; // PI integrator: tracked carrier offset, rad per output sample
+  // Quasi-sync carrier recovery, the TDA topology: the tank rings at the
+  // AFC-steered centre, leaked toward and driven by the limited IF sample.
+  // Its magnitude is bounded by the drive (no renormalisation needed; rounding
+  // self-heals within the ~1/k leak horizon). Tank state and AFC integrator
+  // advance in double - they accumulate across samples - and the reference is
+  // snapshotted down to float per sample for the feed-forward demod.
+  std::complex<double> step_{1.0, 0.0}; // e^{+j*omega} per output sample: the tank centre
+  std::complex<double> tank_{0.0, 0.0}; // the ringing reference, driven by the limited IF
+  double tank_k_; // drive fraction per sample = the tank half-bandwidth / output rate * 2pi
+  double freq_ = 0.0; // AFC integrator: tracked carrier offset, rad per output sample
   double max_freq_; // AFC catch range as the integrator clamp, rad per output sample
   double hz_per_omega_; // output_rate / 2pi: converts freq_ to Hz for diagnostics
-  Buffer<float> inv_mag_; // scratch: 1/|i,q| precomputed feed-forward per block
+  Buffer<float> inv_mag_; // scratch: 1/|i,q|, then reused for 1/|ref| after the tank loop
+  Buffer<float> ref_re_; // scratch: the tank reference snapshotted to float per sample
+  Buffer<float> ref_im_; // scratch: imaginary half of the pair above
   Buffer<float> out_; // owned video output, reused across calls
 };
 

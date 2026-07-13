@@ -100,6 +100,16 @@ downstream work), so the balance legitimately differs between them.
   bound just above the 4-cycle FMA floor); 32 MS/s source-thread CPU -18%
   (cumulatively -40% from pre-#62); wall -2.3% more, capped by decode. All of
   it bit-exact - renders byte-identical at every step.
+- **Tank reference for the quasi-sync detector (#76).** Authenticity-driven
+  (the free-running NCO + PI reference could beat against a mistuned carrier,
+  which no real set's signal-driven tank can), but it also cut the detector:
+  the serial chain shrinks from the e -> PI -> trim -> renorm-managed NCO
+  recurrence to one complex multiply-add, the limiter/demod/normaliser all run
+  as feed-forward vectorised passes, and the #74 adaptive-renorm machinery is
+  deleted outright. DemodBench quasi-sync 1.52 -> 1.28 ms/block (-16%) on the
+  source thread (non-limiting post-#62, so wall-neutral - recorded because
+  bottlenecks move). Renders shift by ~1 LSB mean (reference noise); blind
+  verification per the golden workflow.
 - **Chroma pass-3 float flow + per-line control snapshots (#63).** Pass 3 ran
   its per-sample rotate/comb/scale in double off per-line double controls,
   re-derived the killer-gated ACC scale (a divide) every sample, re-dispatched

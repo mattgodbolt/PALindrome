@@ -1,5 +1,6 @@
 #include "palindrome/demod.hpp"
 
+#include "palindrome/cmul.hpp"
 #include "palindrome/fft.hpp"
 #include "palindrome/restrict_ptr.hpp"
 
@@ -296,48 +297,37 @@ std::expected<double, CarrierScanError> find_vision_carrier(
 }
 
 namespace {
-// Quasi-sync PI loop gains, per OUTPUT sample (decimation lowers the
-// correction rate, so the lock bandwidth in Hz - roughly kp * output_rate /
-// 2pi, a few kHz at video rates, the "high-Q tank" a TDA-era IC demodulator
-// recovered the carrier with - shrinks with it). ki lets the integrator
-// absorb a static carrier offset (metadata error) without a standing phase
-// error. Heavily overdamped, so the lock never rings.
-constexpr double kQsKp = 1.0e-3;
-constexpr double kQsKi = 1.0e-8;
+// The quasi-sync reference tank's half-bandwidth. A real set's reference
+// channel hard-limits the IF and rings a high-Q LC: the tank passes the
+// carrier, the vestigial sideband and a sliver of the main sideband - a
+// loaded Q of a few tens at the 39.5 MHz IF, i.e. several hundred kHz.
+// Denominated in Hz (converted per instance) so it doesn't shrink with
+// sample rate; this is an era knob for the profile system. FLOOR: keep it
+// at >= ~3x the AFC catch range - narrower, and a mistune near the clamp
+// lets modulation sidebands out-drive the attenuated carrier line inside
+// the tank, the reference wanders, and the quasi-beat this topology exists
+// to prevent returns.
+constexpr double kTankHalfBandwidthHz = 500.0e3;
+
+// AFC integrator gain per output sample, on the tank discriminator
+// e = Im(limited * conj(tank)) = sin(drive-vs-tank angle): monotonic and
+// saturating in the mistune - the S-curve a real AFT used - so pull-in is
+// cycle-slip-free across the whole catch range (measured sub-second, with a
+// standing bias of a couple of Hz).
+constexpr double kAfcKi = 1.0e-7;
+
 // The AFC catch range: the integrator clamp, denominated in Hz so it doesn't
 // silently shrink with sample rate. This is the set's AFC (the discriminator-
 // to-varicap loop every late-70s-on set had): within range the loop pulls the
 // carrier in from a cold mistune and then tracks modulator/LO drift; outside
-// it the picture detunes honestly, like a real set. Sized by measurement, not
-// by the AFT's own reach: phase-detector pull-in stops acquiring beyond
-// ~50 kHz anyway (measured; a real AFT's wider catch came from a dedicated
-// S-curve frequency discriminator we don't have), and 100 kHz is several
+// it the picture detunes honestly, like a real set. 100 kHz is several
 // sessions' worth of the ~20 kHz/h bench-modulator wander. The clamp is
-// still the anti-windup bound, though at kQsKi the carrier-free random walk
-// is only ~1 kHz after the first minute and grows as sqrt(time) - reaching
-// the clamp would take days of dead carrier - so it guards little in practice.
+// still the anti-windup bound, though at kAfcKi the carrier-free random walk
+// grows as sqrt(time) - reaching it would take hours of dead carrier - so it
+// guards little in practice.
 constexpr double kAfcCatchRangeHz = 100.0e3;
-
-// Cap on the NCO's magnitude drift per renorm period: interval * a^2 stays
-// below this, so |nco| excursions stay ~0.1% - far below anything the video
-// path can see. The excursion is a pure simulation artifact (a real set's
-// carrier recovery has no magnitude to drift): left at the default 1024-sample
-// cadence, a standing AFC correction of tens of kHz turns it into an in-band
-// ~19.5 kHz amplitude sawtooth, visible as scrolling shimmer on an otherwise
-// locked picture. Sized so the default cadence already meets the cap up to a
-// ~1 kHz standing offset - beyond every carrier-metadata residual - so
-// accurate-carrier decodes are bit-identical.
-constexpr double kQsMaxRenormDrift = 2.0e-3;
-
-// The renorm cadence that meets kQsMaxRenormDrift at the current tracked
-// offset (rad per output sample), bounded by |trim| <= |freq| + kp.
-unsigned renorm_interval_for(double freq) noexcept {
-  const double a = std::abs(freq) + kQsKp;
-  const double n = kQsMaxRenormDrift / (a * a);
-  if (n >= static_cast<double>(dsp::Phasor::kRenormInterval))
-    return dsp::Phasor::kRenormInterval;
-  return n >= 1.0 ? static_cast<unsigned>(n) : 1u;
-}
+static_assert(kTankHalfBandwidthHz >= 3.0 * kAfcCatchRangeHz,
+    "the reference tank must stay much wider than the AFC catch range (see the floor note above)");
 
 // The output rate the loop constants are denominated against. Guards the
 // decimation here because the delegating constructor divides by it before
@@ -359,49 +349,71 @@ VisionIf::VisionIf(double sample_rate_hz, double carrier_hz, const IfTemplate &s
 VisionIf::VisionIf(std::pair<std::vector<float>, std::vector<float>> taps, Detector detector, double omega_per_output,
     double output_rate_hz, std::size_t decimation) :
     filter_{std::move(taps.first), std::move(taps.second), decimation}, detector_{detector},
-    step_{std::polar(1.0, -omega_per_output)}, max_freq_{kTwoPi * kAfcCatchRangeHz / output_rate_hz},
-    hz_per_omega_{output_rate_hz / kTwoPi} {}
+    step_{std::polar(1.0, omega_per_output)}, tank_k_{kTwoPi * kTankHalfBandwidthHz / output_rate_hz},
+    max_freq_{kTwoPi * kAfcCatchRangeHz / output_rate_hz}, hz_per_omega_{output_rate_hz / kTwoPi} {
+  // The tank's drive fraction is a per-sample leak: it must stay a convex
+  // blend or the recurrence is no longer a resonator (an output rate under
+  // ~1 MS/s cannot hold the era tank bandwidth).
+  if (!(tank_k_ > 0.0 && tank_k_ < 1.0))
+    throw std::invalid_argument{"VisionIf: sample rate too low for the reference tank bandwidth"};
+}
 
 void VisionIf::prepare(std::size_t max_in) {
   filter_.prepare(max_in);
   inv_mag_.reserve(filter_.max_output_for(max_in));
+  ref_re_.reserve(filter_.max_output_for(max_in));
+  ref_im_.reserve(filter_.max_output_for(max_in));
   out_.reserve(filter_.max_output_for(max_in));
+}
+
+// The demod product against the snapshotted tank reference: out = 2 * Re(y *
+// conj(ref)) / |ref|. Pure feed-forward over per-sample buffers - mul/add
+// only, so it vectorises under the default flags (no sqrt/div needing the
+// math-flag escape its neighbours carry); the reference's magnitude (set by
+// tank dynamics, not by the signal level) is normalised out here, as the real
+// switching demodulator's second limiter did.
+void reference_demod(restrict_ptr<const float> i, restrict_ptr<const float> q, restrict_ptr<const float> rr,
+    restrict_ptr<const float> rim, restrict_ptr<const float> inv_ref, restrict_ptr<float> out, std::size_t n) {
+  for (std::size_t k = 0; k < n; ++k)
+    out[k] = 2.0f * (i[k] * rr[k] + q[k] * rim[k]) * inv_ref[k];
 }
 
 void VisionIf::quasi_sync_detect(
     restrict_ptr<const float> i, restrict_ptr<const float> q, restrict_ptr<float> out, std::size_t n) {
-  // |y| = |(i,q) * nco| = |i,q| * |nco|, and the renorm holds |nco| at 1 within
-  // ~5e-6 in lock, so the error normaliser 1/|y| ~= 1/|i,q| is a pure function
-  // of the FIR outputs. Compute it feed-forward (packed sqrt+div) so the serial
-  // recurrence below carries only the complex multiply and the PI update - the
-  // sqrt and divide leave the e -> integrator -> nco -> next-e critical path.
+  // The limiter: unit-normalise the analytic IF - the reference channel's
+  // hard limiter, stripping the AM so the tank rings on carrier phase alone.
+  // Feed-forward (packed sqrt+div), leaving the serial chain below carrying
+  // only the tank's complex multiply-add.
   const auto inv = inv_mag_.write_n(n);
   inv_magnitude(i, q, inv.data(), n);
+  const auto rr = ref_re_.write_n(n);
+  const auto rim = ref_im_.write_n(n);
+  const double leak = 1.0 - tank_k_;
   for (std::size_t k = 0; k < n; ++k) {
-    // Snapshot the double phasor down to float at the point of use; the video
-    // is per-sample flow, only the phase is the accumulator.
-    const auto pr = nco_.real_f();
-    const auto pim = nco_.imag_f();
-    const float yr = i[k] * pr - q[k] * pim;
-    const float yi = i[k] * pim + q[k] * pr;
-    out[k] = 2.0f * yr;
-    // Normalised quadrature error (the loop gain must not ride the signal
-    // level - the AGC sits downstream of us). Deliberately NOT sign-corrected
-    // by Re(y): an AM carrier never goes negative, and the plain sin(phase)
-    // error makes +I the only stable point with 180 degrees a repeller. A
-    // Costas-style sign flip would stabilise BOTH - the loop then locks
-    // inverted whenever the cold-start phase lands in the wrong half, which
-    // the RX888 corpus did.
-    const double e = static_cast<double>(yi * inv[k]);
-    freq_ = std::clamp(freq_ + kQsKi * e, -max_freq_, max_freq_);
-    // Advance by the nominal carrier, then trim by the loop (the locked-loop
-    // NCO idiom Phasor carries - the same as ComplexAmEnvelope's mix phasor).
-    // At each renorm, retune the renorm cadence to the tracked offset (see
-    // kQsMaxRenormDrift); renorm instants are counted per sample, so the
-    // cadence - and hence the output - is independent of input chunking.
-    if (nco_.advance_trimmed(step_, kQsKp * e + freq_)) [[unlikely]]
-      nco_.set_renorm_interval(renorm_interval_for(freq_));
+    const double lr = static_cast<double>(i[k] * inv[k]);
+    const double li = static_cast<double>(q[k] * inv[k]);
+    // Ring at the AFC-steered centre (exact step at the nominal, first-order
+    // trim by the tracked offset - its small magnitude error washes out
+    // within the tank's ~1/k leak horizon, so nothing needs renormalising:
+    // |tank| stays bounded by the drive), then leak toward the limited
+    // sample. A driven resonator's steady state is AT the drive frequency,
+    // so a mistune yields a static phase error - washed-out contrast, sync
+    // intact - never a beat.
+    const auto t = dsp::cmul(tank_, step_);
+    tank_ = {leak * (t.real() - freq_ * t.imag()) + tank_k_ * lr, leak * (t.imag() + freq_ * t.real()) + tank_k_ * li};
+    rr[k] = static_cast<float>(tank_.real());
+    rim[k] = static_cast<float>(tank_.imag());
+    // AFC discriminator: sin of the drive-vs-tank angle, monotonic and
+    // saturating in the mistune (the AFT S-curve). Unnormalised by |tank|:
+    // measured identical pull and bias either way, so the divide stays out
+    // of the loop.
+    const double e = li * tank_.real() - lr * tank_.imag();
+    freq_ = std::clamp(freq_ + kAfcKi * e, -max_freq_, max_freq_);
   }
+  // The reference normaliser reuses the limiter's scratch: the limiter values
+  // were consumed in the loop above.
+  inv_magnitude(rr.data(), rim.data(), inv.data(), n);
+  reference_demod(i, q, rr.data(), rim.data(), inv.data(), out, n);
 }
 
 std::span<const float> VisionIf::process(std::span<const float> in) {

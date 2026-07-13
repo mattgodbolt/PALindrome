@@ -30,38 +30,16 @@ public:
     tick();
   }
 
-  // Advance, then trim by the small angle `a` as the first-order rotation
-  // (1 - j*a) - the locked-loop NCO idiom: exact enough for a tiny correction,
-  // with the renorm absorbing its second-order magnitude drift. Returns true
-  // when this step renormalised: the chunk-invariant instants at which an
-  // owner tracking a large standing trim may retune the renorm cadence (see
-  // set_renorm_interval).
-  bool advance_trimmed(std::complex<double> step, double a) noexcept {
-    z_ = cmul(z_, step);
-    z_ = {z_.real() + a * z_.imag(), z_.imag() - a * z_.real()};
-    return tick();
-  }
-
-  // The trim's magnitude error grows with its angle (|1 - j*a| = sqrt(1+a^2)),
-  // so a loop holding a large standing correction must renormalise more often
-  // than the default or |z| sawtooths visibly between renorms. Counted per
-  // sample from state carried across calls, so the cadence is independent of
-  // input chunking.
-  void set_renorm_interval(unsigned n) noexcept { renorm_interval_ = n; }
-
 private:
-  bool tick() noexcept {
-    if (++since_renorm_ >= renorm_interval_) [[unlikely]] {
+  void tick() noexcept {
+    if (++since_renorm_ >= kRenormInterval) [[unlikely]] {
       z_ /= std::abs(z_);
       since_renorm_ = 0;
-      return true;
     }
-    return false;
   }
 
   std::complex<double> z_{1.0, 0.0};
   unsigned since_renorm_ = 0;
-  unsigned renorm_interval_ = kRenormInterval;
 };
 
 } // namespace palindrome::dsp
