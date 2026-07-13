@@ -329,6 +329,40 @@ TEST_CASE("Screen is block-invariant") {
     CHECK(frame_whole.pixels[i] == frame_chunked.pixels[i]);
 }
 
+TEST_CASE("VerticalSync flags the detected field anchor once per field") {
+  // field_start is the DETECTED anchor - a diagnostic now that the screen
+  // keys its per-field work on the v_phase wrap - so pin it here or it rots
+  // silently. Synthetic sync bits: normal lines ~7% duty, then a vertical
+  // interval of three broad-pulse lines (~84% duty) per field; the integrator
+  // must cross its slice once per interval, and only there.
+  constexpr std::size_t kLineLen = 1000; // 16 kHz lines, 320/field = 50 Hz at kRate
+  constexpr std::size_t kLinesPerField = 320;
+  constexpr std::size_t kFields = 4;
+  std::vector<video::SyncSample> sync;
+  for (std::size_t f = 0; f < kFields; ++f)
+    for (std::size_t l = 0; l < kLinesPerField; ++l) {
+      const std::size_t duty = l < 3 ? (kLineLen * 84) / 100 : kLineLen / 14;
+      for (std::size_t k = 0; k < kLineLen; ++k)
+        sync.push_back(video::SyncSample{.sync = k < duty});
+    }
+
+  video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = kRate}};
+  vsync.prepare(sync.size());
+  const auto out = vsync.process(sync);
+  std::vector<std::size_t> anchors;
+  for (std::size_t i = 0; i < out.size(); ++i)
+    if (out[i].field_start)
+      anchors.push_back(i);
+  REQUIRE(anchors.size() == kFields);
+  for (std::size_t f = 0; f < kFields; ++f) {
+    // Each anchor lands inside its field's vertical interval (integrator lag
+    // keeps it within the broad-pulse lines, well before line 5).
+    const std::size_t base = f * kLinesPerField * kLineLen;
+    CHECK(anchors[f] >= base);
+    CHECK(anchors[f] < base + 5 * kLineLen);
+  }
+}
+
 TEST_CASE("Screen snapshots a field before fading it, exactly once per retrace") {
   // persistence 2 fields => a per-field fade of exp(-1/persistence); gamma 1 keeps
   // the gun linear so the deposit is simple to reason about.
@@ -354,25 +388,26 @@ TEST_CASE("Screen snapshots a field before fading it, exactly once per retrace")
   std::vector<video::ChromaSample> pic;
   std::vector<video::BeamSample> hbeam;
   std::vector<video::VSample> vbeam;
-  const auto add = [&](float h_phase, float v_phase, float luma, bool field_start) {
+  const auto add = [&](float h_phase, float v_phase, float luma) {
     pic.push_back(video::ChromaSample{.luma = luma});
     hbeam.push_back(video::BeamSample{.h_phase = h_phase});
-    vbeam.push_back(video::VSample{.v_phase = v_phase, .field_start = field_start});
+    vbeam.push_back(video::VSample{.v_phase = v_phase});
   };
-  add(0.10f, 0.0f, 1.0f, true); // back porch: seed black_ = 1.0 (field 0 start)
+  add(0.10f, 0.0f, 1.0f); // back porch: seed black_ = 1.0
   for (const float vp: {0.25f, 0.5f, 0.75f})
-    add(0.5f, vp, 0.0f, false); // active white: deposit gun drive 1.0 into a pixel
+    add(0.5f, vp, 0.0f); // active white: deposit gun drive 1.0 into a pixel
   screen.process(pic, hbeam, vbeam);
 
   const auto deposited = screen.snapshot(); // the un-faded charge
   REQUIRE(std::ranges::any_of(deposited.pixels, [](auto p) { return p > 0; }));
 
-  // One field_start, beam blanked (h_phase below h_blank) but the gun still driven
-  // so white stays pinned. It must snapshot BEFORE applying a single fade.
+  // One retrace (v_phase wraps 0.75 -> 0.0), beam blanked (h_phase below
+  // h_blank) but the gun still driven so white stays pinned. It must snapshot
+  // BEFORE applying a single fade.
   video::Screen::Frame at_boundary;
   const std::array boundary_pic{video::ChromaSample{.luma = 0.0f}};
   const std::array boundary_hbeam{video::BeamSample{.h_phase = 0.0f}};
-  const std::array boundary_vbeam{video::VSample{.v_phase = 0.0f, .field_start = true}};
+  const std::array boundary_vbeam{video::VSample{.v_phase = 0.0f}};
   screen.process(boundary_pic, boundary_hbeam, boundary_vbeam,
       [&](const video::Screen::FieldEvent &e) { at_boundary = e.frame(); });
 
@@ -396,8 +431,7 @@ TEST_CASE("Screen fades and emits on the free-running retrace - no sync detectio
   // the decay switched off and integrated to a white screen no real set could
   // show. The retrace is the flywheel's v_phase wrap, which free-runs: with
   // field_start never set, the phosphor must still fade each field and the
-  // charge must converge to the geometric sum instead of growing without
-  // bound - and the field callback must still fire (the rolling picture).
+  // field callback must still fire (the rolling picture).
   const video::ScreenConfig cfg{.width = 8,
       .height = 8,
       .sample_rate_hz = kRate,
@@ -424,27 +458,20 @@ TEST_CASE("Screen fades and emits on the free-running retrace - no sync detectio
     }
   };
 
+  // The callback count is the pin: on the detection-gated code it is zero
+  // (field_start is never set), so the fade never ran either. Charge
+  // convergence itself can't be asserted through the quantised readout - its
+  // white normalisation tracks the buffer, so any steady state reads
+  // full-scale whether or not the fade runs.
   std::size_t retraces = 0;
   const auto count = [&](const video::Screen::FieldEvent &) { ++retraces; };
-  float peak_early = 0.0f;
-  float peak_late = 0.0f;
   for (int field = 0; field < 12; ++field) {
     add_field();
     screen.process(pic, hbeam, vbeam, count); // v_phase wraps 0.75 -> 0.01 between calls
-    const auto frame = screen.snapshot();
-    const auto peak = *std::ranges::max_element(frame.pixels);
-    if (field == 5)
-      peak_early = static_cast<float>(peak);
-    if (field == 11)
-      peak_late = static_cast<float>(peak);
   }
   CHECK(retraces == 11); // one per wrap; none for the first partial field
-  REQUIRE(peak_early > 0.0f);
-  // Converged: the fade balances the deposit. Unfaded accumulation would have
-  // peak_late ~ 2x peak_early (or clipped white).
-  const double ratio = static_cast<double>(peak_late) / static_cast<double>(peak_early);
-  CHECK(ratio > 0.95);
-  CHECK(ratio < 1.05);
+  const auto frame = screen.snapshot();
+  CHECK(std::ranges::any_of(frame.pixels, [](auto px) { return px > 0; })); // the frames carry the picture
 }
 
 TEST_CASE("Screen latch defers quantisation without changing the boundary frame") {
@@ -457,14 +484,14 @@ TEST_CASE("Screen latch defers quantisation without changing the boundary frame"
   std::vector<video::ChromaSample> pic;
   std::vector<video::BeamSample> hbeam;
   std::vector<video::VSample> vbeam;
-  const auto add = [&](float h_phase, float v_phase, float luma, bool field_start) {
+  const auto add = [&](float h_phase, float v_phase, float luma) {
     pic.push_back(video::ChromaSample{.luma = luma});
     hbeam.push_back(video::BeamSample{.h_phase = h_phase});
-    vbeam.push_back(video::VSample{.v_phase = v_phase, .field_start = field_start});
+    vbeam.push_back(video::VSample{.v_phase = v_phase});
   };
-  add(0.10f, 0.0f, 1.0f, false); // back porch: seed the black reference
+  add(0.10f, 0.0f, 1.0f); // back porch: seed the black reference
   for (const float vp: {0.25f, 0.5f, 0.75f})
-    add(0.5f, vp, 0.0f, false); // active white into three pixels
+    add(0.5f, vp, 0.0f); // active white into three pixels
   screen.process(pic, hbeam, vbeam);
 
   // At the boundary, quantise now (frame) AND latch; then deposit more on top.
@@ -474,8 +501,8 @@ TEST_CASE("Screen latch defers quantisation without changing the boundary frame"
   pic.clear();
   hbeam.clear();
   vbeam.clear();
-  add(0.10f, 0.0f, 1.0f, true); // the field boundary
-  add(0.5f, 0.125f, 0.0f, false); // post-boundary deposit, must not leak into the latch
+  add(0.10f, 0.0f, 1.0f); // the field boundary: v_phase wraps 0.75 -> 0.0
+  add(0.5f, 0.125f, 0.0f); // post-boundary deposit, must not leak into the latch
   screen.process(pic, hbeam, vbeam, [&](const video::Screen::FieldEvent &e) {
     at_boundary = e.frame();
     e.latch();

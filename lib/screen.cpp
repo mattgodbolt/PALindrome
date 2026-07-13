@@ -490,8 +490,8 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     if (bin_x >= kGaussBins)
       bin_x = kGaussBins - 1;
     // Yoke shear: un-creep the vertical so the scanline is flat (see header).
-    const auto yc = static_cast<double>(vbeam[i].v_phase) * y_scale_eff_ -
-                    tilt_eff_ * static_cast<double>(hbeam[i].h_phase) + y_off_eff_;
+    const auto yc =
+        static_cast<double>(v_phase) * y_scale_eff_ - tilt_eff_ * static_cast<double>(hbeam[i].h_phase) + y_off_eff_;
     const double yc_floor = std::floor(yc);
     auto bin_y = static_cast<std::size_t>((yc - yc_floor) * static_cast<double>(kGaussBins));
     if (bin_y >= kGaussBins)
