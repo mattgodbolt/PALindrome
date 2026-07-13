@@ -6,12 +6,13 @@ Spawns the pipeline
     airspy_rx -r /dev/stdout ... | palindrome render --live --frame-fd ...
 
 so the decoder reads the SDR's raw 20 MS/s real stream straight off stdin (no
-capture file) and writes raw RGB frames down a pipe. The tune arithmetic below
-places the vision carrier at a fixed IF (VISION_IF_TARGET - the set's IF plan),
-which is passed to the decoder as --carrier: the channel preset, with the AFC
-absorbing the source's drift, exactly as a real tuned set. Nothing scans. This process JPEG-encodes them and serves a
-`multipart/x-mixed-replace` stream, which the browser renders as video in a plain
-`<img>` - no polling, no reload. Keeping the encode here (not in the decoder)
+capture file) and writes raw RGB frames down a pipe. This process JPEG-encodes
+the frames and serves a `multipart/x-mixed-replace` stream, which the browser
+renders as video in a plain `<img>` - no polling, no reload. The tune
+arithmetic below places the vision carrier at a fixed IF (VISION_IF_TARGET -
+the set's IF plan), which is passed to the decoder as --carrier: the channel
+preset, with the AFC absorbing the source's drift, exactly as a real tuned
+set. Nothing scans. Keeping the encode here (not in the decoder)
 also keeps the JPEG/zlib work off the deposit thread, so the per-field snapshot
 doesn't stall the pipeline and backpressure the SDR. Ctrl-C stops all three.
 
@@ -190,7 +191,7 @@ def main():
     airspy_cmd = [airspy, "-r", "/dev/stdout", "-f", f"{tune_hz / 1e6:.6f}",
                   "-a", str(args.sample_rate), "-t", "3", "-g", str(args.gain)]
     render_cmd = [palindrome, "render", "--live", "--sample-rate", str(real_rate),
-                  "--carrier", str(VISION_IF_TARGET),
+                  "--carrier", f"{VISION_IF_TARGET:.0f}",
                   "--width", str(args.width), "--height", str(args.height),
                   "--decimate", str(args.decimate), "--deposit-threads", str(args.deposit_threads),
                   "--frame-fd", str(frame_w)]

@@ -250,9 +250,10 @@ it itself: a coarse FFT scan of the opening ~50 ms picks the dominant line (the
 vision carrier sits at the sync-tip peak and is present even in blanking),
 refined to a few hundred Hz - comfortably inside the quasi-sync loop's pull-in,
 which takes it the rest of the way. That runs automatically when a recording has
-no carrier metadata (the no-metadata case is exactly live RF, so this is the
-first brick of decoding a live stream), and `--scan` forces it even when
-metadata is present - which doubles as a check on the metadata's own number.
+no carrier metadata, and `--scan` forces it even when metadata is present -
+which doubles as a check on the metadata's own number and as the bench tuning
+aid for re-measuring a source's channel (the live path itself never scans:
+it is tuned by `--carrier`, like a set).
 
 Levels are absolute, the way a receiver actually knows them: an IF AGC
 (`--agc sync-tip`, the default) peak-detects the carrier's sync tip - under
@@ -403,9 +404,11 @@ unauthenticated, so keep it to a trusted network. Every knob it offers is just a
 ### `render --live` + `tools/live_view.py` - the live decode
 
 `render --live` decodes a continuous real-int16 SDR stream from stdin instead
-of a recording: the vision carrier is scanned off the opening samples (a live
-pipe has no metadata - and a silent warm-up head just extends the scan), and
-decoded frames leave as raw RGB writes on `--frame-fd`, so the decoder stays a
+of a recording. It requires `--carrier` - the tuner's IF-plan target, i.e. the
+channel preset: the input stage places the vision carrier there by its tune
+arithmetic (as `tools/live_view.py` does) and the decoder's AFC absorbs the
+source's drift, exactly as a real tuned set; no set scans at switch-on.
+Decoded frames leave as raw RGB writes on `--frame-fd`, so the decoder stays a
 plain CLI and whoever owns the fd does the image encoding. `--frame-stride`
 sets the snapshot cadence (default every 5th field, ~10 fps);
 `--deposit-threads 8` buys the real-time margin at 20 MS/s colour.
@@ -448,7 +451,8 @@ and serves an MJPEG stream the browser renders as live video in a plain
   `docs/performance.md` - a BALANCED pipeline (source ≈ decode ≈ deposit), so
   further speed comes from cutting total work, not re-staging.
 - **Live mode.** ✅ First light: `render --live` decodes a continuous SDR
-  stream off stdin (carrier scanned, no metadata) and `tools/live_view.py`
+  stream off stdin (tuned by the input stage's `--carrier` preset, the AFC
+  tracking the drift) and `tools/live_view.py`
   serves it as browser MJPEG, in colour, in real time (~13% margin at 20 MS/s -
   see above). Remaining: continuous AFC drift tracking for long sessions
   (issue #58) and a higher snapshot-cadence ceiling (issue #56).

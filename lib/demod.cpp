@@ -322,10 +322,10 @@ constexpr double kAfcKi = 1.0e-7;
 // silently shrink with sample rate. This is the set's AFC (the discriminator-
 // to-varicap loop every late-70s-on set had): within range the loop pulls the
 // carrier in from a cold mistune and then tracks modulator/LO drift; outside
-// it the picture detunes honestly, like a real set. 300 kHz covers months
-// of the bench modulator's ~50 kHz/week aging around a fine-tuned preset,
-// is period-plausible AFT reach, and the tank discriminator pulls the full
-// range without cycle slips in ~0.25 s. The clamp is still the anti-windup
+// it the picture detunes honestly, like a real set. 300 kHz covers around
+// six weeks of the bench modulator's ~50 kHz/week aging from a fresh
+// preset, is period-plausible AFT reach, and the tank discriminator pulls
+// the full range without cycle slips (t90 ~0.24 s). The clamp is still the anti-windup
 // bound, though at kAfcKi the carrier-free random walk grows as sqrt(time)
 // - reaching it would take hours of dead carrier - so it guards little in
 // practice.

@@ -39,8 +39,8 @@ struct LoadedRecording {
 // (demod::find_vision_carrier) - so a recording with no carrier metadata, the
 // live-RF case, still decodes. `force_scan` takes the scan even when metadata is
 // present (to validate it). Throws (a std::exception — runtime_error for a
-// missing/invalid recording or a complex ci16 input, invalid_argument for a scan
-// that finds no carrier) — main catches it and prints "palindrome: <what>".
+// missing/invalid recording, a complex ci16 input, or a scan that finds no
+// carrier) — main catches it and prints "palindrome: <what>".
 [[nodiscard]] LoadedRecording load_recording(
     const std::filesystem::path &recording, double carrier_override = 0.0, bool force_scan = false);
 
@@ -74,7 +74,7 @@ struct EnvelopeOptions {
 // What stream_envelope reports back to the caller.
 struct EnvelopeStream {
   double rate_hz = 0.0; // envelope sample rate (input rate / decimation)
-  double carrier_hz = 0.0; // the vision carrier actually used (resolved by a live scan)
+  double carrier_hz = 0.0; // the vision carrier used (metadata, --carrier, or a recording scan)
   // Where the quasi-sync AFC left the carrier, Hz from carrier_hz. Engaged
   // (and so reported) only when that loop ran: the envelope detector and the
   // flat chain have no AFC, and "no loop" must not print as "measured zero".

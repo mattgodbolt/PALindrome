@@ -103,8 +103,8 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(live_)["--live"](
               "Live mode: decode a continuous real-int16 SDR stream from stdin (e.g. airspy_rx -r /dev/stdout | "
               "palindrome render --live --sample-rate 20e6 --carrier 3e6). Needs --carrier: the tuner's IF-plan "
-              "target, i.e. the channel preset - the AFC absorbs drift from there. Overwrites --output every few "
-              "fields until the pipe closes"))
+              "target, i.e. the channel preset - the AFC absorbs drift from there. Streams raw frames to "
+              "--frame-fd until the pipe closes"))
           .add_argument(lyra::opt(sample_rate_, "hz")["--sample-rate"](
               "Live input real sample rate Hz (required with --live; 20e6 for the AirSpy raw stream)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz (--if flat only)"))
@@ -238,20 +238,20 @@ int RenderCommand::run() const {
       std::println(std::cerr, "render: --live requires --frame-fd (raw frames for the MJPEG viewer)");
       return 1;
     }
+    if (scan_) {
+      std::println(std::cerr, "render: --scan analyses recordings; --live is tuned by --carrier, not by scanning");
+      return 1;
+    }
     if (!(carrier_ > 0.0)) {
       std::println(std::cerr,
           "render: --live requires --carrier - the tuner's IF-plan target (the channel preset; live_view.py "
           "supplies it). The AFC absorbs drift from there; a set is tuned, it does not scan.");
       return 1;
     }
-    if (scan_) {
-      std::println(std::cerr, "render: --scan analyses recordings; --live is tuned by --carrier, not by scanning");
-      return 1;
-    }
     // Let a closed reader surface as EPIPE from write() rather than killing us
     // with SIGPIPE (the viewer disconnecting is a normal live-stream event).
     std::signal(SIGPIPE, SIG_IGN);
-    loaded.sample_rate_hz = sample_rate_; // the carrier comes from --carrier (checked below): the tuner's preset
+    loaded.sample_rate_hz = sample_rate_; // the carrier is --carrier verbatim (checked above): the tuner's preset
   }
   else {
     loaded = load_recording(recording_, carrier_, scan_);

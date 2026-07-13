@@ -3,7 +3,6 @@
 #include "palindrome/demod.hpp"
 #include "palindrome/fir.hpp"
 
-#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <format>
@@ -38,7 +37,7 @@ std::filesystem::path resolve_meta(std::filesystem::path path) {
 }
 
 namespace {
-// Carrier-scan geometry, shared by the file and live scans.
+// Carrier-scan geometry for the recording scan.
 constexpr std::size_t kScanSamples = std::size_t{1} << 20; // ~50 ms at 20 MS/s
 constexpr double kScanLoHz = 1.0e6; // a vision IF never sits below ~1 MHz on either SDR's plan
 constexpr double kNyquistGuard = 0.95; // stay off the anti-alias roll-off at the top of the band
@@ -73,8 +72,8 @@ std::vector<float> read_head(const std::filesystem::path &data_path, std::size_t
 // vision carrier is the dominant line within it. The block is long on purpose:
 // finer bins separate the pure carrier line from its close-in video-modulation
 // sidebands, which a short block blurs together and the peak then sits between.
-// For a FILE a failed scan is terminal (the recording is what it is), so the
-// expected converts to a throw here; the live path retries instead.
+// A failed scan is terminal (the recording is what it is), so the expected
+// converts to a throw here.
 double scan_vision_carrier(const std::filesystem::path &data_path, double sample_rate_hz) {
   const auto head = read_head(data_path, kScanSamples);
   const auto carrier =
@@ -143,7 +142,6 @@ void stream_ri16le_blocks(const std::filesystem::path &data_path,
     on_block(dst);
   }
 }
-
 
 namespace {
 // Stream real int16 from stdin as float blocks until the pipe closes - the
