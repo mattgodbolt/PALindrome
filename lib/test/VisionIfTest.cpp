@@ -67,9 +67,9 @@ Ripple measure(std::span<const float> env, std::size_t skip) {
 }
 
 // Response probes default to the envelope detector: it is carrier-phase
-// indifferent, so the measurement reads the FILTER, not the phase loop. The
-// quasi-sync tests skip further in: the phase lock spends its first few
-// thousand samples acquiring from a cold phasor.
+// indifferent, so the measurement reads the FILTER, not the reference path.
+// The quasi-sync tests skip further in: the FIR settles and the tank rings up
+// from empty over the first few thousand samples.
 constexpr std::size_t kLockSkip = 20000;
 
 Ripple run(const demod::IfTemplate &shape, const std::vector<float> &x, double rate = kRate, double carrier = kCarrier,
@@ -268,13 +268,10 @@ TEST_CASE("VisionIf is bit-exact block-invariant") {
 }
 
 TEST_CASE("VisionIf stays bit-exact block-invariant at a standing AFC offset") {
-  // A 5 kHz mistune pulls in fast (~100k samples) and then holds the loop's
-  // integrator at a standing trim big enough to shorten the NCO's adaptive
-  // renorm cadence (interval ~320, hundreds of renorm instants straddling the
-  // chunk boundaries below) - the instants are counted per sample from
-  // carried state, so chunking must not move them. This is the regime the
-  // accurate-carrier test above never enters; a LARGER mistune would ratchet
-  // in too slowly to cross the cadence threshold inside the clip at all.
+  // A 5 kHz mistune exercises the loop with the AFC integrator moving the
+  // whole run (its time constant is ~1.9M samples, far beyond this clip): the
+  // tank state, the integrator and the trim all evolve per sample from
+  // carried state, so chunking must not move any of it.
   std::vector<float> x(400000);
   for (std::size_t k = 0; k < x.size(); ++k) {
     const auto t = static_cast<double>(k) / kRate;
@@ -299,36 +296,49 @@ TEST_CASE("VisionIf stays bit-exact block-invariant at a standing AFC offset") {
   }
 }
 
-TEST_CASE("quasi-sync removes the envelope detector's VSB quadrature distortion") {
+TEST_CASE("quasi-sync suppresses the envelope detector's VSB quadrature distortion") {
   // The same flank-region AM tones whose asymmetric sidebands lift an envelope
   // detector's mean by a few % (see the flank test): the quasi-sync detector
-  // takes only the in-phase product, so the mean must sit AT the carrier level
-  // and the ripple must still be depth * the 0.5 flank level.
+  // takes the in-phase product against the tank reference, so the mean sits at
+  // the carrier level up to the tank's own sideband leakage (the reference LC
+  // passes a sliver of the main sideband - a real set's residual, ~1-2% at the
+  // flank edge, and measurably below the envelope's lift at every tone).
   for (const double mod_hz: {200.0e3, 312.5e3, 600.0e3}) {
-    const auto r = run(
-        demod::saw80_template(), am_tone(60000, mod_hz, 0.5), kRate, kCarrier, demod::Detector::quasi_sync, kLockSkip);
-    CHECK_THAT(r.mean, WithinAbs(0.5, 0.005));
+    const auto x = am_tone(60000, mod_hz, 0.5);
+    const auto r = run(demod::saw80_template(), x, kRate, kCarrier, demod::Detector::quasi_sync, kLockSkip);
+    const auto env = run(demod::saw80_template(), x, kRate, kCarrier, demod::Detector::envelope, kLockSkip);
+    CHECK_THAT(r.mean, WithinAbs(0.5, 0.015));
     CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.02));
+    CHECK(std::abs(r.mean - 0.5) < std::abs(env.mean - 0.5)); // the residual stays below the envelope's lift
   }
 }
 
-TEST_CASE("quasi-sync is linear through overmodulation; the envelope folds") {
-  // Depth 1.3: the modulated carrier passes through zero. A product detector
-  // follows it negative; a magnitude can't, and rectifies the overshoot.
-  const auto x = am_tone(60000, 312.5e3, 1.3);
-  const auto qs = run(demod::saw80_template(), x, kRate, kCarrier, demod::Detector::quasi_sync, kLockSkip);
-  const auto env = run(demod::saw80_template(), x, kRate, kCarrier, demod::Detector::envelope, kLockSkip);
-  // Quasi-sync swings to ~0.5*(1 - 1.3) = -0.15; envelope folds at zero. The
-  // ripple metric ((max-min)/2) reads the difference directly.
-  CHECK_THAT(qs.amplitude, WithinRel(0.5 * 1.3, 0.03));
-  CHECK(env.amplitude < 0.55); // folded: (max - 0) / 2 at most ~0.5 + slop
+TEST_CASE("quasi-sync rides through brief overmodulation; the envelope folds") {
+  // Depth 1.3: the modulated carrier passes through zero. The tank reference's
+  // flywheel (memory ~1/(2*pi*half-BW) ~ 0.3 us - the real Q~40 LC) coasts
+  // through an inversion comparable to its memory - the coast is graded, not
+  // thresholded - so the video follows the signal negative; a magnitude
+  // detector rectifies the overshoot at zero. A SUSTAINED inversion re-rings
+  // the tank on the flipped carrier and rectifies too (deep slow
+  // overmodulation buzzed on real sets); probe with a fast tone, 600 kHz,
+  // whose underwater stretch is 22% of the period ~ 0.37 us.
+  const auto x = am_tone(60000, 600.0e3, 1.3);
+  const auto min_of = [&](demod::Detector det) {
+    demod::VisionIf dut{kRate, kCarrier, demod::saw80_template(), det};
+    dut.prepare(x.size());
+    const auto out = dut.process(x);
+    return *std::ranges::min_element(out.subspan(kLockSkip));
+  };
+  CHECK(min_of(demod::Detector::quasi_sync) < 0.0f); // follows the signal through the fold
+  CHECK(min_of(demod::Detector::envelope) > 0.1f); // rectified: never reaches zero
 }
 
 TEST_CASE("quasi-sync acquires upright from any cold-start phase") {
-  // The worst case: the signal arrives exactly 180 degrees from the cold NCO.
-  // That point must be a repeller, not a second lock (a Costas-style
-  // sign-corrected error stabilises both - this is the regression that locked
-  // the RX888 corpus inverted and starved the sync slicer of every edge).
+  // The tank reference is signal-driven, so it is structurally incapable of
+  // locking inverted - it rings up on the carrier's own phase from any start.
+  // Keep the sweep as the regression fence: a phase-locked reference with a
+  // sign-corrected (Costas-style) error once stabilised 180 degrees too and
+  // locked the RX888 corpus inverted, starving the sync slicer of every edge.
   for (const double phase0: {0.0, 1.5, std::numbers::pi, 4.5}) {
     std::vector<float> x(60000);
     for (std::size_t k = 0; k < x.size(); ++k) {
@@ -344,24 +354,27 @@ TEST_CASE("quasi-sync acquires upright from any cold-start phase") {
 
 TEST_CASE("quasi-sync locks under decimation - the shipped default geometry") {
   // The render default is quasi-sync AND auto-decimation (/2 on the RX888
-  // corpus), so the decimation-folding of the NCO step (omega * d per output
-  // sample) is load-bearing: drop that factor and the NCO free-runs megahertz
-  // off, far beyond any pull-in, while every d=1 test stays green.
+  // corpus), so the decimation-folding of the tank's centre step (omega * d
+  // per output sample) is load-bearing: drop that factor and the tank rings
+  // megahertz off the carrier, while every d=1 test stays green.
   for (const std::size_t d: {std::size_t{2}, std::size_t{4}}) {
     const auto x = am_tone(120000, 312.5e3, 0.5);
     demod::VisionIf dut{kRate, kCarrier, demod::saw80_template(), demod::Detector::quasi_sync, demod::kDefaultIfTaps,
         palindrome::dsp::Window::Hamming, d};
     dut.prepare(x.size());
     const auto r = measure(dut.process(x), kLockSkip / d * 2); // fewer corrections/s: allow more settle
-    CHECK_THAT(r.mean, WithinAbs(0.5, 0.005));
+    // The tank's Hz bandwidth is fixed, so decimation widens it per output
+    // sample and the sideband leakage's mean shift grows a little with d.
+    CHECK_THAT(r.mean, WithinAbs(0.5, 0.012));
     CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.02));
   }
 }
 
 TEST_CASE("quasi-sync locks through a carrier-frequency error") {
-  // The signal arrives 300 Hz off the nominal carrier the NCO was built for
-  // (a believable metadata/scan error). The PI integrator must wind up and
-  // track it: after settling, the video is as clean as on-frequency.
+  // The signal arrives 300 Hz off the constructed nominal (a believable
+  // metadata/scan error). The tank rides it with a sub-milliradian static
+  // phase error while the AFC integrator absorbs it: after settling, the
+  // video is as clean as on-frequency.
   constexpr double kOffset = 300.0;
   std::vector<float> x(400000);
   for (std::size_t k = 0; k < x.size(); ++k) {
@@ -379,9 +392,13 @@ TEST_CASE("quasi-sync locks through a carrier-frequency error") {
 
 TEST_CASE("quasi-sync AFC pulls in a kHz-scale mistune and reports the signed offset") {
   // The nominal carrier is 5 kHz off the signal - modulator-drift scale, far
-  // beyond metadata error. The integrator (the AFC) must pull in within the
-  // clip and afc_offset_hz must report the error with the documented sign:
-  // positive = the real carrier sits above the constructed nominal.
+  // beyond metadata error. The AFC integrator must pull the tank onto it and
+  // afc_offset_hz must report the error with the documented sign: positive =
+  // the real carrier sits above the constructed nominal. The loop's time
+  // constant is tank_k / kAfcKi ~ 1.9M samples, so the tone streams through
+  // twelve times (~5 tau plus slack for the slower-converging sign); every
+  // component is an integer number of cycles per buffer, so the tiling is
+  // seamless.
   constexpr double kOffset = 5.0e3;
   std::vector<float> x(1000000);
   for (std::size_t k = 0; k < x.size(); ++k) {
@@ -391,9 +408,11 @@ TEST_CASE("quasi-sync AFC pulls in a kHz-scale mistune and reports the signed of
   for (const double expected: {kOffset, -kOffset}) {
     demod::VisionIf dut{kRate, kCarrier - expected, demod::saw80_template(), demod::Detector::quasi_sync};
     dut.prepare(x.size());
-    const auto r = measure(dut.process(x), x.size() / 2);
-    CHECK_THAT(r.mean, WithinAbs(0.5, 0.01)); // locked and clean after pull-in
-    CHECK_THAT(dut.afc_offset_hz(), WithinAbs(expected, 250.0));
+    Ripple r{};
+    for (int pass = 0; pass < 12; ++pass)
+      r = measure(dut.process(x), x.size() / 2);
+    CHECK_THAT(r.mean, WithinAbs(0.5, 0.015)); // locked and clean after pull-in
+    CHECK_THAT(dut.afc_offset_hz(), WithinAbs(expected, 300.0));
   }
   // The envelope detector has no loop; the diagnostic reads 0.
   demod::VisionIf env{kRate, kCarrier - kOffset, demod::saw80_template(), demod::Detector::envelope};
