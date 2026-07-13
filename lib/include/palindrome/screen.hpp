@@ -177,10 +177,11 @@ public:
     Screen *screen_;
   };
 
-  // on_field fires once per field boundary (the field_start sample), with the
-  // phosphor as completed at that instant — the hook for a per-field PNG
-  // sequence. (Field, not frame, until even/odd parity tracking lands with
-  // colour; then this can fire per full frame.) Empty by default = no snapshots.
+  // on_field fires once per field retrace (the flywheel's v_phase wrap, locked
+  // or not - an unsynced set still scans and rolls), with the phosphor as
+  // completed at that instant — the hook for a per-field PNG sequence. (Field,
+  // not frame, until even/odd parity tracking lands with colour; then this can
+  // fire per full frame.) Empty by default = no snapshots.
   using FieldCallback = std::function<void(const FieldEvent &)>;
   void process(std::span<const ChromaSample> picture, std::span<const BeamSample> hbeam, std::span<const VSample> vbeam,
       const FieldCallback &on_field = {});
@@ -356,6 +357,7 @@ private:
   // peak scale at readout, for the 8-bit PNG.
   double black_ = 0.0;
   bool seeded_ = false;
+  float prev_v_phase_ = 0.0f; // last sample's vertical phase: a >half-field drop is the retrace
 };
 
 } // namespace palindrome::video
