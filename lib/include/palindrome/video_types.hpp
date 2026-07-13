@@ -34,8 +34,11 @@ struct BeamSample {
 
 // Output of the vertical sync: the beam's vertical position as a phase in
 // [0, 1) (0 at the locked field start), and field_start true on the single
-// sample where a new field is locked. A second timing rail off the same sync
-// bit the separator produces — it joins the horizontal rail at the renderer.
+// sample where a field sync is DETECTED - the flywheel's anchor, for
+// diagnostics. The screen keys its per-field work on the free-running
+// v_phase wrap instead (the retrace happens with or without lock). A second
+// timing rail off the same sync bit the separator produces — it joins the
+// horizontal rail at the renderer.
 struct VSample {
   float v_phase = 0.0f;
   bool field_start = false;

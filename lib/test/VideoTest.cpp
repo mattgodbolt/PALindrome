@@ -329,7 +329,7 @@ TEST_CASE("Screen is block-invariant") {
     CHECK(frame_whole.pixels[i] == frame_chunked.pixels[i]);
 }
 
-TEST_CASE("Screen snapshots a field before fading it, exactly once per field_start") {
+TEST_CASE("Screen snapshots a field before fading it, exactly once per retrace") {
   // persistence 2 fields => a per-field fade of exp(-1/persistence); gamma 1 keeps
   // the gun linear so the deposit is simple to reason about.
   const double persistence = 2.0;
@@ -388,6 +388,63 @@ TEST_CASE("Screen snapshots a field before fading it, exactly once per field_sta
         static_cast<int>(std::lround(static_cast<double>(deposited.pixels[i]) * static_cast<double>(field_decay)));
     CHECK(std::abs(static_cast<int>(faded.pixels[i]) - expected) <= 1);
   }
+}
+
+TEST_CASE("Screen fades and emits on the free-running retrace - no sync detection needed") {
+  // The bug this pins: with the fade keyed on DETECTED field starts, unlocked
+  // input (cold start, a mistuned carrier during AFC pull-in) deposited with
+  // the decay switched off and integrated to a white screen no real set could
+  // show. The retrace is the flywheel's v_phase wrap, which free-runs: with
+  // field_start never set, the phosphor must still fade each field and the
+  // charge must converge to the geometric sum instead of growing without
+  // bound - and the field callback must still fire (the rolling picture).
+  const video::ScreenConfig cfg{.width = 8,
+      .height = 8,
+      .sample_rate_hz = kRate,
+      .persistence_fields = 1.0,
+      .beam_sigma = 0.0,
+      .gamma = 1.0,
+      .contrast = 0.5};
+  video::Screen screen{cfg};
+
+  std::vector<video::ChromaSample> pic;
+  std::vector<video::BeamSample> hbeam;
+  std::vector<video::VSample> vbeam;
+  const auto add_field = [&] {
+    pic.clear();
+    hbeam.clear();
+    vbeam.clear();
+    pic.push_back(video::ChromaSample{.luma = 1.0f}); // back porch: pin black_
+    hbeam.push_back(video::BeamSample{.h_phase = 0.10f});
+    vbeam.push_back(video::VSample{.v_phase = 0.01f});
+    for (const float vp: {0.25f, 0.5f, 0.75f}) { // active white deposits
+      pic.push_back(video::ChromaSample{.luma = 0.0f});
+      hbeam.push_back(video::BeamSample{.h_phase = 0.5f});
+      vbeam.push_back(video::VSample{.v_phase = vp});
+    }
+  };
+
+  std::size_t retraces = 0;
+  const auto count = [&](const video::Screen::FieldEvent &) { ++retraces; };
+  float peak_early = 0.0f;
+  float peak_late = 0.0f;
+  for (int field = 0; field < 12; ++field) {
+    add_field();
+    screen.process(pic, hbeam, vbeam, count); // v_phase wraps 0.75 -> 0.01 between calls
+    const auto frame = screen.snapshot();
+    const auto peak = *std::ranges::max_element(frame.pixels);
+    if (field == 5)
+      peak_early = static_cast<float>(peak);
+    if (field == 11)
+      peak_late = static_cast<float>(peak);
+  }
+  CHECK(retraces == 11); // one per wrap; none for the first partial field
+  REQUIRE(peak_early > 0.0f);
+  // Converged: the fade balances the deposit. Unfaded accumulation would have
+  // peak_late ~ 2x peak_early (or clipped white).
+  const double ratio = static_cast<double>(peak_late) / static_cast<double>(peak_early);
+  CHECK(ratio > 0.95);
+  CHECK(ratio < 1.05);
 }
 
 TEST_CASE("Screen latch defers quantisation without changing the boundary frame") {

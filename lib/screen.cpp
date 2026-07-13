@@ -390,9 +390,15 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
   for (std::size_t i = 0; i < n; ++i) {
     // A field boundary closes off a completed field: the buffer IS the displayed
     // image (no per-pixel fade), so snapshot it, then fade the whole phosphor by
-    // one field period before the next field accumulates on top. Block-size
-    // independent — field_start is per-sample, so this lands identically however
-    // the input is chunked.
+    // one field period before the next field accumulates on top. The boundary is
+    // the flywheel's RETRACE — the free-running v_phase wrap — not the detected
+    // sync anchor: phosphor decay is physics and the oscillator scans with or
+    // without lock, so unlocked input (cold start, a mistuned carrier, dropouts)
+    // rolls at normal brightness instead of integrating undecayed charge into a
+    // white screen no real set could show. Only the wrap drops v_phase by ~a
+    // whole field; the vertical PI's mid-field corrections move it far less, so
+    // the half-field threshold cannot false-fire. prev_v_phase_ carries across
+    // calls, so this lands identically however the input is chunked.
     //
     // The fade is per FIELD, not per frame, which leaves a latent interlace comb:
     // the two fields paint alternate lines a field apart, so at readout one
@@ -403,7 +409,10 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // shows. The fix is to fade once per FRAME (every two fields) so both fields
     // paint before any decay — which needs the decay/snapshot aligned to a frame
     // boundary, i.e. the interlace even/odd parity tracking still to be added.
-    if (vbeam[i].field_start) {
+    const float v_phase = vbeam[i].v_phase;
+    const bool retrace = v_phase < prev_v_phase_ - 0.5f;
+    prev_v_phase_ = v_phase;
+    if (retrace) {
       flush(); // land this field's splats so the snapshot below reads a complete field
       if (on_field)
         on_field(FieldEvent{*this});
