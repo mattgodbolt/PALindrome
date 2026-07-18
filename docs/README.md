@@ -4,6 +4,13 @@ The design and reference notes the code assumes. Start with the top-level
 README (what the project is, how to build and run it, the signal-flow graph);
 these go deeper on single topics.
 
+- [render.md](render.md) - the decode stage by stage: the IF curve, detector,
+  levels, hold loops, colour path and CRT model, every `render` flag, and the
+  TLA glossary.
+- [capture.md](capture.md) - capturing reference clips with the RX888 and the
+  AirSpy R2: conventions, tuning arithmetic, and the gain-9 ghost story.
+- [simd.md](simd.md) - the two hand-vectorised hot paths, and the plan to
+  replace them with `std::simd` when the toolchain lands.
 - [performance.md](performance.md) - where the render/live pipeline spends its
   time and which optimisations paid off (and which dead-ended). The
   authoritative perf record: start here before any speed work.
