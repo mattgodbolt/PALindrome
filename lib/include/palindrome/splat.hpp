@@ -87,6 +87,12 @@ private:
   void bin(std::span<const SplatRecord> recs);
   void apply_band(std::span<const SplatRecord> recs, std::span<float> fb, unsigned band) const;
   void apply_serial(std::span<const SplatRecord> recs, std::span<float> fb) const;
+  // Deposit one chunk of records: pattern-build them all, then splat them all
+  // (see the .cpp for why the two passes must be separated), interior spots via
+  // the padded vector row loop and the rest via the scalar splat(). Chunks are
+  // how both the serial and the per-band paths consume their record streams.
+  void apply_chunk(
+      std::span<const SplatRecord *const> chunk, std::span<float> fb, std::int32_t row_lo, std::int32_t row_hi) const;
   // Deposit one record's spot, but only its rows within [row_lo, row_hi).
   // Force-inlined: it's called once per record (hundreds of thousands per field)
   // and is small once column-clipped, so the out-of-line call's prologue dominates.
@@ -97,6 +103,10 @@ private:
   std::size_t height_;
   std::size_t channels_;
   SplatKernels kernels_;
+  // Per focus class: the pattern width in floats for the vector row loop -
+  // stride_x * channels rounded up to whole 8-float lanes - or 0 for a spot too
+  // wide for the fast path (which then always takes the scalar splat()).
+  std::vector<std::int32_t> padded_;
   // More bands than threads, so the pull-based queue balances an uneven row
   // distribution (e.g. the blanked top/bottom bands carry fewer splats) instead
   // of pinning one band per thread. Bit-exactness is independent of the count:
