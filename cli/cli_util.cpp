@@ -4,6 +4,7 @@
 #include "palindrome/demod.hpp"
 #include "palindrome/fir.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <format>
@@ -97,8 +98,12 @@ LoadedRecording load_recording(const std::filesystem::path &recording, const Loa
   loaded.sample_rate_hz = *loaded.meta.global.sample_rate;
 
   const auto &dt = loaded.meta.global.parsed_datatype;
-  if (dt.format != sigmf::DataType::Format::SignedInt || dt.bits != 16)
-    throw std::runtime_error{std::format("only int16 input is supported (got {})", dt)};
+  if (dt.format == sigmf::DataType::Format::SignedInt && dt.bits == 16)
+    loaded.format = SampleFormat::s16;
+  else if (dt.format == sigmf::DataType::Format::UnsignedInt && dt.bits == 8)
+    loaded.format = SampleFormat::u8; // a CX2388x card through cxadc
+  else
+    throw std::runtime_error{std::format("only real int16 or uint8 input is supported (got {})", dt)};
   if (dt.complex)
     throw std::runtime_error{"complex (ci16) input is no longer supported — recapture as real ri16 "
                              "(the AirSpy now uses raw 20 MS/s real mode; see tools/capture_airspy.py)"};
@@ -134,39 +139,70 @@ LoadedRecording load_recording(const std::filesystem::path &recording, const Loa
   return loaded;
 }
 
-void stream_ri16le_blocks(const std::filesystem::path &data_path,
+namespace {
+// Scale a raw block to [-1, 1). int16 is signed about zero; unsigned 8-bit
+// counts up from zero, so its silence sits at mid-scale and comes off first.
+// The exact zero hardly matters for composite - the sync-tip clamp restores DC
+// downstream - but getting it right keeps the declared volts meaningful.
+constexpr float kU8Mid = 128.0f;
+void scale_s16(std::span<const std::int16_t> raw, std::span<float> dst) {
+  for (std::size_t k = 0; k < raw.size(); ++k)
+    dst[k] = static_cast<float>(raw[k]) * (1.0f / 32768.0f);
+}
+void scale_u8(std::span<const std::uint8_t> raw, std::span<float> dst) {
+  for (std::size_t k = 0; k < raw.size(); ++k)
+    dst[k] = (static_cast<float>(raw[k]) - kU8Mid) * (1.0f / kU8Mid);
+}
+[[nodiscard]] std::size_t bytes_per(SampleFormat format) {
+  switch (format) {
+    case SampleFormat::s16: return sizeof(std::int16_t);
+    case SampleFormat::u8: return sizeof(std::uint8_t);
+  }
+  std::unreachable();
+}
+void scale_block(SampleFormat format, std::span<const std::byte> raw, std::span<float> dst) {
+  switch (format) {
+    case SampleFormat::s16: scale_s16({reinterpret_cast<const std::int16_t *>(raw.data()), dst.size()}, dst); return;
+    case SampleFormat::u8: scale_u8({reinterpret_cast<const std::uint8_t *>(raw.data()), dst.size()}, dst); return;
+  }
+  std::unreachable();
+}
+} // namespace
+
+void stream_real_blocks(const std::filesystem::path &data_path, SampleFormat format,
     const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples) {
   std::ifstream data{data_path, std::ios::binary};
   if (!data)
     throw std::runtime_error{std::format("cannot open data file: {}", data_path.string())};
 
-  std::vector<std::int16_t> raw(block_samples);
+  const auto width = bytes_per(format);
+  std::vector<std::byte> raw(block_samples * width);
   std::vector<float> block(block_samples);
   while (data) {
-    data.read(reinterpret_cast<char *>(raw.data()), static_cast<std::streamsize>(raw.size() * sizeof(std::int16_t)));
-    const auto got = static_cast<std::size_t>(data.gcount()) / sizeof(std::int16_t);
+    data.read(reinterpret_cast<char *>(raw.data()), static_cast<std::streamsize>(raw.size()));
+    const auto got = static_cast<std::size_t>(data.gcount()) / width;
     if (got == 0)
       break;
     const std::span<float> dst{block.data(), got};
-    for (std::size_t k = 0; k < got; ++k)
-      dst[k] = static_cast<float>(raw[k]) * (1.0f / 32768.0f);
+    scale_block(format, std::span{raw}.first(got * width), dst);
     on_block(dst);
   }
 }
 
 namespace {
 // Stream real int16 from stdin as float blocks until the pipe closes - the
-// live counterpart of stream_ri16le_blocks (which reads a named file).
-void stream_ri16le_stdin(const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples) {
-  std::vector<std::int16_t> raw(block_samples);
+// live counterpart of stream_real_blocks (which reads a named file).
+void stream_real_stdin(
+    SampleFormat format, const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples) {
+  const auto width = bytes_per(format);
+  std::vector<std::byte> raw(block_samples * width);
   std::vector<float> block(block_samples);
   while (true) {
-    const auto got = std::fread(raw.data(), sizeof(std::int16_t), block_samples, stdin);
+    const auto got = std::fread(raw.data(), width, block_samples, stdin);
     if (got == 0)
       break;
     const std::span<float> dst{block.data(), got};
-    for (std::size_t k = 0; k < got; ++k)
-      dst[k] = static_cast<float>(raw[k]) * (1.0f / 32768.0f);
+    scale_block(format, std::span{raw}.first(got * width), dst);
     on_block(dst);
   }
 }
@@ -264,7 +300,8 @@ EnvelopeStream stream_envelope(const LoadedRecording &loaded, const EnvelopeOpti
   result.carrier_hz = loaded.vision_carrier_hz;
 
   auto fe = make_front_end(loaded.sample_rate_hz, loaded.vision_carrier_hz, opts, block_samples, result.warnings);
-  stream_ri16le_blocks(loaded.data_path, [&](std::span<const float> x) { on_block(fe.process(x)); }, block_samples);
+  stream_real_blocks(
+      loaded.data_path, loaded.format, [&](std::span<const float> x) { on_block(fe.process(x)); }, block_samples);
   if (fe.saw && opts.detector == demod::Detector::quasi_sync)
     result.afc_offset_hz = fe.saw->afc_offset_hz();
   return result;
@@ -287,7 +324,7 @@ EnvelopeStream stream_envelope_live(double sample_rate_hz, double carrier_hz, co
 
   auto fe = make_front_end(sample_rate_hz, result.carrier_hz, opts, block_samples, result.warnings);
   const auto feed = [&](std::span<const float> x) { on_block(fe.process(x)); };
-  stream_ri16le_stdin(feed, block_samples);
+  stream_real_stdin(opts.sample_format, feed, block_samples);
   if (fe.saw && opts.detector == demod::Detector::quasi_sync)
     result.afc_offset_hz = fe.saw->afc_offset_hz();
   return result;

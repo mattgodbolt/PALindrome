@@ -107,7 +107,8 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "--frame-fd until the pipe closes"))
           .add_argument(lyra::opt(sample_rate_, "hz")["--sample-rate"](
               "Live input real sample rate Hz (required with --live; 20e6 for the AirSpy raw stream)"))
-          .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz (--if flat only)"))
+          .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"](
+              "Baseband low-pass cutoff Hz (--if flat, and composite when decimating)"))
           .add_argument(lyra::opt(sync_cutoff_, "hz")["--sync-cutoff"]("Sync-branch low-pass cutoff Hz"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs (0 = auto from Nyquist)"))
           .add_argument(lyra::opt(width_, "px")["--width"]("Output image width"))
@@ -142,6 +143,9 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "right): shifts the picture right by this fraction of a line"))
           .add_argument(lyra::opt(v_shift_, "x")["--v-shift"](
               "Vertical centring (internal service adjustment): shifts the picture down by this fraction of a field"))
+          .add_argument(lyra::opt(sample_format_, "fmt")["--sample-format"](
+              "Live: raw sample format on stdin - s16 (default, signed 16-bit) | u8 (unsigned 8-bit, what a "
+              "CX2388x card hands over through cxadc). A recording carries its own format in the metadata"))
           .add_argument(lyra::opt(input_mode_, "mode")["--input"](
               "Signal kind: rf (default - a modulated real IF, through the vision front end) | composite "
               "(baseband CVBS, which skips the IF filter and detector; the samples are the video)"))
@@ -256,6 +260,19 @@ int RenderCommand::run() const {
     }
   }
 
+  else {
+    // The mirror of the check above: silently ignoring these under rf is the
+    // same failure the composite direction sets out to avoid.
+    using Conflict = std::pair<bool, std::string_view>;
+    for (const auto &[used, flag]: std::initializer_list<Conflict>{{composite_scale_ > 0.0, "--composite-scale"},
+             {composite_sync_v_ > 0.0, "--composite-sync"}, {composite_clamp_ > 0.0, "--composite-clamp"}}) {
+      if (used) {
+        std::println(std::cerr, "render: {} only applies to --input composite", flag);
+        return 1;
+      }
+    }
+  }
+
   LoadedRecording loaded;
   if (live_) {
     if (!(sample_rate_ > 0.0)) {
@@ -308,7 +325,12 @@ int RenderCommand::run() const {
 
   const auto envelope_rate = loaded.sample_rate_hz / static_cast<double>(decimate);
 
-  EnvelopeOptions opts{.input = *input_mode, .cutoff_hz = cutoff_, .decimation = decimate};
+  const auto sample_format = parse_choice<SampleFormat>(
+      "sample-format", sample_format_, {{"s16", SampleFormat::s16}, {"u8", SampleFormat::u8}});
+  if (!sample_format)
+    return 1;
+  EnvelopeOptions opts{
+      .input = *input_mode, .sample_format = *sample_format, .cutoff_hz = cutoff_, .decimation = decimate};
   if (composite_scale_ > 0.0)
     opts.composite.full_scale_volts = composite_scale_;
   if (composite_sync_v_ > 0.0)
@@ -428,6 +450,15 @@ int RenderCommand::run() const {
   if (decoder.accepted_edges() == 0 || decoder.detected_fields() == 0) {
     std::println(std::cerr, "render: never locked ({} line edges, {} fields) — nothing to draw",
         decoder.accepted_edges(), decoder.detected_fields());
+    // The composite-specific way to get here, and it is silent otherwise: the
+    // tip anchors at 1.0 whatever the scale says, so a scale declared too small
+    // shrinks the sync depth until blanking no longer clears the slicer and the
+    // sliced pulse runs long enough for the sweep's width gate to reject every
+    // one. Measured, that starts under about a third of the true value.
+    if (composite)
+      std::println(std::cerr,
+          "render: with --input composite this is usually --composite-scale/--composite-sync declared too small "
+          "(under about a third of the source's true value costs every sync edge)");
     return 1;
   }
 

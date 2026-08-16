@@ -24,12 +24,18 @@ namespace palindrome::cli {
 // envelope rail, so every stage downstream is unchanged and does not know.
 enum class InputMode { rf, composite };
 
+// How the raw samples are stored. Real int16 is the SDR recordings' format;
+// real unsigned 8-bit is what a CX2388x card hands over through cxadc, whose
+// ADC is 8-bit and whose zero sits at mid-scale.
+enum class SampleFormat { s16, u8 };
+
 // What load_recording returns: the parsed metadata, the paired meta/data paths,
 // and the RF parameters every consumer needs. Recordings are real int16 IF
 // (ri16_le) — the RX888, or the AirSpy's raw 20 MS/s real mode; the decoder
 // makes them analytic at the front (see demod::Hilbert), so there is no separate
 // complex-baseband input.
 struct LoadedRecording {
+  SampleFormat format = SampleFormat::s16;
   sigmf::Metadata meta;
   std::filesystem::path meta_path;
   std::filesystem::path data_path;
@@ -63,12 +69,13 @@ struct LoadOptions {
 // carrier) — main catches it and prints "palindrome: <what>".
 [[nodiscard]] LoadedRecording load_recording(const std::filesystem::path &recording, const LoadOptions &opts = {});
 
-// Stream ri16-LE (real int16) from `data_path` as float blocks of up to
-// `block_samples` samples, scaling each to [-1, 1). Invokes `on_block` with each
+// Stream real samples from `data_path` as float blocks of up to `block_samples`
+// samples, scaling each to [-1, 1): int16 by 1/32768, unsigned 8-bit about its
+// mid-scale zero. Invokes `on_block` with each
 // block (a span owned by an internal buffer, valid only for that call). Never
 // accumulates the whole signal — the streaming path the demod stages drive.
 // Throws std::runtime_error on a file-open failure.
-void stream_ri16le_blocks(const std::filesystem::path &data_path,
+void stream_real_blocks(const std::filesystem::path &data_path, SampleFormat format,
     const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples = std::size_t{1} << 16);
 
 // Which front end demodulates the vision carrier. The saw modes run one
@@ -83,6 +90,8 @@ enum class IfMode { saw80, saw90, flat };
 // demodulator, kept verbatim.
 struct EnvelopeOptions {
   InputMode input = InputMode::rf;
+  // Live only: a recording carries its format in the metadata instead.
+  SampleFormat sample_format = SampleFormat::s16;
   // The composite stage's own config, so a new knob is one line in one place
   // and no default is written down twice. sample_rate_hz is the exception:
   // make_front_end fills it, since only it knows the post-decimation rate.
