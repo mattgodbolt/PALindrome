@@ -36,8 +36,11 @@ std::span<const float> CompositeInput::process(std::span<const float> composite)
   const std::size_t n = composite.size();
   const auto dst = out_.write_n(n);
 
-  // Seed from the first sample so the output is meaningful immediately; the
-  // instant attack re-anchors on the first real sync tip, within a line.
+  // Seed from the first sample so the output is bounded immediately - the rail
+  // can never exceed kSyncTipLevel, because a new minimum outputs exactly that.
+  // It is not yet *meaningful*: until the first real sync tip arrives, any
+  // darkening run keeps setting minima and the rail pins at the tip level,
+  // which reads as a sustained sync assertion. Self-clearing within a line.
   if (!seeded_ && n > 0) {
     tip_ = static_cast<double>(composite[0]);
     seeded_ = true;
@@ -46,15 +49,25 @@ std::span<const float> CompositeInput::process(std::span<const float> composite)
   const auto tip_level = static_cast<float>(kSyncTipLevel);
   const auto scale = static_cast<float>(scale_);
 
+  // Do not "simplify" the attack below into a branchless
+  // tip_ = std::min(v, tip_ + rise_ * (v - tip_)). It is bit-identical for
+  // finite input and reads better, but it puts a 4-cycle minsd into an 8-cycle
+  // loop-carried chain to remove a branch that fires on a few percent of
+  // samples and predicts well - measured as the slower of the two.
   for (std::size_t k = 0; k < n; ++k) {
     const auto x = composite[k];
     const auto v = static_cast<double>(x);
     // Sync tip is the most negative excursion of baseband composite, so the
-    // clamp tracks a minimum: instant down, one-pole release up.
-    if (v < tip_)
-      tip_ = v;
-    else
-      tip_ += rise_ * (v - tip_);
+    // clamp tracks a minimum: instant down, one-pole release up. Non-finite
+    // input skips the update entirely - a NaN compares false against both
+    // branches of a bare min and would poison the accumulator with no path
+    // back, and an infinity latches the clamp there for good.
+    if (std::isfinite(v)) {
+      if (v < tip_)
+        tip_ = v;
+      else
+        tip_ += rise_ * (v - tip_);
+    }
     // Snapshot the clamp down to float at the point of use; it keeps
     // accumulating in double.
     dst[k] = tip_level - scale * (x - static_cast<float>(tip_));
