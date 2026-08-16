@@ -12,6 +12,22 @@ namespace palindrome::video {
 inline constexpr double kNominalLineHz = 15625.0; // 625 lines × 25 frames/s
 inline constexpr double kNominalFieldHz = 50.0;
 
+// System I modulation geometry, as fractions of the sync tip. The receiver's
+// level reference puts the tip at 1.0; blanking then sits at 0.76 of peak
+// carrier and peak white at 0.20. A set never measures white - it trusts the
+// transmitter's geometry - so these are facts of the standard, not knobs.
+// (B/G sets assume white at 0.10 instead; a per-system knob if a non-UK corpus
+// ever arrives.) Baseband composite input maps onto these same two anchors,
+// which is what lets everything downstream stay ignorant of the input kind.
+inline constexpr double kSyncTipLevel = 1.0;
+inline constexpr double kBlankingLevel = 0.76;
+inline constexpr double kPeakWhiteLevel = 0.20;
+
+// Nominal baseband composite, in volts: 1 V pk-pk with 0.3 V of sync below
+// blanking. Only ever a default for a capture that does not declare its own.
+inline constexpr double kNominalSyncVolts = 0.3;
+inline constexpr double kNominalFullScaleVolts = 1.0;
+
 // Output of the sync separator: just the sliced one-bit sync signal — true
 // while the envelope sits in the sync region (above the slice level, since
 // vision is negatively modulated so sync tips are the envelope peaks). True
