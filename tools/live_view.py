@@ -43,6 +43,19 @@ REAL_RATE_FACTOR = 2
 VISION_IF_TARGET = 3.0e6
 
 
+def cxadc_rate(device):
+    """The card's true sample rate, from sysfs: crystal, x10/8 if tenxfsc is set.
+    Reading it beats hard-coding, since the clockgen mod changes the crystal."""
+    name = os.path.basename(device)
+    base = f"/sys/class/cxadc/{name}/device/parameters"
+    try:
+        crystal = int(open(f"{base}/crystal").read())
+        tenxfsc = int(open(f"{base}/tenxfsc").read())
+    except OSError:
+        return 28_636_363  # 8x fsc, the stock default
+    return crystal * 10 // 8 if tenxfsc else crystal
+
+
 class LatestFrame:
     """A single-slot mailbox: the reader publishes the newest JPEG, each stream
     connection waits for a sequence number newer than the one it last sent."""
@@ -145,6 +158,10 @@ def make_handler(latest):
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--source", choices=("airspy", "cxadc"), default="airspy",
+                    help="airspy: tune an AirSpy R2 and decode its RF. cxadc: read baseband composite straight "
+                         "off a CX2388x capture card - no tuner, no carrier, no AFC")
+    ap.add_argument("--cxadc-device", default="/dev/cxadc0", help="the cxadc character device (--source cxadc)")
     ap.add_argument("--frequency", type=int, default=591_330_000,
                     help="the source's vision-carrier frequency Hz - the fine-tuned channel preset. The default is "
                          "this bench's SMS: nominal UK CH36 (591.25 MHz) plus ~80 kHz of trim, measured 2026-07 by "
@@ -174,8 +191,10 @@ def main():
     if Image is None:
         sys.exit("Pillow not found; install it (pip install pillow) - the MJPEG server encodes frames with it")
     airspy = args.airspy_binary or shutil.which("airspy_rx")
-    if not airspy:
+    if args.source == "airspy" and not airspy:
         sys.exit("airspy_rx not found; install airspy-tools or pass --airspy-binary")
+    if args.source == "cxadc" and not os.path.exists(args.cxadc_device):
+        sys.exit(f"{args.cxadc_device} not found; is the cxadc module loaded? (modprobe cxadc)")
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     palindrome = args.palindrome_binary or os.path.join(here, "build", "release", "cli", "palindrome")
     if not os.path.exists(palindrome):
@@ -190,22 +209,40 @@ def main():
     # spawn (pass_fds), then close the parent copy so EOF lands when the child exits.
     frame_r, frame_w = os.pipe()
 
-    airspy_cmd = [airspy, "-r", "/dev/stdout", "-f", f"{tune_hz / 1e6:.6f}",
-                  "-a", str(args.sample_rate), "-t", "3", "-g", str(args.gain)]
-    render_cmd = [palindrome, "render", "--live", "--sample-rate", str(real_rate),
-                  "--carrier", f"{VISION_IF_TARGET:.0f}",
+    render_cmd = [palindrome, "render", "--live",
                   "--width", str(args.width), "--height", str(args.height),
                   "--decimate", str(args.decimate), "--deposit-threads", str(args.deposit_threads),
                   "--frame-fd", str(frame_w)]
+
+    if args.source == "cxadc":
+        # Baseband composite: the card's samples ARE the video, so there is no
+        # tuner, no channel preset and no AFC - the whole RF story drops out.
+        # The decoder reads the device directly; no process in between, because
+        # a transcoder in a 28 MB/s realtime path is exactly what not to do.
+        rate = cxadc_rate(args.cxadc_device)
+        render_cmd += ["--sample-rate", str(rate), "--input", "composite", "--sample-format", "u8"]
+        source_desc = f"{args.cxadc_device} @ {rate / 1e6:.6f} MS/s, unsigned 8-bit"
+    else:
+        render_cmd += ["--sample-rate", str(real_rate), "--carrier", f"{VISION_IF_TARGET:.0f}"]
+        airspy_cmd = [airspy, "-r", "/dev/stdout", "-f", f"{tune_hz / 1e6:.6f}",
+                      "-a", str(args.sample_rate), "-t", "3", "-g", str(args.gain)]
+        source_desc = " ".join(airspy_cmd)
+
     if not args.mono:
         render_cmd.append("--colour")
     render_cmd += args.extra
 
-    print("SDR :", " ".join(airspy_cmd), file=sys.stderr)
+    print("src :", source_desc, file=sys.stderr)
     print("dec :", " ".join(render_cmd), file=sys.stderr)
-    sdr = subprocess.Popen(airspy_cmd, stdout=subprocess.PIPE)
-    dec = subprocess.Popen(render_cmd, stdin=sdr.stdout, pass_fds=(frame_w,))
-    sdr.stdout.close()  # so airspy_rx gets SIGPIPE if the decoder exits
+    if args.source == "cxadc":
+        sdr = None
+        card = open(args.cxadc_device, "rb", buffering=0)
+        dec = subprocess.Popen(render_cmd, stdin=card, pass_fds=(frame_w,))
+        card.close()  # the child holds it now
+    else:
+        sdr = subprocess.Popen(airspy_cmd, stdout=subprocess.PIPE)
+        dec = subprocess.Popen(render_cmd, stdin=sdr.stdout, pass_fds=(frame_w,))
+        sdr.stdout.close()  # so airspy_rx gets SIGPIPE if the decoder exits
     os.close(frame_w)   # the child holds the only write end now
 
     latest = LatestFrame()
@@ -228,6 +265,8 @@ def main():
         pass
     finally:
         for p in (dec, sdr):
+            if p is None:
+                continue
             if p.poll() is None:
                 p.terminate()
         print("\nstopped.", file=sys.stderr)

@@ -107,7 +107,8 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "--frame-fd until the pipe closes"))
           .add_argument(lyra::opt(sample_rate_, "hz")["--sample-rate"](
               "Live input real sample rate Hz (required with --live; 20e6 for the AirSpy raw stream)"))
-          .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz (--if flat only)"))
+          .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"](
+              "Baseband low-pass cutoff Hz (--if flat, and composite when decimating)"))
           .add_argument(lyra::opt(sync_cutoff_, "hz")["--sync-cutoff"]("Sync-branch low-pass cutoff Hz"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs (0 = auto from Nyquist)"))
           .add_argument(lyra::opt(width_, "px")["--width"]("Output image width"))
@@ -142,6 +143,22 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "right): shifts the picture right by this fraction of a line"))
           .add_argument(lyra::opt(v_shift_, "x")["--v-shift"](
               "Vertical centring (internal service adjustment): shifts the picture down by this fraction of a field"))
+          .add_argument(lyra::opt(sample_format_, "fmt")["--sample-format"](
+              "Live: raw sample format on stdin - s16 (default, signed 16-bit) | u8 (unsigned 8-bit, what a "
+              "CX2388x card hands over through cxadc). A recording carries its own format in the metadata"))
+          .add_argument(lyra::opt(input_mode_, "mode")["--input"](
+              "Signal kind: rf (default - a modulated real IF, through the vision front end) | composite "
+              "(baseband CVBS, which skips the IF filter and detector; the samples are the video)"))
+          .add_argument(lyra::opt(composite_scale_, "volts")["--composite-scale"](
+              "Composite: volts at input full scale (default 1.0, i.e. nominal 1 V pk-pk). Sets contrast. The "
+              "clamp anchors the tip whatever this says, so too LARGE only clips; too small shrinks the sync "
+              "depth with it, and below about a third of nominal the slicer never releases and nothing locks"))
+          .add_argument(lyra::opt(composite_sync_v_, "volts")["--composite-sync"](
+              "Composite: the source's sync amplitude in volts (default 0.3). Declaring a uniformly "
+              "under-modulating source's real value restores full geometry and the slicer's margin"))
+          .add_argument(lyra::opt(composite_clamp_, "lines")["--composite-clamp"](
+              "Composite: sync-tip clamp release in line periods (default 128; faster droops within the line, "
+              "slower lets mains hum walk the black level)"))
           .add_argument(lyra::opt(if_mode_, "mode")["--if"](
               "IF response: saw80 (default - an 80s single-SAW set: Nyquist flank through the carrier, vestigial "
               "lower sideband, chroma a few dB down, finite sound notch, group-delay ripple) | saw90 (a 90s set: "
@@ -224,6 +241,38 @@ int RenderCommand::run() const {
     return 1;
   }
 
+  const auto input_mode =
+      parse_choice<InputMode>("input", input_mode_, {{"rf", InputMode::rf}, {"composite", InputMode::composite}});
+  if (!input_mode)
+    return 1;
+  const bool composite = *input_mode == InputMode::composite;
+  // The RF flags describe a front end composite does not have. Reject them
+  // rather than ignore them, the way --live rejects --scan.
+  if (composite) {
+    using Conflict = std::pair<bool, std::string_view>;
+    for (const auto &[used, flag]: std::initializer_list<Conflict>{{carrier_ > 0.0, "--carrier"}, {scan_, "--scan"},
+             {if_mode_ != "saw80", "--if"}, {detector_ != "quasi-sync", "--detector"},
+             {sound_notch_db_ >= 0.0, "--sound-notch-db"}, {gd_ripple_ >= 0.0, "--gd-ripple"}}) {
+      if (used) {
+        std::println(std::cerr, "render: {} describes the RF front end; --input composite has no IF or detector", flag);
+        return 1;
+      }
+    }
+  }
+
+  else {
+    // The mirror of the check above: silently ignoring these under rf is the
+    // same failure the composite direction sets out to avoid.
+    using Conflict = std::pair<bool, std::string_view>;
+    for (const auto &[used, flag]: std::initializer_list<Conflict>{{composite_scale_ > 0.0, "--composite-scale"},
+             {composite_sync_v_ > 0.0, "--composite-sync"}, {composite_clamp_ > 0.0, "--composite-clamp"}}) {
+      if (used) {
+        std::println(std::cerr, "render: {} only applies to --input composite", flag);
+        return 1;
+      }
+    }
+  }
+
   LoadedRecording loaded;
   if (live_) {
     if (!(sample_rate_ > 0.0)) {
@@ -242,7 +291,7 @@ int RenderCommand::run() const {
       std::println(std::cerr, "render: --scan analyses recordings; --live is tuned by --carrier, not by scanning");
       return 1;
     }
-    if (!(carrier_ > 0.0)) {
+    if (!composite && !(carrier_ > 0.0)) {
       std::println(std::cerr,
           "render: --live requires --carrier - the tuner's IF-plan target (the channel preset; live_view.py "
           "supplies it). The AFC absorbs drift from there; a set is tuned, it does not scan.");
@@ -254,7 +303,9 @@ int RenderCommand::run() const {
     loaded.sample_rate_hz = sample_rate_; // the carrier is --carrier verbatim (checked above): the tuner's preset
   }
   else {
-    loaded = load_recording(recording_, carrier_, scan_);
+    loaded = load_recording(recording_, {.carrier_override = carrier_, .force_scan = scan_, .input = *input_mode});
+    for (const auto &w: loaded.warnings)
+      std::println(std::cerr, "render: {}", w);
     if (loaded.carrier_scanned) {
       if (loaded.metadata_carrier_hz > 0.0)
         std::println("carrier: scanned {:.4f} MHz (metadata said {:.4f} MHz, off by {:+.0f} Hz)",
@@ -274,7 +325,18 @@ int RenderCommand::run() const {
 
   const auto envelope_rate = loaded.sample_rate_hz / static_cast<double>(decimate);
 
-  EnvelopeOptions opts{.cutoff_hz = cutoff_, .decimation = decimate};
+  const auto sample_format = parse_choice<SampleFormat>(
+      "sample-format", sample_format_, {{"s16", SampleFormat::s16}, {"u8", SampleFormat::u8}});
+  if (!sample_format)
+    return 1;
+  EnvelopeOptions opts{
+      .input = *input_mode, .sample_format = *sample_format, .cutoff_hz = cutoff_, .decimation = decimate};
+  if (composite_scale_ > 0.0)
+    opts.composite.full_scale_volts = composite_scale_;
+  if (composite_sync_v_ > 0.0)
+    opts.composite.sync_amplitude_v = composite_sync_v_;
+  if (composite_clamp_ > 0.0)
+    opts.composite.clamp_lines = composite_clamp_;
   const auto if_mode = parse_choice<IfMode>(
       "if", if_mode_, {{"saw80", IfMode::saw80}, {"saw90", IfMode::saw90}, {"flat", IfMode::flat}});
   if (!if_mode)
@@ -388,6 +450,15 @@ int RenderCommand::run() const {
   if (decoder.accepted_edges() == 0 || decoder.detected_fields() == 0) {
     std::println(std::cerr, "render: never locked ({} line edges, {} fields) — nothing to draw",
         decoder.accepted_edges(), decoder.detected_fields());
+    // The composite-specific way to get here, and it is silent otherwise: the
+    // tip anchors at 1.0 whatever the scale says, so a scale declared too small
+    // shrinks the sync depth until blanking no longer clears the slicer and the
+    // sliced pulse runs long enough for the sweep's width gate to reject every
+    // one. Measured, that starts under about a third of the true value.
+    if (composite)
+      std::println(std::cerr,
+          "render: with --input composite this is usually --composite-scale/--composite-sync declared too small "
+          "(under about a third of the source's true value costs every sync edge)");
     return 1;
   }
 
