@@ -44,8 +44,13 @@ VISION_IF_TARGET = 3.0e6
 
 
 def cxadc_rate(device):
-    """The card's true sample rate, from sysfs: crystal, x10/8 if tenxfsc is set.
-    Reading it beats hard-coding, since the clockgen mod changes the crystal."""
+    """The card's true sample rate, from sysfs. Reading it beats hard-coding:
+    the rate is a runtime setting, and a crystal mod changes the base.
+
+    tenxfsc is the driver's rate selector and its small values are multipliers
+    of the crystal, not rates. Anything >= 10 is a rate in Hz, which the driver
+    rewrites in place (a two-digit value like 20 becomes 20000000), so those
+    read back as the sample rate itself."""
     name = os.path.basename(device)
     base = f"/sys/class/cxadc/{name}/device/parameters"
     try:
@@ -53,7 +58,11 @@ def cxadc_rate(device):
         tenxfsc = int(open(f"{base}/tenxfsc").read())
     except OSError:
         return 28_636_363  # 8x fsc, the stock default
-    return crystal * 10 // 8 if tenxfsc else crystal
+    if tenxfsc >= 100:
+        return tenxfsc          # an explicit rate, already in Hz
+    if tenxfsc >= 10:
+        return tenxfsc * 1_000_000
+    return {0: crystal, 1: crystal * 5 // 4, 2: crystal * 40000000 // 28636363}.get(tenxfsc, crystal)
 
 
 class LatestFrame:
