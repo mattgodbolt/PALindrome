@@ -15,13 +15,10 @@
 namespace palindrome::video {
 
 namespace {
-// System I modulation geometry, as fractions of the AGC'd sync tip: blanking
-// at 0.76 of peak carrier, peak white at 0.20, so a broadcast-standard
-// full-white line drives the gun (0.76 - 0.20) = 0.56 above the clamped black.
-// This is the assumption a real set bakes into its video gain - it never
-// measures white, it trusts the transmitter's geometry. (B/G sets assume white
-// at 0.10 instead; a per-system knob if a non-UK corpus ever arrives.)
-constexpr double kSystemIWhiteDrive = 0.76 - 0.20;
+// A broadcast-standard full-white line drives the gun this far above the
+// clamped black; the geometry itself lives in video_types.hpp, shared with the
+// composite input stage that maps onto the same anchors.
+constexpr double kSystemIWhiteDrive = kBlankingLevel - kPeakWhiteLevel;
 // Peak-white limiter recovery per line: the control capacitor's discharge -
 // gain returns from a deep limit over roughly half a field once the overdrive
 // clears. Attack is per-line (the charge path is fast by design).
