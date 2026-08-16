@@ -36,16 +36,11 @@ std::span<const float> CompositeInput::process(std::span<const float> composite)
   const std::size_t n = composite.size();
   const auto dst = out_.write_n(n);
 
-  // Seed from the first sample so the output is bounded immediately - the rail
-  // can never exceed kSyncTipLevel, because a new minimum outputs exactly that.
-  // It is not yet *meaningful*: until the first real sync tip arrives, any
-  // darkening run keeps setting minima and the rail pins at the tip level,
-  // which reads as a sustained sync assertion. Self-clearing within a line.
-  if (!seeded_ && n > 0) {
-    tip_ = static_cast<double>(composite[0]);
-    seeded_ = true;
-  }
-
+  // Once seeded the output is bounded: the rail can never exceed kSyncTipLevel,
+  // because a new minimum outputs exactly that. It is not yet *meaningful* -
+  // until the first real sync tip arrives, any darkening run keeps setting
+  // minima and the rail pins at the tip level, which reads as a sustained sync
+  // assertion. Self-clearing within a line.
   const auto tip_level = static_cast<float>(kSyncTipLevel);
   const auto scale = static_cast<float>(scale_);
 
@@ -63,7 +58,15 @@ std::span<const float> CompositeInput::process(std::span<const float> composite)
     // branches of a bare min and would poison the accumulator with no path
     // back, and an infinity latches the clamp there for good.
     if (std::isfinite(v)) {
-      if (v < tip_)
+      // Seeding lives inside the finite guard: seeding from a non-finite first
+      // sample would poison the accumulator before the guard could ever run,
+      // and no later sample could recover it. The first FINITE sample of the
+      // stream is the seed, whichever block it arrives in.
+      if (!seeded_) {
+        tip_ = v;
+        seeded_ = true;
+      }
+      else if (v < tip_)
         tip_ = v;
       else
         tip_ += rise_ * (v - tip_);

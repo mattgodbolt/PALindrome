@@ -30,8 +30,10 @@ constexpr double kSyncVolts = 0.3;
 // Envelope units per volt, the one gain the conversion turns on.
 constexpr double kEnvelopePerVolt = (video::kSyncTipLevel - video::kBlankingLevel) / kSyncVolts;
 
-// The same crude synthetic the video tests use, written in the receiver's
-// convention: sync tip at 1.0, black at 0.3, one white bar at 0.0.
+// The same crude synthetic the video tests use. Only the sync tip at 1.0 is a
+// real anchor; 0.3 and 0.0 are arbitrary stand-ins for dark and bright, NOT
+// System I geometry (where blanking is kBlankingLevel and peak white is
+// kPeakWhiteLevel). The absolute-anchors test above is what pins the standard.
 std::vector<float> synth_envelope(std::size_t lines, std::size_t line_len) {
   std::vector<float> e(lines * line_len, 0.3f);
   for (std::size_t l = 0; l < lines; ++l) {
@@ -309,6 +311,19 @@ TEST_CASE("composite input survives degenerate signals", "[composite]") {
       for (std::size_t k = 0; k < rail.size(); ++k)
         if (k != 3 * kLineLen + 100)
           REQUIRE(rail[k] == Catch::Approx(clean[k]).margin(1.0e-4));
+    }
+  }
+
+  SECTION("a non-finite FIRST sample cannot poison the seed") {
+    // The guard has to cover seeding too: seeding from NaN would leave every
+    // later finite sample updating against a NaN tip, unrecoverably.
+    for (const float poison: {std::numeric_limits<float>::quiet_NaN(), -std::numeric_limits<float>::infinity()}) {
+      auto bb = baseband_lines(8, 0.3);
+      bb[0] = poison;
+      const auto rail = convert(bb, 128.0);
+      for (std::size_t k = 1; k < rail.size(); ++k)
+        REQUIRE(std::isfinite(rail[k]));
+      REQUIRE(sync_pulses(rail) == 8);
     }
   }
 
