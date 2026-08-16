@@ -33,7 +33,7 @@ int DemodCommand::run() const {
     std::println(std::cerr, "demod: --slowdown must be positive (got {:g})", slowdown_);
     return 1;
   }
-  const auto loaded = load_recording(recording_, carrier_);
+  const auto loaded = load_recording(recording_, {.carrier_override = carrier_});
 
   // The same composite envelope render/sync see, accumulated for the WAV dump.
   const EnvelopeOptions opts{.cutoff_hz = cutoff_, .decimation = decimate_};

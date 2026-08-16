@@ -96,12 +96,22 @@ a left-to-right shading; slow lets mains hum walk the black level. 128 is
 measured to sit comfortably between the two.
 
 `--composite-scale` says what full scale is worth in volts and so sets
-contrast. Getting it wrong cannot break sync, because the tip lands on 1.0 by
-construction whatever the scale says. `--composite-sync` declares the source's
+contrast. The tip lands on 1.0 by construction whatever you declare, so
+declaring it too large only clips the whites. Too small is the dangerous
+direction: the sync depth shrinks along with everything else, and since the
+tip is pinned the AGC cannot put it back. Below about a third of nominal,
+blanking no longer falls past the slicer's release level, the separator holds
+sync asserted forever and nothing locks at all. Measured against a 1 V source,
+a declared 0.34 still locks and 0.3 does not, so the cliff is where the
+arithmetic says and it is a cliff, not a slope. `--composite-sync` declares the source's
 own sync amplitude, which is how a uniformly under-modulating source is fixed
 rather than merely tolerated: on RF such a source is stuck at low contrast
 because the AGC can only anchor the carrier tip, but here declaring its real
 sync amplitude restores full geometry and the slicer's margin with it.
+
+`--cutoff` is the one RF-shaped knob that stays live here, and only when
+`--decimate` is doing something: it sizes the anti-alias low-pass ahead of the
+decimation. At `--decimate 1` there is no filter at all, so it does nothing.
 
 Colour needs nothing extra. The subcarrier rides the composite rail exactly as
 it rides a detector's output, and the map's inversion rotates burst and chroma

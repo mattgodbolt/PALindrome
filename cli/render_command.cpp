@@ -146,8 +146,9 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "Signal kind: rf (default - a modulated real IF, through the vision front end) | composite "
               "(baseband CVBS, which skips the IF filter and detector; the samples are the video)"))
           .add_argument(lyra::opt(composite_scale_, "volts")["--composite-scale"](
-              "Composite: volts at input full scale (default 1.0, i.e. nominal 1 V pk-pk). Sets contrast, and "
-              "cannot break sync - the clamp anchors the tip whatever this says"))
+              "Composite: volts at input full scale (default 1.0, i.e. nominal 1 V pk-pk). Sets contrast. The "
+              "clamp anchors the tip whatever this says, so too LARGE only clips; too small shrinks the sync "
+              "depth with it, and below about a third of nominal the slicer never releases and nothing locks"))
           .add_argument(lyra::opt(composite_sync_v_, "volts")["--composite-sync"](
               "Composite: the source's sync amplitude in volts (default 0.3). Declaring a uniformly "
               "under-modulating source's real value restores full geometry and the slicer's margin"))
@@ -244,7 +245,8 @@ int RenderCommand::run() const {
   // The RF flags describe a front end composite does not have. Reject them
   // rather than ignore them, the way --live rejects --scan.
   if (composite) {
-    for (const auto &[used, flag]: {std::pair{carrier_ > 0.0, "--carrier"}, {scan_, "--scan"},
+    using Conflict = std::pair<bool, std::string_view>;
+    for (const auto &[used, flag]: std::initializer_list<Conflict>{{carrier_ > 0.0, "--carrier"}, {scan_, "--scan"},
              {if_mode_ != "saw80", "--if"}, {detector_ != "quasi-sync", "--detector"},
              {sound_notch_db_ >= 0.0, "--sound-notch-db"}, {gd_ripple_ >= 0.0, "--gd-ripple"}}) {
       if (used) {
@@ -284,7 +286,9 @@ int RenderCommand::run() const {
     loaded.sample_rate_hz = sample_rate_; // the carrier is --carrier verbatim (checked above): the tuner's preset
   }
   else {
-    loaded = load_recording(recording_, carrier_, scan_, *input_mode);
+    loaded = load_recording(recording_, {.carrier_override = carrier_, .force_scan = scan_, .input = *input_mode});
+    for (const auto &w: loaded.warnings)
+      std::println(std::cerr, "render: {}", w);
     if (loaded.carrier_scanned) {
       if (loaded.metadata_carrier_hz > 0.0)
         std::println("carrier: scanned {:.4f} MHz (metadata said {:.4f} MHz, off by {:+.0f} Hz)",
@@ -306,11 +310,11 @@ int RenderCommand::run() const {
 
   EnvelopeOptions opts{.input = *input_mode, .cutoff_hz = cutoff_, .decimation = decimate};
   if (composite_scale_ > 0.0)
-    opts.composite_full_scale_volts = composite_scale_;
+    opts.composite.full_scale_volts = composite_scale_;
   if (composite_sync_v_ > 0.0)
-    opts.composite_sync_amplitude_v = composite_sync_v_;
+    opts.composite.sync_amplitude_v = composite_sync_v_;
   if (composite_clamp_ > 0.0)
-    opts.composite_clamp_lines = composite_clamp_;
+    opts.composite.clamp_lines = composite_clamp_;
   const auto if_mode = parse_choice<IfMode>(
       "if", if_mode_, {{"saw80", IfMode::saw80}, {"saw90", IfMode::saw90}, {"flat", IfMode::flat}});
   if (!if_mode)

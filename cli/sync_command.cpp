@@ -94,7 +94,7 @@ void SyncCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
 }
 
 int SyncCommand::run() const {
-  const auto loaded = load_recording(recording_, carrier_);
+  const auto loaded = load_recording(recording_, {.carrier_override = carrier_});
 
   // Demodulate to the composite envelope (behind stream_envelope) and gather it
   // for the batch pulse analysis.

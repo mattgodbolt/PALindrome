@@ -30,7 +30,6 @@ enum class InputMode { rf, composite };
 // makes them analytic at the front (see demod::Hilbert), so there is no separate
 // complex-baseband input.
 struct LoadedRecording {
-  InputMode input = InputMode::rf;
   sigmf::Metadata meta;
   std::filesystem::path meta_path;
   std::filesystem::path data_path;
@@ -38,6 +37,18 @@ struct LoadedRecording {
   double vision_carrier_hz{}; // absolute IF carrier to mix down
   bool carrier_scanned = false; // the carrier came from a signal scan, not metadata
   double metadata_carrier_hz = 0.0; // what the metadata claimed (0 = none), for the scan diagnostic
+  // Non-fatal complaints for the command to print. This layer never writes to
+  // stderr itself: sync and demod call load_recording too, so a message
+  // prefixed by one command's name would be a lie in the others.
+  std::vector<std::string> warnings;
+};
+
+// How to load one. A struct rather than a tail of defaulted positional
+// parameters, matching CompositeInputConfig and AgcConfig elsewhere.
+struct LoadOptions {
+  double carrier_override = 0.0; // absolute IF; 0 = take it from metadata or scan
+  bool force_scan = false; // scan even when metadata has a carrier, to validate it
+  InputMode input = InputMode::rf;
 };
 
 // Load a PAL recording from `recording` (a .sigmf-meta path or a basename) and
@@ -46,11 +57,11 @@ struct LoadedRecording {
 // airspy:vision_if_hz); else a coarse FFT scan of the signal itself
 // (demod::find_vision_carrier) - so a recording with no carrier metadata, the
 // live-RF case, still decodes. `force_scan` takes the scan even when metadata is
-// present (to validate it). Throws (a std::exception — runtime_error for a
+// present (to validate it). `input` selects the front end: composite has no carrier, so
+// resolution is skipped entirely for it. Throws (a std::exception — runtime_error for a
 // missing/invalid recording, a complex ci16 input, or a scan that finds no
 // carrier) — main catches it and prints "palindrome: <what>".
-[[nodiscard]] LoadedRecording load_recording(const std::filesystem::path &recording, double carrier_override = 0.0,
-    bool force_scan = false, InputMode input = InputMode::rf);
+[[nodiscard]] LoadedRecording load_recording(const std::filesystem::path &recording, const LoadOptions &opts = {});
 
 // Stream ri16-LE (real int16) from `data_path` as float blocks of up to
 // `block_samples` samples, scaling each to [-1, 1). Invokes `on_block` with each
@@ -67,17 +78,15 @@ void stream_ri16le_blocks(const std::filesystem::path &data_path,
 // replaced, kept verbatim as the legacy/comparison chain.
 enum class IfMode { saw80, saw90, flat };
 
-
 // Demod parameters that aren't carried in the recording itself. The detector
 // applies to the saw modes only: the flat chain is the legacy envelope
 // demodulator, kept verbatim.
 struct EnvelopeOptions {
   InputMode input = InputMode::rf;
-  // Composite-mode level declaration; see video::CompositeInputConfig. Only
-  // their ratio matters, but two physical numbers beat one abstract one.
-  double composite_full_scale_volts = video::kNominalFullScaleVolts;
-  double composite_sync_amplitude_v = video::kNominalSyncVolts;
-  double composite_clamp_lines = 128.0; // sync-tip clamp release, line periods
+  // The composite stage's own config, so a new knob is one line in one place
+  // and no default is written down twice. sample_rate_hz is the exception:
+  // make_front_end fills it, since only it knows the post-decimation rate.
+  video::CompositeInputConfig composite{};
   double cutoff_hz = 5.0e6; // baseband low-pass corner (flat mode; and composite when decimating)
   std::size_t decimation = 1;
   IfMode if_mode = IfMode::flat;

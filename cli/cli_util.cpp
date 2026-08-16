@@ -1,5 +1,6 @@
 #include "cli_util.hpp"
 
+#include "palindrome/composite.hpp"
 #include "palindrome/demod.hpp"
 #include "palindrome/fir.hpp"
 
@@ -8,9 +9,7 @@
 #include <format>
 #include <fstream>
 #include <ios>
-#include <iostream>
 #include <optional>
-#include <print>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -87,10 +86,8 @@ double scan_vision_carrier(const std::filesystem::path &data_path, double sample
 }
 } // namespace
 
-LoadedRecording load_recording(
-    const std::filesystem::path &recording, double carrier_override, bool force_scan, InputMode input) {
+LoadedRecording load_recording(const std::filesystem::path &recording, const LoadOptions &opts) {
   LoadedRecording loaded;
-  loaded.input = input;
   loaded.meta_path = resolve_meta(recording);
   loaded.meta = sigmf::load(loaded.meta_path); // ParseError derives from runtime_error
   loaded.data_path = sigmf::data_path_for(loaded.meta_path);
@@ -116,18 +113,17 @@ LoadedRecording load_recording(
 
   // Baseband composite has no carrier to resolve, and scanning it would find a
   // spectral peak that is not one. Warn if the file looks like the other kind.
-  if (input == InputMode::composite) {
+  if (opts.input == InputMode::composite) {
     if (loaded.metadata_carrier_hz > 0.0)
-      std::println(std::cerr,
-          "render: --input composite, but {} declares a vision carrier ({:.4f} MHz) - "
-          "is this an RF recording?",
-          loaded.meta_path.string(), loaded.metadata_carrier_hz / 1e6);
+      loaded.warnings.push_back(
+          std::format("--input composite, but {} declares a vision carrier ({:.4f} MHz) - is this an RF recording?",
+              loaded.meta_path.string(), loaded.metadata_carrier_hz / 1e6));
     return loaded;
   }
 
-  if (carrier_override > 0.0)
-    loaded.vision_carrier_hz = carrier_override;
-  else if (loaded.metadata_carrier_hz > 0.0 && !force_scan)
+  if (opts.carrier_override > 0.0)
+    loaded.vision_carrier_hz = opts.carrier_override;
+  else if (loaded.metadata_carrier_hz > 0.0 && !opts.force_scan)
     loaded.vision_carrier_hz = loaded.metadata_carrier_hz;
   else {
     // No carrier to trust (or --scan asked us not to): find it in the signal.
@@ -212,10 +208,9 @@ VisionFrontEnd make_front_end(double sample_rate_hz, double carrier_hz, const En
           dsp::lowpass_kernel(demod::kDefaultVisionTaps, sample_rate_hz, opts.cutoff_hz), opts.decimation);
       fe.composite_lp->prepare(block_samples);
     }
-    fe.composite.emplace(video::CompositeInputConfig{.sample_rate_hz = rate_after,
-        .full_scale_volts = opts.composite_full_scale_volts,
-        .sync_amplitude_v = opts.composite_sync_amplitude_v,
-        .clamp_lines = opts.composite_clamp_lines});
+    auto cfg = opts.composite;
+    cfg.sample_rate_hz = rate_after; // only we know it: it depends on the decimation
+    fe.composite.emplace(cfg);
     fe.composite->prepare(fe.composite_lp ? fe.composite_lp->max_output_for(block_samples) : block_samples);
     return fe;
   }
