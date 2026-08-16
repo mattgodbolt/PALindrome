@@ -68,6 +68,10 @@ private:
   // (broadcast-standard modulation wants contrast ~1.0, saturation ~0.17).
   std::string agc_mode_{"sync-tip"}; // "sync-tip" (absolute levels) | "adaptive" (legacy trackers)
   // The IF response: which set's SAW curve the vision carrier passes through.
+  std::string input_mode_{"rf"}; // "rf" (modulated real IF) | "composite" (baseband CVBS)
+  double composite_scale_{0.0}; // volts at input full scale; 0 => nominal 1 V pk-pk
+  double composite_sync_v_{0.0}; // source sync amplitude in volts; 0 => nominal 0.3
+  double composite_clamp_{0.0}; // sync-tip clamp release in lines; 0 => stage default
   std::string if_mode_{"saw80"}; // "saw80" | "saw90" | "flat" (the pre-B2 ideal low-pass)
   std::string detector_{"quasi-sync"}; // "quasi-sync" (TDA-era product) | "envelope" (diode); saw modes
   double sound_notch_db_{-1.0}; // IF sound rejection, positive dB; negative = template default

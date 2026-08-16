@@ -67,6 +67,46 @@ metadata and a bench aid for re-measuring a source's channel. The live path
 never scans; it's tuned by `--carrier` like a set, and the AFC absorbs the
 drift.
 
+## Composite in, instead of RF
+
+`--input composite` feeds baseband CVBS straight in: the samples are the
+video, so the IF filter and the detector drop out of the chain entirely.
+What remains is a conversion onto the same rail the detector would have
+produced, and from there nothing downstream knows or cares where the signal
+came from. `--carrier`, `--scan`, `--if`, `--detector`, `--sound-notch-db`
+and `--gd-ripple` all describe a front end that isn't there, so composite
+mode rejects them rather than quietly ignoring them.
+
+The conversion is not just an inversion. The rail has two anchored points,
+the sync tip and blanking, and the fixed slicer and the standard's white
+level both depend on the distance between them, so a stage that only flipped
+the sign would slice fine and render at the wrong contrast. Baseband
+composite puts blanking at 0 V and the sync tip 0.3 V below it; the map takes
+that to the tip at 1.0 and blanking at 0.76, and peak white then lands where
+the standard says provided the source's picture span is the usual 0.7 V.
+
+Nothing in a real capture tells you where 0 V is, because the coupling ate
+it, so the tip is tracked rather than assumed. That tracking doubles as the
+DC restoration: the screen already clamps black for the gun, but that sits
+downstream of two things that need an absolute reference of their own, the
+slicer and the AGC's gain. A sync-tip clamp finds one without needing the
+line flywheel to key it, which is what the cheaper sets did. `--composite-clamp`
+sets its release in line periods. Fast droops within the line and shows up as
+a left-to-right shading; slow lets mains hum walk the black level. 128 is
+measured to sit comfortably between the two.
+
+`--composite-scale` says what full scale is worth in volts and so sets
+contrast. Getting it wrong cannot break sync, because the tip lands on 1.0 by
+construction whatever the scale says. `--composite-sync` declares the source's
+own sync amplitude, which is how a uniformly under-modulating source is fixed
+rather than merely tolerated: on RF such a source is stuck at low contrast
+because the AGC can only anchor the carrier tip, but here declaring its real
+sync amplitude restores full geometry and the slicer's margin with it.
+
+Colour needs nothing extra. The subcarrier rides the composite rail exactly as
+it rides a detector's output, and the map's inversion rotates burst and chroma
+together, which the burst-referenced decode cancels.
+
 ## Levels are absolute
 
 Levels are absolute, the way a receiver knows them. The IF AGC

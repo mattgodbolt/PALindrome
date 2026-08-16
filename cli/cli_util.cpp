@@ -8,7 +8,9 @@
 #include <format>
 #include <fstream>
 #include <ios>
+#include <iostream>
 #include <optional>
+#include <print>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -85,8 +87,10 @@ double scan_vision_carrier(const std::filesystem::path &data_path, double sample
 }
 } // namespace
 
-LoadedRecording load_recording(const std::filesystem::path &recording, double carrier_override, bool force_scan) {
+LoadedRecording load_recording(
+    const std::filesystem::path &recording, double carrier_override, bool force_scan, InputMode input) {
   LoadedRecording loaded;
+  loaded.input = input;
   loaded.meta_path = resolve_meta(recording);
   loaded.meta = sigmf::load(loaded.meta_path); // ParseError derives from runtime_error
   loaded.data_path = sigmf::data_path_for(loaded.meta_path);
@@ -109,6 +113,17 @@ LoadedRecording load_recording(const std::filesystem::path &recording, double ca
     loaded.metadata_carrier_hz = *rx;
   else if (const auto air = loaded.meta.field<double>("airspy:vision_if_hz"))
     loaded.metadata_carrier_hz = *air;
+
+  // Baseband composite has no carrier to resolve, and scanning it would find a
+  // spectral peak that is not one. Warn if the file looks like the other kind.
+  if (input == InputMode::composite) {
+    if (loaded.metadata_carrier_hz > 0.0)
+      std::println(std::cerr,
+          "render: --input composite, but {} declares a vision carrier ({:.4f} MHz) - "
+          "is this an RF recording?",
+          loaded.meta_path.string(), loaded.metadata_carrier_hz / 1e6);
+    return loaded;
+  }
 
   if (carrier_override > 0.0)
     loaded.vision_carrier_hz = carrier_override;
@@ -168,8 +183,14 @@ struct VisionFrontEnd {
   std::optional<demod::VisionIf> saw;
   std::optional<demod::Hilbert> hilbert;
   std::optional<demod::ComplexAmEnvelope> flat;
+  // Composite: an optional decimating anti-alias FIR, then the affine map and
+  // sync-tip clamp. No IF filter and no detector - the samples are the video.
+  std::optional<dsp::Fir> composite_lp;
+  std::optional<video::CompositeInput> composite;
 
   [[nodiscard]] std::span<const float> process(std::span<const float> x) {
+    if (composite)
+      return composite->process(composite_lp ? composite_lp->process(x) : x);
     return saw ? saw->process(x) : flat->process(hilbert->process(x));
   }
 };
@@ -177,6 +198,27 @@ struct VisionFrontEnd {
 VisionFrontEnd make_front_end(double sample_rate_hz, double carrier_hz, const EnvelopeOptions &opts,
     std::size_t block_samples, std::vector<std::string> &warnings) {
   VisionFrontEnd fe;
+  if (opts.input == InputMode::composite) {
+    // Filter only when decimating: at the capture rate the composite is already
+    // band-limited, and a cutoff near 4.43 MHz would bite into the chroma for
+    // no reason. Decimating first also means the clamp sees the low-passed
+    // signal, so a noise spike cannot drag it as deep.
+    const auto rate_after = sample_rate_hz / static_cast<double>(opts.decimation);
+    if (opts.decimation > 1) {
+      if (opts.cutoff_hz >= rate_after / 2.0)
+        warnings.push_back(std::format("cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing",
+            opts.cutoff_hz / 1e6, rate_after / 2.0 / 1e6));
+      fe.composite_lp.emplace(
+          dsp::lowpass_kernel(demod::kDefaultVisionTaps, sample_rate_hz, opts.cutoff_hz), opts.decimation);
+      fe.composite_lp->prepare(block_samples);
+    }
+    fe.composite.emplace(video::CompositeInputConfig{.sample_rate_hz = rate_after,
+        .full_scale_volts = opts.composite_full_scale_volts,
+        .sync_amplitude_v = opts.composite_sync_amplitude_v,
+        .clamp_lines = opts.composite_clamp_lines});
+    fe.composite->prepare(fe.composite_lp ? fe.composite_lp->max_output_for(block_samples) : block_samples);
+    return fe;
+  }
   if (opts.if_mode != IfMode::flat) {
     // The SAW-era IF: one complex-coefficient FIR realising the set's IF curve
     // around the carrier, applied straight to the real IF, then the detector.
@@ -243,7 +285,7 @@ EnvelopeStream stream_envelope_live(double sample_rate_hz, double carrier_hz, co
   // as a real set's channel preset does, and the AFC absorbs the drift from
   // there. No set scans the aether at switch-on - a source that has drifted
   // past the catch range is retuned at the tuner, not hunted for here.
-  if (!(carrier_hz > 0.0))
+  if (opts.input != InputMode::composite && !(carrier_hz > 0.0))
     throw std::runtime_error{
         "live decode needs --carrier: the tuner's IF-plan target (the channel preset). The AFC pulls in the drift."};
   result.carrier_hz = carrier_hz;

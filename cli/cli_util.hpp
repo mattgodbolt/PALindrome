@@ -1,5 +1,6 @@
 #pragma once
 
+#include "palindrome/composite.hpp"
 #include "palindrome/demod.hpp"
 #include "palindrome/sigmf.hpp"
 
@@ -17,12 +18,19 @@ namespace palindrome::cli {
 // such as "corpus/alex_kidd" — to the metadata file path.
 [[nodiscard]] std::filesystem::path resolve_meta(std::filesystem::path path);
 
+// Which kind of signal the recording holds. rf is a modulated real IF that goes
+// through the vision front end. composite is baseband CVBS, which skips the IF
+// filter and detector entirely: video::CompositeInput maps it onto the same
+// envelope rail, so every stage downstream is unchanged and does not know.
+enum class InputMode { rf, composite };
+
 // What load_recording returns: the parsed metadata, the paired meta/data paths,
 // and the RF parameters every consumer needs. Recordings are real int16 IF
 // (ri16_le) — the RX888, or the AirSpy's raw 20 MS/s real mode; the decoder
 // makes them analytic at the front (see demod::Hilbert), so there is no separate
 // complex-baseband input.
 struct LoadedRecording {
+  InputMode input = InputMode::rf;
   sigmf::Metadata meta;
   std::filesystem::path meta_path;
   std::filesystem::path data_path;
@@ -41,8 +49,8 @@ struct LoadedRecording {
 // present (to validate it). Throws (a std::exception — runtime_error for a
 // missing/invalid recording, a complex ci16 input, or a scan that finds no
 // carrier) — main catches it and prints "palindrome: <what>".
-[[nodiscard]] LoadedRecording load_recording(
-    const std::filesystem::path &recording, double carrier_override = 0.0, bool force_scan = false);
+[[nodiscard]] LoadedRecording load_recording(const std::filesystem::path &recording, double carrier_override = 0.0,
+    bool force_scan = false, InputMode input = InputMode::rf);
 
 // Stream ri16-LE (real int16) from `data_path` as float blocks of up to
 // `block_samples` samples, scaling each to [-1, 1). Invokes `on_block` with each
@@ -59,11 +67,18 @@ void stream_ri16le_blocks(const std::filesystem::path &data_path,
 // replaced, kept verbatim as the legacy/comparison chain.
 enum class IfMode { saw80, saw90, flat };
 
+
 // Demod parameters that aren't carried in the recording itself. The detector
 // applies to the saw modes only: the flat chain is the legacy envelope
 // demodulator, kept verbatim.
 struct EnvelopeOptions {
-  double cutoff_hz = 5.0e6; // baseband low-pass corner (flat mode only)
+  InputMode input = InputMode::rf;
+  // Composite-mode level declaration; see video::CompositeInputConfig. Only
+  // their ratio matters, but two physical numbers beat one abstract one.
+  double composite_full_scale_volts = video::kNominalFullScaleVolts;
+  double composite_sync_amplitude_v = video::kNominalSyncVolts;
+  double composite_clamp_lines = 128.0; // sync-tip clamp release, line periods
+  double cutoff_hz = 5.0e6; // baseband low-pass corner (flat mode; and composite when decimating)
   std::size_t decimation = 1;
   IfMode if_mode = IfMode::flat;
   demod::Detector detector = demod::Detector::quasi_sync; // saw modes' detector

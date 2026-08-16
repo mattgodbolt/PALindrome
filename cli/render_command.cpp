@@ -142,6 +142,18 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "right): shifts the picture right by this fraction of a line"))
           .add_argument(lyra::opt(v_shift_, "x")["--v-shift"](
               "Vertical centring (internal service adjustment): shifts the picture down by this fraction of a field"))
+          .add_argument(lyra::opt(input_mode_, "mode")["--input"](
+              "Signal kind: rf (default - a modulated real IF, through the vision front end) | composite "
+              "(baseband CVBS, which skips the IF filter and detector; the samples are the video)"))
+          .add_argument(lyra::opt(composite_scale_, "volts")["--composite-scale"](
+              "Composite: volts at input full scale (default 1.0, i.e. nominal 1 V pk-pk). Sets contrast, and "
+              "cannot break sync - the clamp anchors the tip whatever this says"))
+          .add_argument(lyra::opt(composite_sync_v_, "volts")["--composite-sync"](
+              "Composite: the source's sync amplitude in volts (default 0.3). Declaring a uniformly "
+              "under-modulating source's real value restores full geometry and the slicer's margin"))
+          .add_argument(lyra::opt(composite_clamp_, "lines")["--composite-clamp"](
+              "Composite: sync-tip clamp release in line periods (default 128; faster droops within the line, "
+              "slower lets mains hum walk the black level)"))
           .add_argument(lyra::opt(if_mode_, "mode")["--if"](
               "IF response: saw80 (default - an 80s single-SAW set: Nyquist flank through the carrier, vestigial "
               "lower sideband, chroma a few dB down, finite sound notch, group-delay ripple) | saw90 (a 90s set: "
@@ -224,6 +236,24 @@ int RenderCommand::run() const {
     return 1;
   }
 
+  const auto input_mode =
+      parse_choice<InputMode>("input", input_mode_, {{"rf", InputMode::rf}, {"composite", InputMode::composite}});
+  if (!input_mode)
+    return 1;
+  const bool composite = *input_mode == InputMode::composite;
+  // The RF flags describe a front end composite does not have. Reject them
+  // rather than ignore them, the way --live rejects --scan.
+  if (composite) {
+    for (const auto &[used, flag]: {std::pair{carrier_ > 0.0, "--carrier"}, {scan_, "--scan"},
+             {if_mode_ != "saw80", "--if"}, {detector_ != "quasi-sync", "--detector"},
+             {sound_notch_db_ >= 0.0, "--sound-notch-db"}, {gd_ripple_ >= 0.0, "--gd-ripple"}}) {
+      if (used) {
+        std::println(std::cerr, "render: {} describes the RF front end; --input composite has no IF or detector", flag);
+        return 1;
+      }
+    }
+  }
+
   LoadedRecording loaded;
   if (live_) {
     if (!(sample_rate_ > 0.0)) {
@@ -242,7 +272,7 @@ int RenderCommand::run() const {
       std::println(std::cerr, "render: --scan analyses recordings; --live is tuned by --carrier, not by scanning");
       return 1;
     }
-    if (!(carrier_ > 0.0)) {
+    if (!composite && !(carrier_ > 0.0)) {
       std::println(std::cerr,
           "render: --live requires --carrier - the tuner's IF-plan target (the channel preset; live_view.py "
           "supplies it). The AFC absorbs drift from there; a set is tuned, it does not scan.");
@@ -254,7 +284,7 @@ int RenderCommand::run() const {
     loaded.sample_rate_hz = sample_rate_; // the carrier is --carrier verbatim (checked above): the tuner's preset
   }
   else {
-    loaded = load_recording(recording_, carrier_, scan_);
+    loaded = load_recording(recording_, carrier_, scan_, *input_mode);
     if (loaded.carrier_scanned) {
       if (loaded.metadata_carrier_hz > 0.0)
         std::println("carrier: scanned {:.4f} MHz (metadata said {:.4f} MHz, off by {:+.0f} Hz)",
@@ -274,7 +304,13 @@ int RenderCommand::run() const {
 
   const auto envelope_rate = loaded.sample_rate_hz / static_cast<double>(decimate);
 
-  EnvelopeOptions opts{.cutoff_hz = cutoff_, .decimation = decimate};
+  EnvelopeOptions opts{.input = *input_mode, .cutoff_hz = cutoff_, .decimation = decimate};
+  if (composite_scale_ > 0.0)
+    opts.composite_full_scale_volts = composite_scale_;
+  if (composite_sync_v_ > 0.0)
+    opts.composite_sync_amplitude_v = composite_sync_v_;
+  if (composite_clamp_ > 0.0)
+    opts.composite_clamp_lines = composite_clamp_;
   const auto if_mode = parse_choice<IfMode>(
       "if", if_mode_, {{"saw80", IfMode::saw80}, {"saw90", IfMode::saw90}, {"flat", IfMode::flat}});
   if (!if_mode)
