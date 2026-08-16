@@ -36,11 +36,24 @@ std::span<const float> CompositeInput::process(std::span<const float> composite)
   const std::size_t n = composite.size();
   const auto dst = out_.write_n(n);
 
-  // Once seeded the output is bounded: the rail can never exceed kSyncTipLevel,
-  // because a new minimum outputs exactly that. It is not yet *meaningful* -
-  // until the first real sync tip arrives, any darkening run keeps setting
-  // minima and the rail pins at the tip level, which reads as a sustained sync
-  // assertion. Self-clearing within a line.
+  // Seed from the first sample. The output is then bounded immediately - the
+  // rail can never exceed kSyncTipLevel, because a new minimum outputs exactly
+  // that - though not yet meaningful: until the first real sync tip arrives,
+  // any darkening run keeps setting minima and the rail pins at the tip level,
+  // which reads as a sustained sync assertion. Self-clearing within a line.
+  //
+  // PRECONDITION: the input is finite. It is int16 from a recording, so that
+  // holds structurally and is not checked. Worth knowing what breaks if a
+  // future caller ever feeds this a computed float rail: a NaN compares false
+  // against both branches below, so it would poison tip_ with no path back and
+  // cost the rest of the stream. Agc looks similar but is not - its
+  // std::max(env, tip_ * release_) returns the old tip for a NaN, so the same
+  // input costs it one sample. Guard at that boundary, not here.
+  if (!seeded_ && n > 0) {
+    tip_ = static_cast<double>(composite[0]);
+    seeded_ = true;
+  }
+
   const auto tip_level = static_cast<float>(kSyncTipLevel);
   const auto scale = static_cast<float>(scale_);
 
@@ -53,24 +66,11 @@ std::span<const float> CompositeInput::process(std::span<const float> composite)
     const auto x = composite[k];
     const auto v = static_cast<double>(x);
     // Sync tip is the most negative excursion of baseband composite, so the
-    // clamp tracks a minimum: instant down, one-pole release up. Non-finite
-    // input skips the update entirely - a NaN compares false against both
-    // branches of a bare min and would poison the accumulator with no path
-    // back, and an infinity latches the clamp there for good.
-    if (std::isfinite(v)) {
-      // Seeding lives inside the finite guard: seeding from a non-finite first
-      // sample would poison the accumulator before the guard could ever run,
-      // and no later sample could recover it. The first FINITE sample of the
-      // stream is the seed, whichever block it arrives in.
-      if (!seeded_) {
-        tip_ = v;
-        seeded_ = true;
-      }
-      else if (v < tip_)
-        tip_ = v;
-      else
-        tip_ += rise_ * (v - tip_);
-    }
+    // clamp tracks a minimum: instant down, one-pole release up.
+    if (v < tip_)
+      tip_ = v;
+    else
+      tip_ += rise_ * (v - tip_);
     // Snapshot the clamp down to float at the point of use; it keeps
     // accumulating in double.
     dst[k] = tip_level - scale * (x - static_cast<float>(tip_));

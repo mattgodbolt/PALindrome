@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <limits>
 #include <numbers>
 #include <random>
 #include <span>
@@ -292,38 +291,6 @@ TEST_CASE("composite input survives degenerate signals", "[composite]") {
       REQUIRE(rail.size() == flat.size());
       for (const auto v: rail)
         REQUIRE(v == Catch::Approx(static_cast<float>(video::kSyncTipLevel)).margin(1.0e-5));
-    }
-  }
-
-  SECTION("one non-finite sample cannot poison the clamp for good") {
-    for (const float poison: {std::numeric_limits<float>::quiet_NaN(), -std::numeric_limits<float>::infinity(),
-             std::numeric_limits<float>::infinity()}) {
-      auto bb = baseband_lines(8, 0.3);
-      bb[3 * kLineLen + 100] = poison;
-      const auto rail = convert(bb, 128.0);
-      const auto clean = convert(baseband_lines(8, 0.3), 128.0);
-      // The guard keeps the poison out of the accumulator, so the clamp
-      // converges straight back onto a clean run - not bit-identically, since
-      // skipping the update costs that one release step, but to well inside
-      // anything downstream can see. The offending sample itself still maps to
-      // garbage, which is the one sample it costs; sanitising the output too
-      // is not worth a per-sample branch.
-      for (std::size_t k = 0; k < rail.size(); ++k)
-        if (k != 3 * kLineLen + 100)
-          REQUIRE(rail[k] == Catch::Approx(clean[k]).margin(1.0e-4));
-    }
-  }
-
-  SECTION("a non-finite FIRST sample cannot poison the seed") {
-    // The guard has to cover seeding too: seeding from NaN would leave every
-    // later finite sample updating against a NaN tip, unrecoverably.
-    for (const float poison: {std::numeric_limits<float>::quiet_NaN(), -std::numeric_limits<float>::infinity()}) {
-      auto bb = baseband_lines(8, 0.3);
-      bb[0] = poison;
-      const auto rail = convert(bb, 128.0);
-      for (std::size_t k = 1; k < rail.size(); ++k)
-        REQUIRE(std::isfinite(rail[k]));
-      REQUIRE(sync_pulses(rail) == 8);
     }
   }
 
