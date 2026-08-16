@@ -63,10 +63,17 @@ struct LoadOptions {
 // airspy:vision_if_hz); else a coarse FFT scan of the signal itself
 // (demod::find_vision_carrier) - so a recording with no carrier metadata, the
 // live-RF case, still decodes. `force_scan` takes the scan even when metadata is
-// present (to validate it). `input` selects the front end: composite has no carrier, so
-// resolution is skipped entirely for it. Throws (a std::exception — runtime_error for a
-// missing/invalid recording, a complex ci16 input, or a scan that finds no
-// carrier) — main catches it and prints "palindrome: <what>".
+// present (to validate it).
+//
+// None of that applies to `input == composite`: baseband CVBS has no carrier,
+// so resolution is skipped entirely and it never scans - scanning it would find
+// a spectral peak that is not a carrier. A composite load that finds carrier
+// metadata anyway says so through `warnings`, since that is what an RF
+// recording opened in the wrong mode looks like.
+//
+// Throws (a std::exception — runtime_error for a missing/invalid recording, a
+// complex ci16 input, an unsupported datatype, or a scan that finds no carrier)
+// — main catches it and prints "palindrome: <what>".
 [[nodiscard]] LoadedRecording load_recording(const std::filesystem::path &recording, const LoadOptions &opts = {});
 
 // Stream real samples from `data_path` as float blocks of up to `block_samples`

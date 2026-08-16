@@ -91,9 +91,9 @@ DC restoration: the screen already clamps black for the gun, but that sits
 downstream of two things that need an absolute reference of their own, the
 slicer and the AGC's gain. A sync-tip clamp finds one without needing the
 line flywheel to key it, which is what the cheaper sets did. `--composite-clamp`
-sets its release in line periods. Fast droops within the line and shows up as
-a left-to-right shading; slow lets mains hum walk the black level. 128 is
-measured to sit comfortably between the two.
+sets its release in line periods. Too fast and it droops within the line, which
+shows up as a left-to-right shading; too slow and mains hum walks the black
+level. 128 is measured to sit comfortably between the two.
 
 `--composite-scale` says what full scale is worth in volts and so sets
 contrast. The tip lands on 1.0 by construction whatever you declare, so
