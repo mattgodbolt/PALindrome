@@ -27,6 +27,8 @@ private:
   std::filesystem::path recording_;
   std::string input_mode_{"rf"}; // "rf" (modulated real IF) | "composite" (baseband CVBS)
   double carrier_{0.0};
+  double composite_scale_{0.0}; // volts at input full scale; 0 => nominal
+  double composite_sync_v_{0.0}; // the source's sync amplitude in volts; 0 => nominal
   double cutoff_{kDefaults.cutoff_hz};
   // 0 = take the mode's default: /2 for RF, where sync only needs the slow
   // pulse shapes, and /1 for composite, where the pulse shapes are already at
