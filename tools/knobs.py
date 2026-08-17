@@ -254,17 +254,31 @@ def for_input(mode):
 
 
 def flags_for(knobs, values):
-    """Map {name: value} onto a render argument list, skipping defaults."""
+    """Map {name: value} onto a render argument list, omitting knobs absent
+    from `values`. Raises ValueError on a value that is not a number, or that
+    is out of the knob's declared range - live_view feeds this straight from a
+    URL query, so a bad value must be a clean rejection rather than a crashed
+    handler thread or, worse, a decoder relaunched with nonsense.
+    """
     out = []
     for k in knobs:
         if k["name"] not in values:
             continue
-        v = values[k["name"]]
+        raw = values[k["name"]]
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"{k['name']}: {raw!r} is not a number")
         if k.get("choices"):
-            out += [k["flag"], k["choices"][int(float(v))]]
+            i = int(v)
+            if not 0 <= i < len(k["choices"]):
+                raise ValueError(f"{k['name']}: index {i} outside 0..{len(k['choices']) - 1}")
+            out += [k["flag"], k["choices"][i]]
         elif k.get("boolean"):
-            if int(float(v)):
+            if int(v):
                 out.append(k["flag"])
         else:
-            out += [k["flag"], str(v)]
+            if not k["min"] <= v <= k["max"]:
+                raise ValueError(f"{k['name']}: {v} outside {k['min']}..{k['max']}")
+            out += [k["flag"], repr(v)]
     return out

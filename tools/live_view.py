@@ -257,7 +257,19 @@ def make_handler(latest, dec, active_knobs):
             if self.path.startswith("/set"):
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 vals = {k: v[0] for k, v in q.items()}
-                dec.restart(knobs.flags_for(active_knobs, vals))
+                # Build the flags BEFORE touching the decoder: a bad value must
+                # be a 400, not a half-restarted decode or a dead handler thread.
+                try:
+                    flags = knobs.flags_for(active_knobs, vals)
+                except ValueError as e:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    body = str(e).encode()
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                dec.restart(flags)
                 self.send_response(204)
                 self.end_headers()
                 return
@@ -342,9 +354,6 @@ def main():
     tune_hz = args.frequency - int(if_center - VISION_IF_TARGET)
     channels = 1 if args.mono else 3
 
-    # A pipe the decoder writes raw frames into; keep the write end open across the
-    # spawn (pass_fds), then close the parent copy so EOF lands when the child exits.
-    frame_r, frame_w = os.pipe()
 
     render_cmd = [palindrome, "render", "--live",
                   "--width", str(args.width), "--height", str(args.height),
@@ -366,9 +375,6 @@ def main():
 
     # --colour and the rest of the knobs come from the slider set, so they are
     # not baked in here; --extra is appended last so a command line still wins.
-
-    os.close(frame_w)   # Decoder makes its own pipes; this one was only a template
-    os.close(frame_r)
 
     print("src :", source_desc, file=sys.stderr)
     print("dec :", " ".join(render_cmd), file=sys.stderr)

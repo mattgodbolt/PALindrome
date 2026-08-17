@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <iostream>
 #include <optional>
 #include <print>
 #include <span>
@@ -92,7 +93,8 @@ void SyncCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(carrier_, "hz")["--carrier"](
               "Carrier Hz (default: the metadata's vision_if_hz, or a signal scan if it has none)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz"))
-          .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs"))
+          .add_argument(lyra::opt(decimate_, "n")["--decimate"](
+              "Keep 1 sample per N inputs (0 = the mode's default: 2 for rf, 1 for composite)"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to inspect (e.g. corpus/alex_kidd)")));
 }
 
@@ -114,8 +116,8 @@ int SyncCommand::run() const {
   // no decimation for the pulse shapes and the chroma decoder is not in play, so
   // leave it at the capture rate unless asked.
   std::vector<float> env;
-  const EnvelopeOptions opts{
-      .input = *input, .cutoff_hz = cutoff_, .decimation = composite ? composite_decimate_ : decimate_};
+  const std::size_t decimation = decimate_ != 0 ? decimate_ : (composite ? 1 : 2);
+  const EnvelopeOptions opts{.input = *input, .cutoff_hz = cutoff_, .decimation = decimation};
   const auto es =
       stream_envelope(loaded, opts, [&](std::span<const float> e) { env.insert(env.end(), e.begin(), e.end()); });
   for (const auto &w: es.warnings)
@@ -233,8 +235,10 @@ int SyncCommand::run() const {
     std::vector<double> field_lines;
     for (std::size_t i = 1; i < run_starts.size(); ++i)
       field_lines.push_back(static_cast<double>(run_starts[i] - run_starts[i - 1]) / measured_line_samples);
-    // The first run is usually a partial field (the capture starts mid-frame),
-    // so the median is what to trust; the mean drags towards that fragment.
+    // The first run is usually TRUNCATED, not partial: if the capture opens
+    // midway through the broad-pulse sequence, run_starts[0] latches onto a
+    // later pulse and shortens the first gap. The median ignores that; the
+    // mean does not.
     auto sorted = field_lines;
     std::ranges::sort(sorted);
     const double median = sorted[sorted.size() / 2];
@@ -243,7 +247,7 @@ int SyncCommand::run() const {
                           : std::abs(median - 312.0) < 0.15 ? "non-interlaced (312)"
                                                             : "non-standard";
     std::println("  field period: median {:.3f} measured lines -> {}", median, verdict);
-    std::println("  (mean {:.2f}, stddev {:.2f} - the first run is usually a partial field)", fs.mean, fs.stddev);
+    std::println("  (mean {:.2f}, stddev {:.2f} - the first run is usually truncated)", fs.mean, fs.stddev);
     std::println("  first few run spacings (lines): ");
     for (std::size_t i = 0; i < std::min<std::size_t>(field_lines.size(), 8); ++i)
       std::println("    {:.2f}", field_lines[i]);
