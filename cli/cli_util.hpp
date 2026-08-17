@@ -10,6 +10,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace palindrome::cli {
@@ -28,6 +29,11 @@ enum class InputMode { rf, composite };
 // real unsigned 8-bit is what a CX2388x card hands over through cxadc, whose
 // ADC is 8-bit and whose zero sits at mid-scale.
 enum class SampleFormat { s16, u8 };
+
+// Parse an --input value, printing `<command>: --input must be one of: ...` to
+// stderr and returning nullopt if it is not one. Shared so the commands cannot
+// drift on either the accepted names or the wording.
+[[nodiscard]] std::optional<InputMode> parse_input_mode(std::string_view command, std::string_view value);
 
 // What load_recording returns: the parsed metadata, the paired meta/data paths,
 // and the RF parameters every consumer needs. Recordings are real int16 IF

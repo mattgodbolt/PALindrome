@@ -86,6 +86,9 @@ void print_histogram(std::span<const double> values, double lo, double hi, int b
 void SyncCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
   cli.add_argument(lyra::command("sync", [this, &action](const lyra::group &) { action = [this] { return run(); }; })
           .help("Diagnose the sync chain: slice the composite and report pulse widths, spacing and lock")
+          .add_argument(lyra::opt(input_mode_, "mode")["--input"](
+              "Signal kind: rf (default) | composite (baseband CVBS, which skips the IF filter and detector). "
+              "In composite mode --carrier does not apply: there is no carrier to resolve"))
           .add_argument(lyra::opt(carrier_, "hz")["--carrier"](
               "Carrier Hz (default: the metadata's vision_if_hz, or a signal scan if it has none)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz"))
@@ -94,12 +97,25 @@ void SyncCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
 }
 
 int SyncCommand::run() const {
-  const auto loaded = load_recording(recording_, {.carrier_override = carrier_});
+  const auto input = parse_input_mode("sync", input_mode_);
+  if (!input)
+    return 1;
+  const bool composite = *input == InputMode::composite;
+  if (composite && carrier_ > 0.0) {
+    std::println(std::cerr, "sync: --carrier describes the RF front end; --input composite has no carrier");
+    return 1;
+  }
+  const auto loaded = load_recording(recording_, {.carrier_override = carrier_, .input = *input});
+  for (const auto &w: loaded.warnings)
+    std::println(std::cerr, "sync: warning: {}", w);
 
-  // Demodulate to the composite envelope (behind stream_envelope) and gather it
-  // for the batch pulse analysis.
+  // To the composite envelope - through the vision front end for RF, or
+  // straight onto the same rail by the affine map for baseband. Composite needs
+  // no decimation for the pulse shapes and the chroma decoder is not in play, so
+  // leave it at the capture rate unless asked.
   std::vector<float> env;
-  const EnvelopeOptions opts{.cutoff_hz = cutoff_, .decimation = decimate_};
+  const EnvelopeOptions opts{
+      .input = *input, .cutoff_hz = cutoff_, .decimation = composite ? composite_decimate_ : decimate_};
   const auto es =
       stream_envelope(loaded, opts, [&](std::span<const float> e) { env.insert(env.end(), e.begin(), e.end()); });
   for (const auto &w: es.warnings)
@@ -208,12 +224,26 @@ int SyncCommand::run() const {
       2 * (env.size() / static_cast<std::size_t>(nominal_line_samples * 625.0)),
       env.size() / static_cast<std::size_t>(nominal_line_samples * 625.0));
   if (run_starts.size() >= 2) {
+    // In MEASURED lines, not nominal: a source off nominal line rate would
+    // otherwise report 312.61 for a 312.5-line field and the reader has to do
+    // the correction in their head. `measured_line_samples` comes from the
+    // line-sync spacing above, so this is the source's own line.
+    const double measured_line_samples =
+        near_one.empty() ? nominal_line_samples : stats_of(near_one).mean * nominal_line_samples;
     std::vector<double> field_lines;
     for (std::size_t i = 1; i < run_starts.size(); ++i)
-      field_lines.push_back(static_cast<double>(run_starts[i] - run_starts[i - 1]) / nominal_line_samples);
+      field_lines.push_back(static_cast<double>(run_starts[i] - run_starts[i - 1]) / measured_line_samples);
+    // The first run is usually a partial field (the capture starts mid-frame),
+    // so the median is what to trust; the mean drags towards that fragment.
+    auto sorted = field_lines;
+    std::ranges::sort(sorted);
+    const double median = sorted[sorted.size() / 2];
     const auto fs = stats_of(field_lines);
-    std::println("  field period: mean {:.2f} lines (stddev {:.2f}); 312.5 => interlaced, 312/313 alternating", fs.mean,
-        fs.stddev);
+    const char *verdict = std::abs(median - 312.5) < 0.15   ? "INTERLACED (312.5)"
+                          : std::abs(median - 312.0) < 0.15 ? "non-interlaced (312)"
+                                                            : "non-standard";
+    std::println("  field period: median {:.3f} measured lines -> {}", median, verdict);
+    std::println("  (mean {:.2f}, stddev {:.2f} - the first run is usually a partial field)", fs.mean, fs.stddev);
     std::println("  first few run spacings (lines): ");
     for (std::size_t i = 0; i < std::min<std::size_t>(field_lines.size(), 8); ++i)
       std::println("    {:.2f}", field_lines[i]);
