@@ -280,11 +280,13 @@ def make_handler(latest, dec, active_knobs):
                 except (BrokenPipeError, ConnectionResetError):
                     pass  # browser navigated away
             else:
+                # Build first: the knob table is substituted in, so the
+                # template's length is not the page's.
+                page = PAGE.replace("__KNOBS__", knobs.knobs_json(active_knobs)).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(PAGE)))
+                self.send_header("Content-Length", str(len(page)))
                 self.end_headers()
-                page = PAGE.replace("__KNOBS__", knobs.knobs_json(active_knobs)).encode()
                 self.wfile.write(page)
 
     return Handler
