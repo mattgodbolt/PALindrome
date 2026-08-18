@@ -241,8 +241,7 @@ int RenderCommand::run() const {
     return 1;
   }
 
-  const auto input_mode =
-      parse_choice<InputMode>("input", input_mode_, {{"rf", InputMode::rf}, {"composite", InputMode::composite}});
+  const auto input_mode = parse_input_mode("render", input_mode_);
   if (!input_mode)
     return 1;
   const bool composite = *input_mode == InputMode::composite;

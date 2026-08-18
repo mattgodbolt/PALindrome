@@ -9,10 +9,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <iostream>
 #include <optional>
 #include <print>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace palindrome::cli {
@@ -86,20 +88,52 @@ void print_histogram(std::span<const double> values, double lo, double hi, int b
 void SyncCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
   cli.add_argument(lyra::command("sync", [this, &action](const lyra::group &) { action = [this] { return run(); }; })
           .help("Diagnose the sync chain: slice the composite and report pulse widths, spacing and lock")
+          .add_argument(lyra::opt(input_mode_, "mode")["--input"](
+              "Signal kind: rf (default) | composite (baseband CVBS, which skips the IF filter and detector). "
+              "In composite mode --carrier does not apply: there is no carrier to resolve"))
           .add_argument(lyra::opt(carrier_, "hz")["--carrier"](
               "Carrier Hz (default: the metadata's vision_if_hz, or a signal scan if it has none)"))
+          .add_argument(lyra::opt(composite_scale_, "volts")["--composite-scale"](
+              "Composite: volts at input full scale. Declaring the source's real value matters here - a "
+              "mis-scaled rail moves where the fixed slice cuts the sync edge, which changes the pulse widths "
+              "this command reports and can make most of the 'equalising' count an artifact"))
+          .add_argument(lyra::opt(composite_sync_v_, "volts")["--composite-sync"](
+              "Composite: the source's sync amplitude in volts (default 0.3)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz"))
-          .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs"))
+          .add_argument(lyra::opt(decimate_, "n")["--decimate"](
+              "Keep 1 sample per N inputs (0 = the mode's default: 2 for rf, 1 for composite)"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to inspect (e.g. corpus/alex_kidd)")));
 }
 
 int SyncCommand::run() const {
-  const auto loaded = load_recording(recording_, {.carrier_override = carrier_});
+  const auto input = parse_input_mode("sync", input_mode_);
+  if (!input)
+    return 1;
+  const bool composite = *input == InputMode::composite;
+  if (composite && carrier_ > 0.0) {
+    std::println(std::cerr, "sync: --carrier describes the RF front end; --input composite has no carrier");
+    return 1;
+  }
+  const auto loaded = load_recording(recording_, {.carrier_override = carrier_, .input = *input});
+  for (const auto &w: loaded.warnings)
+    std::println(std::cerr, "sync: warning: {}", w);
 
-  // Demodulate to the composite envelope (behind stream_envelope) and gather it
-  // for the batch pulse analysis.
+  // To the composite envelope - through the vision front end for RF, or
+  // straight onto the same rail by the affine map for baseband. Composite
+  // defaults to no decimation, and the reason is stronger than "it does not
+  // need it": decimating actively corrupts what this tool reports. The 127-tap
+  // anti-alias FIR rings on the sync edges and manufactures roughly one
+  // spurious narrow pulse per line, which lands straight in the equalising
+  // count and inflates the jitter figure by an order of magnitude. Measured on
+  // a 20 MS/s capture, /2 took the equalising count from 2235 to 70549 and the
+  // jitter from 0.041 to 0.394 us. Use --decimate here only deliberately.
   std::vector<float> env;
-  const EnvelopeOptions opts{.cutoff_hz = cutoff_, .decimation = decimate_};
+  const std::size_t decimation = decimate_ != 0 ? decimate_ : (composite ? 1 : 2);
+  EnvelopeOptions opts{.input = *input, .cutoff_hz = cutoff_, .decimation = decimation};
+  if (composite_scale_ > 0.0)
+    opts.composite.full_scale_volts = composite_scale_;
+  if (composite_sync_v_ > 0.0)
+    opts.composite.sync_amplitude_v = composite_sync_v_;
   const auto es =
       stream_envelope(loaded, opts, [&](std::span<const float> e) { env.insert(env.end(), e.begin(), e.end()); });
   for (const auto &w: es.warnings)
@@ -172,14 +206,31 @@ int SyncCommand::run() const {
       line_lo_us, line_hi_us, n_line, n_eq, n_broad);
 
   // Restrict the spacing stats to gaps near one line, so half-line VBI gaps and
-  // dropouts don't swamp the jitter measurement we actually care about.
+  // dropouts don't swamp the jitter measurement we actually care about. A
+  // (0.5, 1.5) window is not tight enough on its own: an interlaced source's
+  // half-line gap is 0.938 of a NOMINAL line and sits well inside it, so on a
+  // 625/50 interlaced signal one gap per frame drags the mean ~0.01% low. That
+  // is a fifth of the accuracy the interlace verdict below needs, and it always
+  // pulls away from 312.5 - the tool would talk itself out of the very thing it
+  // is measuring. So take a second pass over gaps within 2% of the first
+  // estimate: relative, not absolute, so an off-nominal source keeps its set.
   std::vector<double> near_one;
   for (const double g: line_gaps)
     if (g > 0.5 && g < 1.5)
       near_one.push_back(g);
+  std::vector<double> trimmed;
   if (!near_one.empty()) {
-    const auto s = stats_of(near_one);
-    std::println("\nline-sync spacing (gaps near 1 line, n={}):", near_one.size());
+    const double coarse = stats_of(near_one).mean;
+    for (const double g: near_one)
+      if (std::abs(g - coarse) < 0.02 * coarse)
+        trimmed.push_back(g);
+  }
+  const bool have_line = !trimmed.empty();
+  // The same trim fixes the jitter figure, which the half-line gaps inflate by
+  // an order of magnitude on an interlaced source.
+  if (have_line) {
+    const auto s = stats_of(trimmed);
+    std::println("\nline-sync spacing (gaps near 1 line, n={} of {} kept):", trimmed.size(), near_one.size());
     std::println("  mean {:.4f} lines = {:.2f} samples = {:.3f} us", s.mean, s.mean * nominal_line_samples,
         s.mean * nominal_line_samples * us_per_sample);
     std::println("  stddev {:.4f} lines = {:.2f} samples = {:.3f} us (the line-to-line jitter)", s.stddev,
@@ -190,6 +241,10 @@ int SyncCommand::run() const {
   // vertical sync (5 broad pulses ~half a line apart). Group broad pulses that
   // sit within a few lines of each other; the spacing between runs is the field
   // period. Interlace should show as ~312.5 lines between runs.
+  // The source's own line, shared by every "lines" figure below so the page
+  // does not mix measured and nominal denominators.
+  const double measured_line_samples = have_line ? stats_of(trimmed).mean * nominal_line_samples : nominal_line_samples;
+
   std::vector<std::size_t> broad_leadings;
   for (const auto &p: pulses)
     if (static_cast<double>(p.width) * us_per_sample > line_hi_us)
@@ -208,12 +263,66 @@ int SyncCommand::run() const {
       2 * (env.size() / static_cast<std::size_t>(nominal_line_samples * 625.0)),
       env.size() / static_cast<std::size_t>(nominal_line_samples * 625.0));
   if (run_starts.size() >= 2) {
+    // In MEASURED lines, not nominal: a source off nominal line rate would
+    // otherwise report 312.61 for a 312.5-line field and the reader has to do
+    // the correction in their head. `measured_line_samples` comes from the
+    // line-sync spacing above, so this is the source's own line.
     std::vector<double> field_lines;
     for (std::size_t i = 1; i < run_starts.size(); ++i)
-      field_lines.push_back(static_cast<double>(run_starts[i] - run_starts[i - 1]) / nominal_line_samples);
+      field_lines.push_back(static_cast<double>(run_starts[i] - run_starts[i - 1]) / measured_line_samples);
+    // Median, not mean, because the first interval is routinely bogus: the
+    // front end's cold start pins the rail at the sync tip until the first real
+    // tip arrives, which reads as one spurious broad pulse at sample 0 and
+    // becomes run_starts[0]. The median is robust to that and to any other
+    // single bad run (a dropout merging two fields, a run split in half).
+    auto sorted = field_lines;
+    std::ranges::sort(sorted);
+    const double median = sorted[sorted.size() / 2];
     const auto fs = stats_of(field_lines);
-    std::println("  field period: mean {:.2f} lines (stddev {:.2f}); 312.5 => interlaced, 312/313 alternating", fs.mean,
-        fs.stddev);
+    // 312.5 lines between vertical syncs IS interlace - it measures the
+    // half-line offset of vertical against line sync, which is the mechanism
+    // rather than a proxy. Whole 312/313 alternation is a 625-line frame with
+    // no half-line offset, so it is NOT interlaced, and the median hides the
+    // alternation; the spacings printed below are where to see it.
+    const std::string_view verdict = std::abs(median - 312.5) < 0.15   ? "INTERLACED (312.5)"
+                                     : std::abs(median - 312.0) < 0.15 ? "non-interlaced (312)"
+                                     : std::abs(median - 313.0) < 0.15 ? "non-interlaced (313)"
+                                                                       : "non-standard";
+    // Say which line the verdict was measured against, and admit it when there
+    // was none: the fallback is the nominal line, which is exactly the error
+    // this report exists to remove, and it would otherwise print as "measured".
+    if (have_line)
+      std::println(
+          "  field period: median {:.3f} measured lines ({:+.3f} from 312.5) -> {}", median, median - 312.5, verdict);
+    else
+      std::println("  field period: median {:.3f} NOMINAL lines -> {} (UNRELIABLE: no line-sync spacing was "
+                   "measurable, so this is not the source's own line)",
+          median, verdict);
+    std::println("  (mean {:.2f}, stddev {:.2f}; line {:.3f} samples)", fs.mean, fs.stddev, measured_line_samples);
+    // A run start that hops half a line between fields fakes both verdicts, and
+    // the tell is the broad-pulse count per run changing. Print the range.
+    {
+      std::vector<std::size_t> per_run(run_starts.size(), 0);
+      if (run_starts.size() < 2)
+        return 0;
+      std::size_t r = 0;
+      for (const std::size_t b: broad_leadings) {
+        while (r + 1 < run_starts.size() && b >= run_starts[r + 1])
+          ++r;
+        ++per_run[r];
+      }
+      // Skip run 0 for the same reason the median does: the cold-start latch
+      // makes it a run of one, which would flag every capture.
+      const std::span<const std::size_t> settled{per_run.begin() + 1, per_run.end()};
+      const auto [lo, hi] = std::ranges::minmax_element(settled);
+      if (*lo != *hi)
+        std::println("  broad pulses per run vary {}-{} (normal on an interlaced source - the two fields serrate "
+                     "differently). Check the spacings below alternate by ~0.5 rather than cluster: if they "
+                     "alternate, the run start is hopping half a line and the verdict above is wrong",
+            *lo, *hi);
+      else
+        std::println("  broad pulses per run: {} (consistent, so the run start is a stable feature)", *lo);
+    }
     std::println("  first few run spacings (lines): ");
     for (std::size_t i = 0; i < std::min<std::size_t>(field_lines.size(), 8); ++i)
       std::println("    {:.2f}", field_lines[i]);
@@ -225,7 +334,7 @@ int SyncCommand::run() const {
   (void)vsync.process(sliced);
   const double field_hz = vsync.omega() * rate;
   std::println("  vertical flywheel: locked {} fields, {:.2f} Hz ({:.1f} lines/field, {:+.2f}% from 50 Hz)",
-      vsync.detected_fields(), field_hz, (1.0 / vsync.omega()) / nominal_line_samples,
+      vsync.detected_fields(), field_hz, (1.0 / vsync.omega()) / measured_line_samples,
       100.0 * (field_hz - video::kNominalFieldHz) / video::kNominalFieldHz);
 
   // Now run the sweep and report the lock it settled on.

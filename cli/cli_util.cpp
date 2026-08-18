@@ -10,7 +10,9 @@
 #include <format>
 #include <fstream>
 #include <ios>
+#include <iostream>
 #include <optional>
+#include <print>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -86,6 +88,15 @@ double scan_vision_carrier(const std::filesystem::path &data_path, double sample
   return *carrier;
 }
 } // namespace
+
+std::optional<InputMode> parse_input_mode(std::string_view command, std::string_view value) {
+  if (value == "rf")
+    return InputMode::rf;
+  if (value == "composite")
+    return InputMode::composite;
+  std::println(std::cerr, "{}: --input must be one of: rf, composite", command);
+  return std::nullopt;
+}
 
 LoadedRecording load_recording(const std::filesystem::path &recording, const LoadOptions &opts) {
   LoadedRecording loaded;
