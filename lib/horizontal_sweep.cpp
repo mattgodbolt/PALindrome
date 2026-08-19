@@ -96,7 +96,9 @@ std::span<const BeamSample> HorizontalSweep::process(std::span<const SyncSample>
         const double err = dsp::wrap_error(leading_edge_phase_);
         const double kp = locked_ ? cfg_.pll_kp : cfg_.acq_kp;
         const double ki = locked_ ? cfg_.pll_ki : cfg_.acq_ki;
-        phase_ -= kp * err;
+        // |kp * err| <= 0.5 (kp in [0, 1], err in [-0.5, 0.5)), so the snap
+        // can only leave [0, 1) by less than a cycle: one wrap restores it.
+        phase_ = dsp::wrap_phase(phase_ - kp * err);
         omega_ = std::clamp(omega_ - ki * err, omega_lo, omega_hi);
         if (std::abs(err) <= cfg_.coincidence_window)
           coincidence_ = std::min(coincidence_ + 1, 2 * cfg_.coincidence_lines);
@@ -114,14 +116,12 @@ std::span<const BeamSample> HorizontalSweep::process(std::span<const SyncSample>
     }
 
     dst[k] = BeamSample{
-        .h_phase = static_cast<float>(phase_ - std::floor(phase_)),
+        .h_phase = static_cast<float>(phase_),
         .line_start = line_start,
     };
 
-    // Advance the oscillator and wrap into [0, 1). floor() covers the rare case
-    // where a kp snap pushed phase_ slightly negative.
-    phase_ += omega_;
-    phase_ -= std::floor(phase_);
+    // omega_ < 1 (nominal below Nyquist, clamp below 2x), so one wrap suffices.
+    phase_ = dsp::wrap_phase(phase_ + omega_);
     prev_sync_ = sync;
     ++sample_index_;
   }

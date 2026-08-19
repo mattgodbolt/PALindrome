@@ -48,7 +48,7 @@ flowchart TD
     AGC -->|picture rail| SCR
     AGC -->|picture rail| CH["ChromaDecoder (colour)<br/>4.43 MHz band-pass → crystal demod<br/>(APC pulls the crystal) →<br/>per-line burst rotation + PAL switch →<br/>ident → colour killer → 1H comb → Y/U/V"]
     SEP -->|sync bit| HS["HorizontalSweep<br/>pulse-width gate + AFC flywheel<br/>→ h_phase, line_start"]
-    SEP -->|sync bit| VS["VerticalSync<br/>integrator + field flywheel<br/>→ v_phase, field_start"]
+    SEP -->|sync bit| VS["VerticalSync<br/>integrator + field flywheel<br/>→ v_phase"]
     HS -->|timing rail| CH
     HS -->|timing rail| SCR["Screen (CRT)<br/>gun drive (DC-restored black, gamma 2.6) →<br/>RGB matrix + yoke shear + Gaussian splat →<br/>beam load feeds back: EHT sag,<br/>line pull, beam-current limiter →<br/>phosphor decay → frame"]
     VS -->|timing rail| SCR

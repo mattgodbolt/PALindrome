@@ -3,7 +3,6 @@
 #include "palindrome/phase.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <stdexcept>
 
@@ -58,7 +57,6 @@ std::span<const VSample> VerticalSync::process(std::span<const SyncSample> in) {
     // ~0.07; the broad-pulse train drives it toward ~0.84.
     integ_ += alpha_ * ((in[k].sync ? 1.0 : 0.0) - integ_);
 
-    bool field_start = false;
     // Rising crossing of the slice marks the vertical interval. The hold gate
     // rejects a second crossing within the same field (the integrator can dip
     // and re-cross between broad pulses); the flywheel coasts otherwise.
@@ -69,25 +67,22 @@ std::span<const VSample> VerticalSync::process(std::span<const SyncSample> in) {
       if (!have_field_ || since >= min_gap) {
         // PI correction: v_phase should be 0 at the field-sync anchor.
         const double err = dsp::wrap_error(v_phase_);
-        v_phase_ -= cfg_.pll_kp * err;
+        // |kp * err| <= 0.5 (kp in [0, 1], err in [-0.5, 0.5)): the snap
+        // leaves [0, 1) by less than a cycle, so one wrap restores it.
+        v_phase_ = dsp::wrap_phase(v_phase_ - cfg_.pll_kp * err);
         omega_ = std::clamp(omega_ - cfg_.pll_ki * err, omega_lo, omega_hi);
         last_field_sample_ = sample_index_;
         have_field_ = true;
         ++fields_;
-        field_start = true;
       }
     }
     else if (in_vsync_ && integ_ < leave) {
       in_vsync_ = false;
     }
 
-    dst[k] = VSample{
-        .v_phase = static_cast<float>(v_phase_ - std::floor(v_phase_)),
-        .field_start = field_start,
-    };
+    dst[k] = VSample{.v_phase = static_cast<float>(v_phase_)};
 
-    v_phase_ += omega_;
-    v_phase_ -= std::floor(v_phase_);
+    v_phase_ = dsp::wrap_phase(v_phase_ + omega_);
     ++sample_index_;
   }
 

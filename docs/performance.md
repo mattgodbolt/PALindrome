@@ -127,6 +127,23 @@ downstream work), so the balance legitimately differs between them.
   ULPs (2 pixels x 1 LSB across the whole corpus). Wall -6% where decode had
   headroom below it (file renders); the live walls handed over to the sink
   (see the busy-fraction note above).
+- **Timebase phase wrap without floor (#95).** `HorizontalSweep` and
+  `VerticalSync` wrapped their double phase accumulators with
+  `x -= std::floor(x)` on the loop-carried chain, and floored again for the
+  float output. The phase only ever leaves [0, 1) by less than a cycle (the
+  advance adds omega < 1; the PI snap moves it by |kp * err| <= 0.5 with kp in
+  [0, 1] and err in [-0.5, 0.5)), and over (-1, 2) `x - floor(x)` is exactly
+  `x >= 1 ? x - 1 : x < 0 ? x + 1 : x` - floor only picks which of -1/0/+1 to
+  subtract, and the subtraction is the same IEEE op. `dsp::wrap_phase` is that
+  compare form; the snap wraps immediately so the output is a bare
+  `static_cast<float>`. The compares predict perfectly (one wrap per line /
+  per field), so the chain is the add alone. RF fixture (wb3_airspy x10, 20
+  MS/s, 12 deposit threads), cycles:u by symbol: HorizontalSweep::process
+  3.30G -> 1.06G (3.1x), VerticalSync::process 3.38G -> 1.65G (2.0x), the
+  pair -59%; the decode thread 26.1G -> 22.3G (-15%), dropping below the sink
+  thread. Wall neutral (median of 6: 7.67s -> 7.75s, noise-bimodal), user CPU
+  40.8s -> 40.0s. Renders and composite frame dumps byte-identical; ctest
+  green with the `==` block-invariance tests untouched.
 
 ## Dead ends (measured, do not repeat)
 
@@ -192,7 +209,7 @@ changes on the full-render A/B, never a microbench delta.
   ~28% (now mostly the AGC and the pass-1 NCO mix, each latency-bound on an
   8-cycle loop-carried double chain that scalar micro-opts cannot touch - the
   AGC's per-sample divide is fully hidden under its chain, don't chase it),
-  the sweeps ~25%. Remaining levers: the std::simd FIR widening below;
+  the sweeps ~25% (~12% after #95). Remaining levers: the std::simd FIR widening below;
   blocking the pass-1 phasor recurrence (advance by step^8, ~-13% of
   decode_into) - but that ULP-shifts the NCO *inside the APC feedback loop*,
   so it needs its own tolerance-based verification protocol, deliberately not
