@@ -67,8 +67,7 @@ std::span<const VSample> VerticalSync::process(std::span<const SyncSample> in) {
       if (!have_field_ || since >= min_gap) {
         // PI correction: v_phase should be 0 at the field-sync anchor.
         const double err = dsp::wrap_error(v_phase_);
-        // |kp * err| <= 0.5 (kp in [0, 1], err in [-0.5, 0.5)): the snap
-        // leaves [0, 1) by less than a cycle, so one wrap restores it.
+        // The snap moves v_phase_ by at most half a cycle, so one wrap restores it.
         v_phase_ = dsp::wrap_phase(v_phase_ - cfg_.pll_kp * err);
         omega_ = std::clamp(omega_ - cfg_.pll_ki * err, omega_lo, omega_hi);
         last_field_sample_ = sample_index_;

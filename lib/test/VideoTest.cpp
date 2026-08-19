@@ -436,8 +436,8 @@ TEST_CASE("Screen fades and emits on the free-running retrace - no sync detectio
   // The bug this pins: with the fade keyed on DETECTED field starts, unlocked
   // input (cold start, a mistuned carrier during AFC pull-in) deposited with
   // the decay switched off and integrated to a white screen no real set could
-  // show. The retrace is the flywheel's v_phase wrap, which free-runs: with
-  // field_start never set, the phosphor must still fade each field and the
+  // show. The retrace is the flywheel's v_phase wrap, which free-runs: with no
+  // field ever detected, the phosphor must still fade each field and the
   // field callback must still fire (the rolling picture).
   const video::ScreenConfig cfg{.width = 8,
       .height = 8,
@@ -466,7 +466,7 @@ TEST_CASE("Screen fades and emits on the free-running retrace - no sync detectio
   };
 
   // The callback count is the pin: on the detection-gated code it is zero
-  // (field_start is never set), so the fade never ran either. Charge
+  // (no field is ever detected), so the fade never ran either. Charge
   // convergence itself can't be asserted through the quantised readout - its
   // white normalisation tracks the buffer, so any steady state reads
   // full-scale whether or not the fade runs.

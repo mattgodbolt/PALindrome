@@ -96,8 +96,7 @@ std::span<const BeamSample> HorizontalSweep::process(std::span<const SyncSample>
         const double err = dsp::wrap_error(leading_edge_phase_);
         const double kp = locked_ ? cfg_.pll_kp : cfg_.acq_kp;
         const double ki = locked_ ? cfg_.pll_ki : cfg_.acq_ki;
-        // |kp * err| <= 0.5 (kp in [0, 1], err in [-0.5, 0.5)), so the snap
-        // can only leave [0, 1) by less than a cycle: one wrap restores it.
+        // The snap moves phase_ by at most half a cycle, so one wrap restores it.
         phase_ = dsp::wrap_phase(phase_ - kp * err);
         omega_ = std::clamp(omega_ - ki * err, omega_lo, omega_hi);
         if (std::abs(err) <= cfg_.coincidence_window)

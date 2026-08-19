@@ -15,12 +15,16 @@ namespace palindrome::dsp {
   return e < 0.5 ? e : e - 1.0;
 }
 
-// Wrap a phase in cycles into [0, 1), given it is already within one cycle of
+// Wrap a phase in cycles into [0, 1], given it is already within one cycle of
 // that range - (-1, 2). Over that range it is bit-identical to x - std::floor(x)
 // (the floor only ever picks which of -1/0/+1 to subtract, and the subtraction
 // is the same IEEE operation either way) but keeps the round-to-integer off the
 // oscillators' loop-carried chain: the compares predict perfectly, a wrap firing
-// once per line or once per field.
+// once per line or once per field. The closed top end is real: x in (-2^-54, 0)
+// rounds to exactly 1.0 through x + 1.0, as it did through the floor form, and
+// the consumers key on the phase dropping, not on it being zero. The one
+// difference from the floor form is the sign of zero (-0.0 passes through where
+// floor gave +0.0); no accumulator here can produce a -0.0.
 [[nodiscard]] inline double wrap_phase(double x) noexcept {
   if (x >= 1.0)
     return x - 1.0;
