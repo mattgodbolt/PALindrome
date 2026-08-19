@@ -1,12 +1,10 @@
 #pragma once
 
-#include "palindrome/buffer.hpp"
 #include "palindrome/deposit_backend.hpp"
 #include "palindrome/splat.hpp"
 #include "palindrome/video_types.hpp"
 
 #include <cstddef>
-#include <cstdint>
 #include <functional>
 #include <memory>
 #include <span>
@@ -222,24 +220,26 @@ private:
   // The phosphor itself - the framebuffer the splats land in, its per-field
   // fade and the quantised readout - lives behind the DepositBackend seam (the
   // CPU backend is today's code; a GPU one can take the same record stream).
-  // The Screen keeps the control pass and the white reference, and hands the
-  // records over in slabs. mutable: the phosphor is the readout, but the deposit
-  // into it is batched and materialised lazily by flush() (called from the const
-  // snapshot), so the charge committed by the splats is logically already part
-  // of the picture.
+  // The Screen keeps the control pass and the white reference. The backend is
+  // held by pointer, so the const readers below (snapshot, latched_frame) can
+  // still have it land the committed records: the deposit is batched and
+  // materialised lazily, but the charge the records carry is logically already
+  // part of the picture, so a read doesn't disturb the running sim.
   std::unique_ptr<DepositBackend> backend_;
   float field_decay_ = 1.0f; // whole-buffer multiply applied once per field, by the backend
 
-  // Deferred deposit. The per-sample control pass records one SplatRecord per
-  // visible sample into splats_; flush() hands the slab recorded so far to the
-  // backend and clears. It runs at every line start, at the field boundary, and
+  // Deferred deposit. The per-sample control pass writes one SplatRecord per
+  // visible sample straight into staging the backend hands out (slab_, acquired
+  // for the rest of the block); flush() commits the slab_n_ written so far and
+  // drops the span. It runs at every line start, at the field boundary, and
   // lazily on any read, so a slab-oriented backend sees a steady stream and the
   // CPU backend batches internally to the field its band-threading wants.
   // Recording rather than painting keeps every pixel's adds in sample order
   // (identical output) while making a field's deposits one list the apply can
-  // fan across cores.
-  mutable Buffer<SplatRecord> splats_; // the pending slab (accumulated across blocks within a line)
-  void flush() const; // hand splats_ to the backend, then clear (idempotent)
+  // fan across cores. mutable for the lazy flush from the const readers.
+  mutable std::span<SplatRecord> slab_; // the acquired staging; empty = re-acquire before writing
+  mutable std::size_t slab_n_ = 0; // records written into slab_ and not yet committed
+  void flush() const; // commit slab_n_ records to the backend, then drop slab_ (idempotent)
 
   // FieldEvent::latch() support: the backend keeps the phosphor copied aside
   // at a field boundary and the white reference is kept here, so
@@ -270,7 +270,7 @@ private:
   // EHT focus softening quantises the spot into kFocusClasses sizes, one table
   // set per class; the active class is chosen per LINE (the EHT moves on field
   // timescales) and recorded on each splat so the deferred apply picks the right
-  // kernel. The tables themselves are handed to deposit_ as SplatKernels.
+  // kernel. The tables themselves are handed to the backend as SplatKernels.
   static constexpr std::size_t kGaussBins = 4096;
   static constexpr std::size_t kFocusClasses = 8;
   struct SplatLut {

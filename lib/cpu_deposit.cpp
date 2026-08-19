@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <span>
 #include <utility>
 #include <vector>
@@ -34,33 +33,38 @@ void readout_encoded(
 }
 } // namespace
 
-CpuDepositBackend::CpuDepositBackend(std::size_t width, std::size_t height, std::size_t channels, std::size_t lanes) :
-    width_{width}, height_{height}, channels_{channels}, lanes_{lanes}, bright_(width * height * channels, 0.0f) {}
-
-void CpuDepositBackend::set_kernels(const SplatKernels &kernels) {
-  deposit_ = std::make_unique<SplatDeposit>(width_, height_, channels_, lanes_, kernels);
-}
+CpuDepositBackend::CpuDepositBackend(
+    std::size_t width, std::size_t height, std::size_t channels, std::size_t lanes, SplatKernels kernels) :
+    width_{width}, height_{height}, channels_{channels}, deposit_{width, height, channels, lanes, std::move(kernels)},
+    bright_(width * height * channels, 0.0f) {}
 
 void CpuDepositBackend::prepare(std::size_t max_records) {
   pending_.reserve(max_records);
-  deposit_->prepare(max_records); // size the deposit's index buffer for a field
+  deposit_.prepare(max_records); // size the deposit's index buffer for a field
 }
 
-void CpuDepositBackend::enqueue(std::span<const SplatRecord> records) {
-  // Stage the slab; grow if this field overran the prepare() budget (a caller
-  // that skipped prepare, e.g. a test, starts from nothing).
-  const auto have = pending_.size();
-  if (have + records.size() > pending_.capacity())
-    pending_.reserve(
-        std::max(have + records.size(), pending_.capacity() ? pending_.capacity() * 2 : std::size_t{1} << 16));
-  const auto slot = pending_.write_n(have + records.size()).subspan(have);
-  std::ranges::copy(records, slot.begin());
+std::span<SplatRecord> CpuDepositBackend::acquire(std::size_t max) {
+  // The tail beyond the committed run. Grow (doubling) only if the committed
+  // run plus this request overran the prepare() budget - a caller that skipped
+  // prepare, e.g. a test, starts from nothing. Nothing is acquired across the
+  // reserve, so the relocation invalidates no live span.
+  const auto committed = pending_.size();
+  const auto need = committed + max;
+  if (need > pending_.capacity())
+    pending_.reserve(std::max(need, pending_.capacity() ? pending_.capacity() * 2 : std::size_t{1} << 16));
+  return {pending_.data() + committed, max};
+}
+
+void CpuDepositBackend::commit(std::size_t n) {
+  // write_n only moves the logical size (no copy, no zero-fill); the records
+  // are already in place, written through the acquired span.
+  static_cast<void>(pending_.write_n(pending_.size() + n));
 }
 
 void CpuDepositBackend::apply_pending() {
   if (pending_.empty())
     return;
-  deposit_->apply(pending_.view(), bright_);
+  deposit_.apply(pending_.view(), bright_);
   pending_.clear();
 }
 
@@ -75,35 +79,39 @@ void CpuDepositBackend::latch() {
   latch_bright_.assign(bright_.begin(), bright_.end());
 }
 
-Frame CpuDepositBackend::quantise(const std::vector<float> &bright, const Readout &readout) const {
+Frame CpuDepositBackend::quantise(const std::vector<float> &bright, const Readout &ro) const {
   // Scale by the white reference (the steady-state phosphor brightness a
   // full-white pixel reaches), one shared scale so hue is preserved. Cells
   // above it clip into white, as a real tube does - no per-frame statistic, so
   // the exposure is causal and doesn't breathe.
   std::vector<std::uint8_t> pixels(bright.size());
-  if (readout.gamma == 1.0) {
+  if (ro.gamma == 1.0) {
     // Linear readout: the raw phosphor light, straight scale-and-quantise (the
     // buffer already holds the displayed charge; decay is applied per field).
-    const float scale = readout.white > 0.0 ? static_cast<float>(255.0 * readout.gain / readout.white) : 0.0f;
+    const float scale = ro.white > 0.0 ? static_cast<float>(255.0 * ro.gain / ro.white) : 0.0f;
     readout_linear(bright.data(), pixels.data(), bright.size(), scale);
   }
   else {
     // The "camera": encode the linear light for a display that will decode it
-    // with readout.gamma, so the viewer sees the phosphor's light and not a
+    // with ro.gamma, so the viewer sees the phosphor's light and not a
     // double-gamma'd version. Once per emitted frame, not per sample.
-    const float scale = readout.white > 0.0 ? static_cast<float>(readout.gain / readout.white) : 0.0f;
-    readout_encoded(bright.data(), pixels.data(), bright.size(), scale, static_cast<float>(1.0 / readout.gamma));
+    const float scale = ro.white > 0.0 ? static_cast<float>(ro.gain / ro.white) : 0.0f;
+    readout_encoded(bright.data(), pixels.data(), bright.size(), scale, static_cast<float>(1.0 / ro.gamma));
   }
   return Frame{.pixels = std::move(pixels), .width = width_, .height = height_, .channels = channels_};
 }
 
-void CpuDepositBackend::readout(const Readout &readout, const FrameSink &sink) {
+void CpuDepositBackend::readout(const Readout &ro, FrameSink sink) {
   apply_pending();
-  sink(quantise(bright_, readout));
+  sink(quantise(bright_, ro));
 }
 
-void CpuDepositBackend::readout_latched(const Readout &readout, const FrameSink &sink) {
-  sink(quantise(latch_bright_, readout));
+void CpuDepositBackend::readout_latched(const Readout &ro, FrameSink sink) {
+  if (latch_bright_.empty()) {
+    readout(ro, std::move(sink));
+    return;
+  }
+  sink(quantise(latch_bright_, ro));
 }
 
 } // namespace palindrome::video

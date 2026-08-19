@@ -175,8 +175,8 @@ Screen::Screen(const ScreenConfig &cfg) :
         .stride_y = static_cast<std::int32_t>(y_classes_[c].stride),
         .lut_x = x_classes_[c].lut.data(),
         .lut_y = y_classes_[c].lut.data()});
-  backend_ = std::make_unique<CpuDepositBackend>(cfg_.width, cfg_.height, channels_, cfg_.deposit_lanes);
-  backend_->set_kernels(kernels);
+  backend_ =
+      std::make_unique<CpuDepositBackend>(cfg_.width, cfg_.height, channels_, cfg_.deposit_lanes, std::move(kernels));
   limiting_ = cfg_.bcl_threshold > 0.0;
   // The line-load sensor runs for any consumer: the EHT, the pull or a limiter.
   loading_ = cfg_.eht_sag > 0.0 || cfg_.line_pull > 0.0 || limiting_;
@@ -235,12 +235,11 @@ Screen::Screen(const ScreenConfig &cfg) :
 }
 
 void Screen::prepare(std::size_t max_in) {
-  // The splat buffer accumulates a whole field before the boundary flush, so size
-  // it for a field's worth of samples plus one block straddling the boundary. It
-  // also grows on demand in process(), so a caller that skips prepare (tests) is
-  // safe; this just avoids reallocation on the streaming path.
+  // The backend's staging holds a whole field of records before the boundary
+  // lands them, plus one block straddling the boundary. It also grows on demand
+  // under acquire(), so a caller that skips prepare (tests) is safe; this just
+  // avoids reallocation on the streaming path.
   const auto per_field = static_cast<std::size_t>(cfg_.sample_rate_hz / cfg_.field_hz);
-  splats_.reserve(per_field + max_in);
   backend_->prepare(per_field + max_in);
 }
 
@@ -478,10 +477,15 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     // Record the splat for the backend to deposit at the flush rather than
     // painting here: deferring keeps every pixel's adds in sample order
     // (identical output) while making the deposits one list the apply can fan
-    // across cores. Append, growing the buffer if the slab overran the reserve.
-    if (splats_.size() >= splats_.capacity())
-      splats_.reserve(splats_.capacity() ? splats_.capacity() * 2 : std::size_t{1} << 16);
-    splats_.push() = SplatRecord{.x_pixel = static_cast<std::int16_t>(xf_floor),
+    // across cores. The record goes straight into the backend's staging; the
+    // span is acquired for the rest of the block, so it is re-acquired only
+    // after a flush (a line start, the retrace, or a read from on_field) has
+    // committed and dropped it.
+    if (slab_n_ == slab_.size()) [[unlikely]] {
+      flush();
+      slab_ = backend_->acquire(n - i);
+    }
+    slab_[slab_n_++] = SplatRecord{.x_pixel = static_cast<std::int16_t>(xf_floor),
         .y_pixel = static_cast<std::int16_t>(yc_floor),
         .x_bin = static_cast<std::uint16_t>(bin_x),
         .y_bin = static_cast<std::uint16_t>(bin_y),
@@ -491,10 +495,10 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
 }
 
 void Screen::flush() const {
-  if (splats_.empty())
-    return;
-  backend_->enqueue(splats_.view());
-  splats_.clear();
+  if (slab_n_ > 0)
+    backend_->commit(slab_n_);
+  slab_n_ = 0;
+  slab_ = {};
 }
 
 Readout Screen::readout_of(double white_ref) const {
@@ -506,11 +510,26 @@ Readout Screen::readout_of(double white_ref) const {
       .white = white_ref * phosphor_gain_, .gain = tracking_ ? cfg_.contrast : 1.0, .gamma = cfg_.readout_gamma};
 }
 
+namespace {
+// The synchronous readers: the backend must deliver the Frame before the
+// readout call returns (the CPU backend does); an asynchronous backend needs
+// the callback form, which is not wired here yet.
+Screen::Frame frame_now(bool delivered, Screen::Frame &&frame) {
+  if (!delivered)
+    throw std::logic_error{"Screen: the deposit backend did not deliver the frame synchronously"};
+  return std::move(frame);
+}
+} // namespace
+
 Screen::Frame Screen::snapshot() const {
   flush();
   Frame frame;
-  backend_->readout(readout_of(white_ref_), [&](Frame f) { frame = std::move(f); });
-  return frame;
+  bool delivered = false;
+  backend_->readout(readout_of(white_ref_), [&](Frame f) {
+    frame = std::move(f);
+    delivered = true;
+  });
+  return frame_now(delivered, std::move(frame));
 }
 
 void Screen::latch_boundary() {
@@ -523,8 +542,12 @@ Screen::Frame Screen::latched_frame() const {
   if (latch_white_ < 0.0)
     return snapshot();
   Frame frame;
-  backend_->readout_latched(readout_of(latch_white_), [&](Frame f) { frame = std::move(f); });
-  return frame;
+  bool delivered = false;
+  backend_->readout_latched(readout_of(latch_white_), [&](Frame f) {
+    frame = std::move(f);
+    delivered = true;
+  });
+  return frame_now(delivered, std::move(frame));
 }
 
 } // namespace palindrome::video
