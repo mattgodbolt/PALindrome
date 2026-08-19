@@ -1,8 +1,7 @@
 #include "palindrome/screen.hpp"
 
+#include "palindrome/cpu_deposit.hpp"
 #include "palindrome/gaussian.hpp"
-#include "palindrome/pow01.hpp"
-#include "palindrome/restrict_ptr.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -23,25 +22,6 @@ constexpr double kSystemIWhiteDrive = kBlankingLevel - kPeakWhiteLevel;
 // gain returns from a deep limit over roughly half a field once the overdrive
 // clears. Attack is per-line (the charge path is fast by design).
 constexpr double kPwlRecover = 1.005;
-
-// The readout kernels take restrict_ptr because the byte stores would
-// otherwise be assumed to alias everything (char aliases all) - including the
-// framebuffer and the vectors' own control blocks - which blocks the
-// autovectorisation both loops rely on. pow01 rather than std::pow in the
-// encoded kernel for the same reason: an errno-setting libm call pins the
-// loop scalar (issue #60).
-void readout_linear(restrict_ptr<const float> bright, restrict_ptr<std::uint8_t> px, std::size_t n, float scale) {
-  for (std::size_t idx = 0; idx < n; ++idx)
-    px[idx] = static_cast<std::uint8_t>(std::clamp(bright[idx] * scale, 0.0f, 255.0f) + 0.5f);
-}
-
-void readout_encoded(
-    restrict_ptr<const float> bright, restrict_ptr<std::uint8_t> px, std::size_t n, float scale, float inv) {
-  for (std::size_t idx = 0; idx < n; ++idx) {
-    const float lit = std::clamp(bright[idx] * scale, 0.0f, 1.0f);
-    px[idx] = static_cast<std::uint8_t>(255.0f * dsp::pow01(lit, inv) + 0.5f);
-  }
-}
 
 // Validated on the way into the first mem-initialiser (the ChromaDecoder
 // pattern), so a bad config throws before the width*height framebuffer - whose
@@ -119,8 +99,7 @@ const ScreenConfig &validate(const ScreenConfig &cfg) {
 } // namespace
 
 Screen::Screen(const ScreenConfig &cfg) :
-    cfg_{validate(cfg)}, channels_{cfg.colour ? std::size_t{3} : std::size_t{1}}, tracking_{cfg.tracked_white},
-    bright_(cfg.width * cfg.height * (cfg.colour ? 3 : 1), 0.0f) {
+    cfg_{validate(cfg)}, channels_{cfg.colour ? std::size_t{3} : std::size_t{1}}, tracking_{cfg.tracked_white} {
   // Decay per sample so that brightness falls by 1/e over persistence_fields
   // field periods: tau_samples = persistence * (sample_rate / field_hz).
   const double tau_samples = cfg_.persistence_fields * cfg_.sample_rate_hz / cfg_.field_hz;
@@ -183,8 +162,8 @@ Screen::Screen(const ScreenConfig &cfg) :
     y_classes_.push_back(build(sigma_rows * grow));
     x_classes_.push_back(build(sigma_cols * grow));
   }
-  // Hand the per-class kernels to the deposit, which resolves a splat's (class,
-  // bin) to its weight rows and spot geometry. The LUT storage lives in
+  // Hand the per-class kernels to the deposit backend, which resolves a splat's
+  // (class, bin) to its weight rows and spot geometry. The LUT storage lives in
   // y_classes_/x_classes_ for this Screen's lifetime, so the pointers stay valid.
   SplatKernels kernels;
   kernels.bins = kGaussBins;
@@ -196,7 +175,8 @@ Screen::Screen(const ScreenConfig &cfg) :
         .stride_y = static_cast<std::int32_t>(y_classes_[c].stride),
         .lut_x = x_classes_[c].lut.data(),
         .lut_y = y_classes_[c].lut.data()});
-  deposit_ = std::make_unique<SplatDeposit>(cfg_.width, cfg_.height, channels_, cfg_.deposit_lanes, std::move(kernels));
+  backend_ = std::make_unique<CpuDepositBackend>(cfg_.width, cfg_.height, channels_, cfg_.deposit_lanes);
+  backend_->set_kernels(kernels);
   limiting_ = cfg_.bcl_threshold > 0.0;
   // The line-load sensor runs for any consumer: the EHT, the pull or a limiter.
   loading_ = cfg_.eht_sag > 0.0 || cfg_.line_pull > 0.0 || limiting_;
@@ -261,7 +241,7 @@ void Screen::prepare(std::size_t max_in) {
   // safe; this just avoids reallocation on the streaming path.
   const auto per_field = static_cast<std::size_t>(cfg_.sample_rate_hz / cfg_.field_hz);
   splats_.reserve(per_field + max_in);
-  deposit_->prepare(per_field + max_in); // size the deposit's index buffer for a field
+  backend_->prepare(per_field + max_in);
 }
 
 namespace {
@@ -413,11 +393,12 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
       flush(); // land this field's splats so the snapshot below reads a complete field
       if (on_field)
         on_field(FieldEvent{*this});
-      for (float &b: bright_)
-        b *= field_decay_;
+      backend_->end_field(field_decay_);
     }
-    if (hbeam[i].line_start)
+    if (hbeam[i].line_start) {
+      flush(); // a line is the slab a streaming backend is fed
       start_line();
+    }
 
     // Gun drives: luma sets the Y term; the matrix adds the colour difference.
     // Each gun cuts off at zero, then takes its gamma. Grey = the luma gun alone.
@@ -494,10 +475,10 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
     if (bin_y >= kGaussBins)
       bin_y = kGaussBins - 1;
 
-    // Record the splat to deposit at the field flush rather than painting bright_
-    // here: deferring keeps every pixel's adds in sample order (identical output)
-    // while making a field's deposits one list the apply can fan across cores.
-    // Append, growing the buffer if this field overran the reserve.
+    // Record the splat for the backend to deposit at the flush rather than
+    // painting here: deferring keeps every pixel's adds in sample order
+    // (identical output) while making the deposits one list the apply can fan
+    // across cores. Append, growing the buffer if the slab overran the reserve.
     if (splats_.size() >= splats_.capacity())
       splats_.reserve(splats_.capacity() ? splats_.capacity() * 2 : std::size_t{1} << 16);
     splats_.push() = SplatRecord{.x_pixel = static_cast<std::int16_t>(xf_floor),
@@ -512,50 +493,38 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
 void Screen::flush() const {
   if (splats_.empty())
     return;
-  deposit_->apply(splats_.view(), bright_);
+  backend_->enqueue(splats_.view());
   splats_.clear();
 }
 
-Screen::Frame Screen::quantise(const std::vector<float> &bright, double white_ref) const {
-  // Scale by the white reference (the steady-state phosphor brightness a
-  // full-white pixel reaches), one shared scale so hue is preserved. Cells
-  // above it clip into white, as a real tube does - no per-frame statistic, so
-  // the exposure is causal and doesn't breathe. In absolute mode the camera is
-  // fixed (contrast already acted on the gun drive); in tracked mode the pot
-  // keeps its old readout meaning and scales here.
-  const double white = white_ref * phosphor_gain_;
-  const double readout = tracking_ ? cfg_.contrast : 1.0;
-  std::vector<std::uint8_t> pixels(bright.size());
-  if (cfg_.readout_gamma == 1.0) {
-    // Linear readout: the raw phosphor light, straight scale-and-quantise (the
-    // buffer already holds the displayed charge; decay is applied per field).
-    const float scale = white > 0.0 ? static_cast<float>(255.0 * readout / white) : 0.0f;
-    readout_linear(bright.data(), pixels.data(), bright.size(), scale);
-  }
-  else {
-    // The "camera": encode the linear light for a display that will decode it
-    // with readout_gamma, so the viewer sees the phosphor's light and not a
-    // double-gamma'd version. Once per emitted frame, not per sample.
-    const float scale = white > 0.0 ? static_cast<float>(readout / white) : 0.0f;
-    readout_encoded(bright.data(), pixels.data(), bright.size(), scale, static_cast<float>(1.0 / cfg_.readout_gamma));
-  }
-  return Frame{.pixels = std::move(pixels), .width = cfg_.width, .height = cfg_.height, .channels = channels_};
+Readout Screen::readout_of(double white_ref) const {
+  // The white point is the steady-state phosphor brightness a full-white pixel
+  // reaches. In absolute mode the camera is fixed (contrast already acted on
+  // the gun drive); in tracked mode the pot keeps its old readout meaning and
+  // scales at the readout.
+  return Readout{
+      .white = white_ref * phosphor_gain_, .gain = tracking_ ? cfg_.contrast : 1.0, .gamma = cfg_.readout_gamma};
 }
 
 Screen::Frame Screen::snapshot() const {
   flush();
-  return quantise(bright_, white_ref_);
+  Frame frame;
+  backend_->readout(readout_of(white_ref_), [&](Frame f) { frame = std::move(f); });
+  return frame;
 }
 
 void Screen::latch_boundary() {
-  latch_bright_.assign(bright_.begin(), bright_.end());
+  flush();
+  backend_->latch();
   latch_white_ = white_ref_;
 }
 
 Screen::Frame Screen::latched_frame() const {
   if (latch_white_ < 0.0)
     return snapshot();
-  return quantise(latch_bright_, latch_white_);
+  Frame frame;
+  backend_->readout_latched(readout_of(latch_white_), [&](Frame f) { frame = std::move(f); });
+  return frame;
 }
 
 } // namespace palindrome::video
