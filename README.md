@@ -88,6 +88,19 @@ structure, and what the timebases locked to. No picture, just numbers. It and
 `demod` read through the plain low-pass front end rather than the SAW shape,
 so they measure the signal, not the receiver.
 
+`palindrome levels --input composite --sample-rate 20e6 --sample-format u8
+capture.bin` is the amplitude counterpart of `sync`: it slices line syncs out
+of the raw samples - before the affine map, so the report is in the source's
+own units - and measures sync tip, blanking, sync amplitude, burst and
+picture levels, split into a segment per average-picture-level step. A
+cycling test capture of white/black/colour screens therefore reports each
+screen separately; a normal recording is one segment. It ends with the flag
+values the numbers imply: `--composite-sync`, a contrast hint from white
+against the standard's geometry, and a burst-oversize factor for judging
+saturation. Suggestions, not calibration; the pots still exist for a reason.
+A recording path works too, and `--sample-rate` is what marks the input as
+headerless raw (from a file, or stdin with `-`).
+
 `palindrome demod corpus/wb3 -o /tmp/wb3.wav` writes the demodulated
 composite as a WAV, slowed 1000x (`--slowdown`) so Audacity will open it at
 audio rates. A surprisingly pleasant way to stare at sync pulses.

@@ -136,6 +136,11 @@ struct EnvelopeStream {
 EnvelopeStream stream_envelope(const LoadedRecording &loaded, const EnvelopeOptions &opts,
     const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples = std::size_t{1} << 16);
 
+// Stream real samples from stdin as float blocks until the pipe closes — the
+// live counterpart of stream_real_blocks (which reads a named file).
+void stream_real_stdin(SampleFormat format, const std::function<void(std::span<const float>)> &on_block,
+    std::size_t block_samples = std::size_t{1} << 16);
+
 // Live variant: the same demod, but the real-IF samples come from stdin (a
 // continuous SDR stream, e.g. `airspy_rx -r /dev/stdout | palindrome render
 // --live`) instead of a file, and it runs until stdin closes. `sample_rate_hz`
