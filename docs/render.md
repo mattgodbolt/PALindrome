@@ -149,8 +149,9 @@ at the ceiling, then recovers slowly once the overdrive clears. The one line
 of grace means an abrupt colour-to-white test pattern doesn't trip it, and
 the drive is sensed through a ~1 microsecond time constant - the sense
 circuit's RC - so the sub-microsecond ringing on sharp pixel edges doesn't
-count as peak white; only overloads that persist do. Crank `--contrast` up
-and watch it push back.
+count as peak white; only overloads that persist do (a dense oscillation
+still registers at its mean - the filter only strips the AC part). Crank
+`--contrast` up and watch it push back.
 
 The beam is also the EHT supply's load, and the supply is not stiff. A bright
 picture sags the final-anode voltage (`--eht-sag`, default 0.06 at a

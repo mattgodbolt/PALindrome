@@ -335,8 +335,11 @@ private:
   double pwl_gain_ = 1.0; // PWL gain: pulled fast while over, slow recovery
   bool pwl_armed_ = false; // previous line exceeded (the one-line delay)
   double pwl_line_peak_ = 0.0; // this line's peak band-limited gun drive
-  double pwl_sense_ = 0.0; // the sense one-pole's state (a per-sample IIR, hence double)
-  double pwl_sense_alpha_ = 0.0; // its per-sample step, kPwlSenseTau in sample_rate_hz units
+  // The sense one-pole (kPwlSenseTau in screen.cpp). Its state is double
+  // because it accumulates across a line's samples and the drive/peak path it
+  // joins is already double - a float here would only add conversions.
+  double pwl_sense_ = 0.0; // band-limited sensed drive
+  double pwl_sense_alpha_ = 0.0; // per-sample charge fraction: 1 - exp(-1/(tau * sample_rate_hz))
   double contrast_gain_ = 1.0; // the pot: cfg_.contrast (absolute), 1 (tracked)
   double video_gain_ = 1.0; // the per-line gain applied to the drive
   void start_line(); // finalize the line load, update eht_, refresh the mapping

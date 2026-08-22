@@ -827,7 +827,8 @@ TEST_CASE("peak-white limiter: sub-microsecond ringing is ignored, a broad overl
       for (std::size_t k = 0; k < kActive; ++k) {
         const bool spiking = k >= kActive / 2 && k < kActive / 2 + spike_samples;
         pic.push_back(video::ChromaSample{.luma = spiking ? -0.7f : -0.15f});
-        hbeam.push_back(video::BeamSample{.h_phase = 0.2f + 0.7f * static_cast<float>(k) / kActive});
+        hbeam.push_back(
+            video::BeamSample{.h_phase = 0.2f + 0.7f * static_cast<float>(k) / static_cast<float>(kActive)});
         vbeam.push_back(video::VSample{.v_phase = 0.5f});
       }
       screen.process(pic, hbeam, vbeam);

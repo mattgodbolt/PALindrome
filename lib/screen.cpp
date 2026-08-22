@@ -355,7 +355,9 @@ void Screen::start_line() {
     pwl_line_peak_ = 0.0;
     // Line blanking is ~10 tau of beam-off, which discharges the sensor before
     // the next line's video; resetting here buys that for free instead of
-    // spending a decay multiply on every blanked sample.
+    // spending a decay multiply on every blanked sample. It also keeps the
+    // sensor stateless across lines, so the limiter loop stays first-order -
+    // the sense lag can't cause hunting.
     pwl_sense_ = 0.0;
   }
   if (limiting_ || pwl_on_)
