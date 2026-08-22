@@ -4,6 +4,7 @@
 #include "palindrome/demod.hpp"
 #include "palindrome/fir.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -15,6 +16,7 @@
 #include <print>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -240,17 +242,29 @@ VisionFrontEnd make_front_end(double sample_rate_hz, double carrier_hz, const En
     std::size_t block_samples, std::vector<std::string> &warnings) {
   VisionFrontEnd fe;
   if (opts.input == InputMode::composite) {
-    // Filter only when decimating: at the capture rate the composite is already
-    // band-limited, and a cutoff near 4.43 MHz would bite into the chroma for
-    // no reason. Decimating first also means the clamp sees the low-passed
-    // signal, so a noise spike cannot drag it as deep.
+    // The composite signal is band-limited; the source's noise is not, and
+    // unfiltered the capture's full bandwidth of it lands in luma - no set
+    // shows that, so the vision low-pass runs here as on RF (decimating when
+    // asked; at /1 it is a pure filter). Filtering ahead of the clamp also
+    // means a noise spike cannot drag the sync tip as deep. A cutoff at or
+    // above the output Nyquist means "wide open" and bypasses the filter -
+    // except when decimating, where the anti-alias FIR is not optional and an
+    // over-Nyquist cutoff earns the aliasing warning instead.
     const auto rate_after = sample_rate_hz / static_cast<double>(opts.decimation);
-    if (opts.decimation > 1) {
-      if (opts.cutoff_hz >= rate_after / 2.0)
-        warnings.push_back(std::format("cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing",
-            opts.cutoff_hz / 1e6, rate_after / 2.0 / 1e6));
+    const auto wide_open = opts.cutoff_hz >= rate_after / 2.0;
+    if (!wide_open || opts.decimation > 1) {
+      auto corner_hz = opts.cutoff_hz;
+      if (wide_open) {
+        warnings.push_back(std::format(
+            "cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing; pass --cutoff below {:g} MHz",
+            opts.cutoff_hz / 1e6, rate_after / 2.0 / 1e6, rate_after / 2.0 / 1e6));
+        // lowpass_kernel rejects a corner at or past the INPUT Nyquist, so an
+        // over-Nyquist cutoff here designs the widest filter the kernel
+        // allows - as wide open as a mandatory anti-alias FIR can be.
+        corner_hz = std::min(corner_hz, 0.999 * sample_rate_hz / 2.0);
+      }
       fe.composite_lp.emplace(
-          dsp::lowpass_kernel(demod::kDefaultVisionTaps, sample_rate_hz, opts.cutoff_hz), opts.decimation);
+          dsp::lowpass_kernel(demod::kDefaultVisionTaps, sample_rate_hz, corner_hz), opts.decimation);
       fe.composite_lp->prepare(block_samples);
     }
     auto cfg = opts.composite;

@@ -29,7 +29,12 @@ private:
   double carrier_{0.0};
   double composite_scale_{0.0}; // volts at input full scale; 0 => nominal
   double composite_sync_v_{0.0}; // the source's sync amplitude in volts; 0 => nominal
-  double cutoff_{kDefaults.cutoff_hz};
+  // 0 => the mode's default: EnvelopeOptions' corner for RF, the composite
+  // vision band for composite - matching render, so this tool measures the
+  // same signal the decoder locks to. Measured on pattern.bin, the undecimated
+  // composite filter leaves the statistics alone (jitter 0.029 -> 0.026 us,
+  // equalising 30 -> 43 of ~31k pulses, line rate within 0.001%).
+  double cutoff_{0.0};
   // 0 = take the mode's default: /2 for RF, where sync only needs the slow
   // pulse shapes, and /1 for composite, where the pulse shapes are already at
   // baseband and there is no chroma to keep under Nyquist. Any explicit

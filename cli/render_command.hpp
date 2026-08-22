@@ -40,10 +40,9 @@ private:
   bool scan_{false}; // force a signal scan for the carrier even if metadata has one
   bool live_{false}; // decode a continuous stdin SDR stream instead of a recording file
   double sample_rate_{0.0}; // live input real sample rate Hz (the file path had it in metadata)
-  // Deliberately below EnvelopeOptions' 5.0 MHz default (which demod/sync keep):
-  // the flat-mode picture cutoff that keeps chroma while clearing the sound
-  // carrier after decimation.
-  double cutoff_{4.8e6};
+  // 0 => the mode's own default, resolved in run(): the two modes want
+  // different corners, so a single literal here would be wrong for one of them.
+  double cutoff_{0.0};
   double sync_cutoff_{kDefaults.sync_lp_cutoff_hz}; // narrow low-pass on the sync-detection branch
   std::size_t decimate_{0}; // 0 => auto from the sample rate (keep chroma below 0.7*Nyquist)
   std::size_t width_{720};

@@ -109,9 +109,20 @@ rather than merely tolerated: on RF such a source is stuck at low contrast
 because the AGC can only anchor the carrier tip, but here declaring its real
 sync amplitude restores full geometry and the slicer's margin with it.
 
-`--cutoff` is the one RF-shaped knob that stays live here, and only when
-`--decimate` is doing something: it sizes the anti-alias low-pass ahead of the
-decimation. At `--decimate 1` there is no filter at all, so it does nothing.
+`--cutoff` is the one RF-shaped knob that stays live here, because the
+band-limiting argument for skipping it only covers the signal. The noise is
+not band-limited: a source with a flat noise floor delivers the whole capture
+bandwidth of it into luma, several MHz more than the ~5.5 MHz video path of
+any real set would admit, and the picture reads visibly noisier than the same
+signal through a receiver. So composite runs the same vision low-pass the RF
+path uses, defaulting to 5.5 MHz (System I's vision bandwidth); an explicit
+`--cutoff` overrides it, and a cutoff at or above Nyquist disables the filter
+entirely, which is the old wide-open behaviour. The filter trims the upper
+chroma sideband slightly, as a real set does, and leaves the 4.43 MHz burst
+alone. When `--decimate` is doing something the same filter is also the
+anti-alias ahead of the decimation, and then it cannot be bypassed: an
+over-Nyquist cutoff gets the widest filter the input rate allows, plus an
+aliasing warning saying what to pass instead.
 
 Colour needs nothing extra. The subcarrier rides the composite rail exactly as
 it rides a detector's output, and the map's inversion rotates burst and chroma
