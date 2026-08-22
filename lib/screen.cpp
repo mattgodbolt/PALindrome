@@ -535,23 +535,34 @@ Readout Screen::readout_of(double white_ref) const {
 namespace {
 // The synchronous readers: the backend must deliver the Frame before the
 // readout call returns (the CPU backend does); an asynchronous backend needs
-// the callback form, which is not wired here yet.
-Screen::Frame frame_now(bool delivered, Screen::Frame &&frame) {
-  if (!delivered)
+// the callback form, which is not wired here yet. The sink writes into shared
+// heap state rather than the reader's stack, so a misbehaving asynchronous
+// backend that fires it after the reader has returned (and thrown) writes
+// somewhere harmless instead of into a dead frame - a logic error, not UB.
+struct PendingFrame {
+  Frame frame;
+  bool delivered = false;
+};
+
+DepositBackend::FrameSink sink_into(std::shared_ptr<PendingFrame> pending) {
+  return [pending = std::move(pending)](Frame f) {
+    pending->frame = std::move(f);
+    pending->delivered = true;
+  };
+}
+
+Screen::Frame frame_now(PendingFrame &pending) {
+  if (!pending.delivered)
     throw std::logic_error{"Screen: the deposit backend did not deliver the frame synchronously"};
-  return std::move(frame);
+  return std::move(pending.frame);
 }
 } // namespace
 
 Screen::Frame Screen::snapshot() const {
   flush();
-  Frame frame;
-  bool delivered = false;
-  backend_->readout(readout_of(white_ref_), [&](Frame f) {
-    frame = std::move(f);
-    delivered = true;
-  });
-  return frame_now(delivered, std::move(frame));
+  const auto pending = std::make_shared<PendingFrame>();
+  backend_->readout(readout_of(white_ref_), sink_into(pending));
+  return frame_now(*pending);
 }
 
 void Screen::latch_boundary() {
@@ -563,13 +574,9 @@ void Screen::latch_boundary() {
 Screen::Frame Screen::latched_frame() const {
   if (latch_white_ < 0.0)
     return snapshot();
-  Frame frame;
-  bool delivered = false;
-  backend_->readout_latched(readout_of(latch_white_), [&](Frame f) {
-    frame = std::move(f);
-    delivered = true;
-  });
-  return frame_now(delivered, std::move(frame));
+  const auto pending = std::make_shared<PendingFrame>();
+  backend_->readout_latched(readout_of(latch_white_), sink_into(pending));
+  return frame_now(*pending);
 }
 
 } // namespace palindrome::video

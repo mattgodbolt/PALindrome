@@ -43,8 +43,9 @@ struct Readout {
 // calls the sink synchronously, before readout returns; an asynchronous backend
 // may move the sink into its completion and call it later. The Screen's
 // synchronous accessors (snapshot / latched_frame / FieldEvent::frame) need a
-// synchronous backend; the asynchronous FieldEvent form is deliberately left
-// for the GPU stages.
+// synchronous backend - they throw if the sink has not fired by return, and a
+// late call lands in heap state the sink owns, harmlessly - and the
+// asynchronous FieldEvent form is deliberately left for the GPU stages.
 class DepositBackend {
 public:
   virtual ~DepositBackend() = default;
