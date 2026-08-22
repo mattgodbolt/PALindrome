@@ -118,7 +118,14 @@ public:
     qualify_ = at(1.0);
   }
 
-  void set_threshold(float threshold) { threshold_ = threshold; }
+  void set_threshold(float threshold) {
+    threshold_ = threshold;
+    // Reclassify the boundary sample under the new slice: an edge is a
+    // prev/current pair judged by ONE threshold, so a recalibration between
+    // chunks could otherwise fabricate or drop an edge at the seam.
+    if (index_ > 0)
+      prev_below_ = last_ < threshold_;
+  }
 
   void process(std::span<const float> x) {
     for (const float s: x)
@@ -137,6 +144,7 @@ private:
       if (width_ == 0 && !below) {
         width_ = line_.size() - 1; // samples spent below the slice: the pulse width
         if (width_ < qualify_) { // a chroma trough or noise blip, not a sync edge
+          ++rejected_; // the archetypal non-line pulse: the summary must count it
           collecting_ = false;
           line_.clear();
         }
@@ -154,6 +162,7 @@ private:
       line_.push_back(x);
     }
     prev_below_ = below;
+    last_ = x;
     ++index_;
   }
 
@@ -209,6 +218,7 @@ private:
   std::size_t width_lo_{};
   std::size_t width_hi_{};
   std::size_t index_ = 0; // global sample counter
+  float last_ = 0.0f; // most recent sample, so set_threshold can reclassify the seam
   bool prev_below_ = false;
   bool collecting_ = false;
   std::size_t leading_ = 0; // global index of the current collection's leading edge
@@ -327,13 +337,17 @@ int LevelsCommand::run() const {
       std::println(std::cerr, "levels: warning: {}", w);
   }
   const double rate = loaded ? loaded->sample_rate_hz : sample_rate_;
-  // The burst estimator wants a couple of samples per subcarrier cycle (and
-  // below ~9 MS/s the subcarrier does not even clear Nyquist), the porch
+  // Finite first: a nan compares false against any bound and an inf sails
+  // over it, and either then reaches the float-to-size_t window conversions,
+  // which are undefined for values a size_t cannot hold. Then the resolution
+  // floor: the burst estimator wants a couple of samples per subcarrier cycle
+  // (below ~9 MS/s the subcarrier does not even clear Nyquist) and the porch
   // windows a handful of samples to trim; below ~10 MS/s the microscope has
   // no lens.
-  if (rate < 1e7) {
-    std::println(
-        std::cerr, "levels: sample rate {:g} Hz is too low to resolve the measurement windows (wants 10 MS/s+)", rate);
+  if (!std::isfinite(rate) || rate < 1e7) {
+    std::println(std::cerr,
+        "levels: sample rate {:g} Hz is unusable - the measurement windows want a finite rate of 10 MS/s or more",
+        rate);
     return 1;
   }
 
@@ -451,28 +465,33 @@ int LevelsCommand::run() const {
       brightest = i;
   }
 
+  // Sync amplitude over EVERY measured line, not per segment: it is the one
+  // level the picture content cannot move, which is what makes it the anchor
+  // everything below divides by. Validated BEFORE any ratio prints, so a
+  // malformed input fails with this message rather than a page of inf.
+  const double sync_all = iq_mean_over(lines, [](const LineLevels &m) { return m.blank - m.tip; });
+  const double burst_all = iq_mean_over(lines, [](const LineLevels &m) { return m.burst_amp; });
+  if (!(sync_all > 0.0)) {
+    std::println(std::cerr, "levels: measured sync amplitude is not positive - the level report would be meaningless");
+    return 1;
+  }
+
   for (std::size_t i = 0; i < segments.size(); ++i) {
     const auto &seg = segments[i];
     const auto &st = stats[i];
     const auto seg_lines = lines_of(seg);
-    const double t0 = static_cast<double>(fields[seg.first].index) / video::kNominalFieldHz;
-    const double t1 = static_cast<double>(fields[seg.last].index + 1) / video::kNominalFieldHz;
+    // Timestamps from the measured sample positions, not the nominal 50 Hz
+    // field buckets, so an off-nominal source reports its true times.
+    const double t0 = static_cast<double>(seg_lines.front().leading) / rate;
+    const double t1 = seg.last + 1 < fields.size()
+                          ? static_cast<double>(lines[fields[seg.last + 1].first_line].leading) / rate
+                          : total_s;
     std::println("\nsegment {}: {:.2f}-{:.2f} s ({} fields, {} lines){}", i + 1, t0, t1, seg.last - seg.first + 1,
         seg_lines.size(), brightest && *brightest == i && segments.size() > 1 ? " - brightest" : "");
     std::println("  sync tip {:+.3f}, blanking {:+.3f}, sync amplitude {:.3f}", st.tip, st.blank, st.sync);
     std::println("  burst amplitude {:.3f} ({:.2f}x sync)", st.burst, st.burst / st.sync);
     std::println("  active mean {:+.3f} above blanking ({:.2f}x sync), near-peak {:+.3f} ({:.2f}x sync)", st.mean_above,
         st.mean_above / st.sync, st.peak_above, st.peak_above / st.sync);
-  }
-
-  // Sync amplitude over EVERY measured line, not per segment: it is the one
-  // level the picture content cannot move, which is what makes it the anchor
-  // the suggestions divide by.
-  const double sync_all = iq_mean_over(lines, [](const LineLevels &m) { return m.blank - m.tip; });
-  const double burst_all = iq_mean_over(lines, [](const LineLevels &m) { return m.burst_amp; });
-  if (!(sync_all > 0.0)) {
-    std::println(std::cerr, "levels: measured sync amplitude is not positive - no suggestions");
-    return 1;
   }
 
   std::println("\nsuggestions (measured starting points, not gospel):");
@@ -493,10 +512,15 @@ int LevelsCommand::run() const {
     std::println("  white/sync {:.2f} vs the standard's {:.2f} (brightest segment): white reaches {:.2f}x nominal, "
                  "so the contrast pot wants ~{:.2f} (1/{:.2f}) if that segment really shows peak white",
         white_over_sync, nominal_white_over_sync, white_ratio, 1.0 / white_ratio, white_ratio);
-    if (const double peak_over_mean = stats[*brightest].peak_above / stats[*brightest].mean_above; peak_over_mean > 2.5)
+    // The mean is not bounded by the peak guard above (a noisy near-blank
+    // segment can clear it on percentile alone), so it must not be a bare
+    // denominator: compare multiplicatively and only voice the ratio when the
+    // mean is a real positive level.
+    if (const double bright_mean = stats[*brightest].mean_above;
+        bright_mean > 0.0 && stats[*brightest].peak_above > 2.5 * bright_mean)
       std::println("  note: that near-peak is {:.1f}x the segment's active mean - the peak may be a chroma "
                    "excursion, not white",
-          peak_over_mean);
+          stats[*brightest].peak_above / bright_mean);
   }
   // Nominal burst is +-half a sync amplitude about blanking, so burst
   // amplitude over sync should read 0.5. The ACC divides chroma by the
