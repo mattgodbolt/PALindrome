@@ -48,7 +48,7 @@ flowchart TD
     AGC -->|picture rail| SCR
     AGC -->|picture rail| CH["ChromaDecoder (colour)<br/>4.43 MHz band-pass → crystal demod<br/>(APC pulls the crystal) →<br/>per-line burst rotation + PAL switch →<br/>ident → colour killer → 1H comb → Y/U/V"]
     SEP -->|sync bit| HS["HorizontalSweep<br/>pulse-width gate + AFC flywheel<br/>→ h_phase, line_start"]
-    SEP -->|sync bit| VS["VerticalSync<br/>integrator + field flywheel<br/>→ v_phase, field_start"]
+    SEP -->|sync bit| VS["VerticalSync<br/>integrator + field flywheel<br/>→ v_phase"]
     HS -->|timing rail| CH
     HS -->|timing rail| SCR["Screen (CRT)<br/>gun drive (DC-restored black, gamma 2.6) →<br/>RGB matrix + yoke shear + Gaussian splat →<br/>beam load feeds back: EHT sag,<br/>line pull, beam-current limiter →<br/>phosphor decay → frame"]
     VS -->|timing rail| SCR
@@ -87,6 +87,19 @@ with. It reports the pulse-width histogram, line-sync jitter, the field
 structure, and what the timebases locked to. No picture, just numbers. It and
 `demod` read through the plain low-pass front end rather than the SAW shape,
 so they measure the signal, not the receiver.
+
+`palindrome levels --input composite --sample-rate 20e6 --sample-format u8
+capture.bin` is the amplitude counterpart of `sync`: it slices line syncs out
+of the raw samples - before the affine map, so the report is in the source's
+own units - and measures sync tip, blanking, sync amplitude, burst and
+picture levels, split into a segment per average-picture-level step. A
+cycling test capture of white/black/colour screens therefore reports each
+screen separately; a normal recording is one segment. It ends with the flag
+values the numbers imply: `--composite-sync`, a contrast hint from white
+against the standard's geometry, and a burst-oversize factor for judging
+saturation. Suggestions, not calibration; the pots still exist for a reason.
+A recording path works too, and `--sample-rate` is what marks the input as
+headerless raw (from a file, or stdin with `-`).
 
 `palindrome demod corpus/wb3 -o /tmp/wb3.wav` writes the demodulated
 composite as a WAV, slowed 1000x (`--slowdown`) so Audacity will open it at

@@ -22,6 +22,17 @@ constexpr double kSystemIWhiteDrive = kBlankingLevel - kPeakWhiteLevel;
 // gain returns from a deep limit over roughly half a field once the overdrive
 // clears. Attack is per-line (the charge path is fast by design).
 constexpr double kPwlRecover = 1.005;
+// The limiter's sense time constant. The TDA3561A doesn't latch on an
+// instantaneous maximum: it discharges the contrast capacitor for the TIME an
+// output sits over the 9.3 V ceiling, so the sensed overload is inherently
+// integrated through the detector's RC and a spike must persist to count.
+// 1 µs sits an order of magnitude either side of what it must separate: small
+// against the 52 µs active line (any genuine white area wider than a few µs
+// charges the sensor to its true level, so flat-white overload still limits in
+// full) and large against the sub-100 ns Gibbs ringing a sharp pixel edge
+// leaves after the video filters (which registers under a tenth of its excess,
+// so edge-heavy computer-generated pictures at legal drive no longer dim).
+constexpr double kPwlSenseTau = 1.0e-6;
 
 // Validated on the way into the first mem-initialiser (the ChromaDecoder
 // pattern), so a bad config throws before the width*height framebuffer - whose
@@ -191,6 +202,7 @@ Screen::Screen(const ScreenConfig &cfg) :
     contrast_gain_ = cfg_.contrast;
     pwl_on_ = cfg_.pwl_threshold > 0.0;
     pwl_level_ = cfg_.pwl_threshold * kSystemIWhiteDrive;
+    pwl_sense_alpha_ = -std::expm1(-1.0 / (kPwlSenseTau * cfg_.sample_rate_hz));
   }
   video_gain_ = contrast_gain_;
   // The per-line effective mapping starts unloaded (eht_ = 1, no pull).
@@ -320,6 +332,12 @@ void Screen::start_line() {
       pwl_gain_ = std::min(1.0, pwl_gain_ * kPwlRecover);
     pwl_armed_ = over;
     pwl_line_peak_ = 0.0;
+    // Line blanking is ~10 tau of beam-off, which discharges the sensor before
+    // the next line's video; resetting here buys that for free instead of
+    // spending a decay multiply on every blanked sample. It also keeps the
+    // sensor stateless across lines, so the limiter loop stays first-order -
+    // the sense lag can't cause hunting.
+    pwl_sense_ = 0.0;
   }
   if (limiting_ || pwl_on_)
     video_gain_ = contrast_gain_ * bcl_gain_ * pwl_gain_;
@@ -440,9 +458,13 @@ void Screen::process(std::span<const ChromaSample> picture, std::span<const Beam
       if (pwl_on_)
         peak_drive = std::max({dr, dg, db});
     }
-    // The peak-white limiter senses the line's peak output drive (any gun).
-    if (pwl_on_)
-      pwl_line_peak_ = std::max(pwl_line_peak_, peak_drive);
+    // The peak-white limiter senses the line's peak output drive (any gun),
+    // band-limited by the sense circuit's one-pole (kPwlSenseTau) so only
+    // overloads that persist register - not single-sample edge ringing.
+    if (pwl_on_) {
+      pwl_sense_ += pwl_sense_alpha_ * (peak_drive - pwl_sense_);
+      pwl_line_peak_ = std::max(pwl_line_peak_, pwl_sense_);
+    }
 
     // The beam current is this line's load on the EHT supply (summed before
     // the brightness factor — sagging volts dim the light, not the current);
