@@ -4,10 +4,12 @@
 #include "palindrome/video_types.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <format>
 #include <iostream>
+#include <numbers>
 #include <optional>
 #include <print>
 #include <span>
@@ -31,14 +33,40 @@ struct LineLevels {
 
 // Percentile over a copy: nth_element mutates, and the line buffer has to
 // survive for the later windows. `scratch` is reused across calls.
-double percentile_of(std::span<const float> xs, double p, std::vector<float> &scratch) {
+double percentile_of(std::span<const float> xs, double p, std::vector<double> &scratch) {
+  assert(!xs.empty());
   scratch.assign(xs.begin(), xs.end());
   const auto k = static_cast<std::ptrdiff_t>(p * static_cast<double>(scratch.size() - 1) + 0.5);
   std::nth_element(scratch.begin(), scratch.begin() + k, scratch.end());
-  return static_cast<double>(scratch[static_cast<std::size_t>(k)]);
+  return scratch[static_cast<std::size_t>(k)];
 }
 
-double median_of(std::span<const float> xs, std::vector<float> &scratch) { return percentile_of(xs, 0.5, scratch); }
+// Interquartile mean - the mean of the middle half - reordering `v`. As
+// outlier-robust as a median, but it resolves below one quantisation step: a
+// u8 capture's samples are exact integer counts, so a window MEDIAN is one
+// too, and a real 0.1-count difference between segments then prints as a
+// full-count cliff (the 46-vs-47 sync reading this replaced).
+double iq_mean(std::span<double> v) {
+  assert(!v.empty());
+  double sum = 0.0;
+  if (v.size() < 4) {
+    for (const double x: v)
+      sum += x;
+    return sum / static_cast<double>(v.size());
+  }
+  const auto q1 = static_cast<std::ptrdiff_t>(v.size() / 4);
+  const auto q3 = static_cast<std::ptrdiff_t>(3 * v.size() / 4);
+  std::nth_element(v.begin(), v.begin() + q1, v.end());
+  std::nth_element(v.begin() + q1, v.begin() + q3, v.end());
+  for (auto it = v.begin() + q1; it != v.begin() + q3; ++it)
+    sum += *it;
+  return sum / static_cast<double>(q3 - q1);
+}
+
+double iq_mean_of(std::span<const float> xs, std::vector<double> &scratch) {
+  scratch.assign(xs.begin(), xs.end());
+  return iq_mean(scratch);
+}
 
 // A slice level that lands between the sync tip and blanking whatever the
 // screen shows. The tip is the low percentile — sync occupies ~7% of every
@@ -52,7 +80,7 @@ double median_of(std::span<const float> xs, std::vector<float> &scratch) { retur
 // sync amplitude and a single global slice can sit above another screen's
 // blanking - measured on the cycling test capture, which loses every white
 // field to exactly that.
-float pick_threshold(std::span<const float> chunk, std::vector<float> &scratch) {
+float pick_threshold(std::span<const float> chunk, std::vector<double> &scratch) {
   const auto tip = percentile_of(chunk, 0.01, scratch);
   const auto top = percentile_of(chunk, 0.99, scratch);
   return static_cast<float>(tip + 0.25 * (top - tip));
@@ -71,10 +99,12 @@ public:
     burst_lo_ = at(5.8);
     burst_hi_ = at(7.2);
     // The textbook back porch starts right after the sync pulse, but the burst
-    // rides it at ~5.6-7.4 us from the leading edge — so blanking is measured
-    // on the porch AFTER the burst, where nothing but blanking level remains.
-    blank_lo_ = at(7.8);
-    blank_hi_ = at(9.5);
+    // rides it — at ~5.6-7.4 us from the leading edge by the book, and real
+    // sources put it outside that (a bench capture ran ~4.0-8.6 us) — so
+    // blanking is measured late on the porch, after even an early-starting,
+    // late-ending burst has died, yet still ahead of nominal active at 10.5 us.
+    blank_lo_ = at(8.8);
+    blank_hi_ = at(10.2);
     active_lo_ = at(12.0);
     active_hi_ = at(62.0);
     // Accept only line-sync-width pulses (~4.7 us): equalising (~2.35) and
@@ -97,6 +127,7 @@ public:
 
   [[nodiscard]] std::span<const LineLevels> lines() const { return lines_; }
   [[nodiscard]] std::size_t rejected() const { return rejected_; }
+  [[nodiscard]] std::size_t samples() const { return index_; }
 
 private:
   void step(float x) {
@@ -136,11 +167,22 @@ private:
     };
     LineLevels m{};
     m.leading = leading_;
-    m.tip = median_of(window(tip_lo_, tip_hi_), scratch_);
+    m.tip = iq_mean_of(window(tip_lo_, tip_hi_), scratch_);
+    // The burst amplitude as RMS x sqrt(2) of the window about its own mean:
+    // at ~4.5 samples per subcarrier cycle a half peak-to-peak is biased by
+    // where the samples land on the sine, and a single spike owns it outright.
     const auto burst = window(burst_lo_, burst_hi_);
-    const auto [bmin, bmax] = std::ranges::minmax_element(burst);
-    m.burst_amp = 0.5 * (static_cast<double>(*bmax) - static_cast<double>(*bmin));
-    m.blank = median_of(window(blank_lo_, blank_hi_), scratch_);
+    double bsum = 0.0;
+    for (const float v: burst)
+      bsum += static_cast<double>(v);
+    const double bmean = bsum / static_cast<double>(burst.size());
+    double bsq = 0.0;
+    for (const float v: burst) {
+      const double d = static_cast<double>(v) - bmean;
+      bsq += d * d;
+    }
+    m.burst_amp = std::numbers::sqrt2 * std::sqrt(bsq / static_cast<double>(burst.size()));
+    m.blank = iq_mean_of(window(blank_lo_, blank_hi_), scratch_);
     const auto active = window(active_lo_, active_hi_);
     double sum = 0.0;
     for (const float v: active)
@@ -172,7 +214,7 @@ private:
   std::size_t leading_ = 0; // global index of the current collection's leading edge
   std::size_t width_ = 0; // 0 until the signal first rises back above the slice
   std::vector<float> line_; // samples since the leading edge
-  std::vector<float> scratch_;
+  std::vector<double> scratch_;
   std::vector<LineLevels> lines_;
   std::size_t rejected_ = 0;
 };
@@ -195,9 +237,9 @@ struct Segment {
   std::size_t last;
 };
 
-// Medians across a segment's lines. Medians, not means: the vertical
-// interval's blanked-but-line-synced lines and any transition junk then cost
-// nothing, since they are a small minority of a field's lines.
+// Interquartile means across a segment's lines - robust like a median, so the
+// vertical interval's blanked-but-line-synced lines and any transition junk
+// cost nothing, but with sub-quantisation resolution (see iq_mean).
 struct SegmentStats {
   double tip;
   double blank;
@@ -207,24 +249,22 @@ struct SegmentStats {
   double peak_above;
 };
 
-double median_over(std::span<const LineLevels> lines, double (*proj)(const LineLevels &)) {
+double iq_mean_over(std::span<const LineLevels> lines, double (*proj)(const LineLevels &)) {
   std::vector<double> v;
   v.reserve(lines.size());
   for (const auto &m: lines)
     v.push_back(proj(m));
-  const auto mid = v.size() / 2;
-  std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(mid), v.end());
-  return v[mid];
+  return iq_mean(v);
 }
 
 SegmentStats stats_over(std::span<const LineLevels> lines) {
   return {
-      .tip = median_over(lines, [](const LineLevels &m) { return m.tip; }),
-      .blank = median_over(lines, [](const LineLevels &m) { return m.blank; }),
-      .sync = median_over(lines, [](const LineLevels &m) { return m.blank - m.tip; }),
-      .burst = median_over(lines, [](const LineLevels &m) { return m.burst_amp; }),
-      .mean_above = median_over(lines, [](const LineLevels &m) { return m.active_mean - m.blank; }),
-      .peak_above = median_over(lines, [](const LineLevels &m) { return m.active_peak - m.blank; }),
+      .tip = iq_mean_over(lines, [](const LineLevels &m) { return m.tip; }),
+      .blank = iq_mean_over(lines, [](const LineLevels &m) { return m.blank; }),
+      .sync = iq_mean_over(lines, [](const LineLevels &m) { return m.blank - m.tip; }),
+      .burst = iq_mean_over(lines, [](const LineLevels &m) { return m.burst_amp; }),
+      .mean_above = iq_mean_over(lines, [](const LineLevels &m) { return m.active_mean - m.blank; }),
+      .peak_above = iq_mean_over(lines, [](const LineLevels &m) { return m.active_peak - m.blank; }),
   };
 }
 
@@ -287,10 +327,13 @@ int LevelsCommand::run() const {
       std::println(std::cerr, "levels: warning: {}", w);
   }
   const double rate = loaded ? loaded->sample_rate_hz : sample_rate_;
-  // The narrowest window (the post-burst porch) needs a handful of samples to
-  // take a median over; below a few MS/s the microscope has no lens.
-  if (rate < 1e6) {
-    std::println(std::cerr, "levels: sample rate {:g} Hz is too low to resolve the measurement windows", rate);
+  // The burst estimator wants a couple of samples per subcarrier cycle (and
+  // below ~9 MS/s the subcarrier does not even clear Nyquist), the porch
+  // windows a handful of samples to trim; below ~10 MS/s the microscope has
+  // no lens.
+  if (rate < 1e7) {
+    std::println(
+        std::cerr, "levels: sample rate {:g} Hz is too low to resolve the measurement windows (wants 10 MS/s+)", rate);
     return 1;
   }
 
@@ -298,11 +341,14 @@ int LevelsCommand::run() const {
   // that chunk alone before analysing it (see pick_threshold for why per
   // field), still a single pass so stdin works the same as a file.
   LineAnalyser analyser{rate};
-  std::vector<float> scratch;
+  std::vector<double> scratch;
   std::vector<float> chunk;
   const auto chunk_samples = static_cast<std::size_t>(rate / video::kNominalFieldHz);
   chunk.reserve(chunk_samples);
   bool got_samples = false;
+  // A line in flight across a chunk boundary is judged by two thresholds -
+  // harmless: one line per 20 ms, and they only differ when the screen just
+  // changed, whose transition field the segmentation drops anyway.
   const auto flush = [&] {
     if (chunk.empty())
       return;
@@ -333,7 +379,7 @@ int LevelsCommand::run() const {
   }
 
   const auto lines = analyser.lines();
-  const double total_s = static_cast<double>(lines.empty() ? 0 : lines.back().leading) / rate;
+  const double total_s = static_cast<double>(analyser.samples()) / rate;
   std::println("input: {:g} MS/s, {} line syncs measured, {} non-line pulses rejected", rate / 1e6, lines.size(),
       analyser.rejected());
   if (lines.empty()) {
@@ -356,12 +402,25 @@ int LevelsCommand::run() const {
   for (auto &f: fields)
     f.mean /= static_cast<double>(f.n_lines);
 
+  // Each field is compared against the CURRENT SEGMENT's running mean, not
+  // just the previous field: a screen switch that lands mid-field leaves one
+  // field at an in-between APL, and consecutive-field diffs then see two
+  // half-jumps that can each duck the threshold - halving the effective
+  // sensitivity on a coin flip and merging distinct screens.
   std::vector<Segment> segments{{0, 0}};
+  double seg_sum = fields[0].mean;
+  std::size_t seg_n = 1;
   for (std::size_t k = 1; k < fields.size(); ++k) {
-    if (std::abs(fields[k].mean - fields[k - 1].mean) > kAplJump)
+    if (std::abs(fields[k].mean - seg_sum / static_cast<double>(seg_n)) > kAplJump) {
       segments.push_back({k, k});
-    else
+      seg_sum = fields[k].mean;
+      seg_n = 1;
+    }
+    else {
       segments.back().last = k;
+      seg_sum += fields[k].mean;
+      ++seg_n;
+    }
   }
   const auto is_transition = [](const Segment &s) { return s.last - s.first + 1 < kMinSegmentFields; };
   const auto transitions = static_cast<std::size_t>(std::ranges::count_if(segments, is_transition));
@@ -395,10 +454,11 @@ int LevelsCommand::run() const {
   for (std::size_t i = 0; i < segments.size(); ++i) {
     const auto &seg = segments[i];
     const auto &st = stats[i];
+    const auto seg_lines = lines_of(seg);
     const double t0 = static_cast<double>(fields[seg.first].index) / video::kNominalFieldHz;
     const double t1 = static_cast<double>(fields[seg.last].index + 1) / video::kNominalFieldHz;
     std::println("\nsegment {}: {:.2f}-{:.2f} s ({} fields, {} lines){}", i + 1, t0, t1, seg.last - seg.first + 1,
-        lines_of(seg).size(), brightest && *brightest == i && segments.size() > 1 ? " - brightest" : "");
+        seg_lines.size(), brightest && *brightest == i && segments.size() > 1 ? " - brightest" : "");
     std::println("  sync tip {:+.3f}, blanking {:+.3f}, sync amplitude {:.3f}", st.tip, st.blank, st.sync);
     std::println("  burst amplitude {:.3f} ({:.2f}x sync)", st.burst, st.burst / st.sync);
     std::println("  active mean {:+.3f} above blanking ({:.2f}x sync), near-peak {:+.3f} ({:.2f}x sync)", st.mean_above,
@@ -408,8 +468,8 @@ int LevelsCommand::run() const {
   // Sync amplitude over EVERY measured line, not per segment: it is the one
   // level the picture content cannot move, which is what makes it the anchor
   // the suggestions divide by.
-  const double sync_all = median_over(lines, [](const LineLevels &m) { return m.blank - m.tip; });
-  const double burst_all = median_over(lines, [](const LineLevels &m) { return m.burst_amp; });
+  const double sync_all = iq_mean_over(lines, [](const LineLevels &m) { return m.blank - m.tip; });
+  const double burst_all = iq_mean_over(lines, [](const LineLevels &m) { return m.burst_amp; });
   if (!(sync_all > 0.0)) {
     std::println(std::cerr, "levels: measured sync amplitude is not positive - no suggestions");
     return 1;
@@ -419,21 +479,43 @@ int LevelsCommand::run() const {
   std::println("  --composite-sync {:.3f} (the measured sync amplitude; in volts when full scale is the default "
                "--composite-scale 1.0)",
       sync_all);
-  const double nominal_white_over_sync =
-      (video::kNominalFullScaleVolts - video::kNominalSyncVolts) / video::kNominalSyncVolts;
   const double white_over_sync = stats[*brightest].peak_above / sync_all;
-  const double white_ratio = white_over_sync / nominal_white_over_sync;
-  std::println("  white/sync {:.2f} vs the standard's {:.2f} (brightest segment): white reaches {:.2f}x nominal, "
-               "so the contrast pot wants ~{:.2f} (1/{:.2f}) if that segment really shows peak white",
-      white_over_sync, nominal_white_over_sync, white_ratio, 1.0 / white_ratio, white_ratio);
-  // Nominal burst is +-half a sync amplitude about blanking, so half
-  // peak-to-peak over sync should read 0.5. The ACC divides chroma by the
+  // A capture of nothing but blanking still has a brightest segment; dividing
+  // by its near-zero (under noise, even negative) picture level would print
+  // an infinite or negative contrast with a straight face.
+  constexpr double kMinPictureOverSync = 0.1;
+  if (white_over_sync < kMinPictureOverSync)
+    std::println("  brightest segment shows no picture content - no contrast suggestion");
+  else {
+    const double nominal_white_over_sync =
+        (video::kNominalFullScaleVolts - video::kNominalSyncVolts) / video::kNominalSyncVolts;
+    const double white_ratio = white_over_sync / nominal_white_over_sync;
+    std::println("  white/sync {:.2f} vs the standard's {:.2f} (brightest segment): white reaches {:.2f}x nominal, "
+                 "so the contrast pot wants ~{:.2f} (1/{:.2f}) if that segment really shows peak white",
+        white_over_sync, nominal_white_over_sync, white_ratio, 1.0 / white_ratio, white_ratio);
+    if (const double peak_over_mean = stats[*brightest].peak_above / stats[*brightest].mean_above; peak_over_mean > 2.5)
+      std::println("  note: that near-peak is {:.1f}x the segment's active mean - the peak may be a chroma "
+                   "excursion, not white",
+          peak_over_mean);
+  }
+  // Nominal burst is +-half a sync amplitude about blanking, so burst
+  // amplitude over sync should read 0.5. The ACC divides chroma by the
   // measured burst, so an oversize burst UNDERSATURATES the decode when the
   // picture's chroma does not share the excess.
-  const double burst_ratio = (burst_all / sync_all) / 0.5;
-  std::println("  burst/sync {:.2f} vs the standard's 0.50: burst is {:.2f}x nominal. If the picture chroma is "
-               "nominal, saturation likely wants roughly render's default scaled by that ({:.3f})",
-      burst_all / sync_all, burst_ratio, 0.085 * burst_ratio);
+  const double burst_over_sync = burst_all / sync_all;
+  if (burst_over_sync < 0.2)
+    std::println("  burst/sync {:.2f}: effectively monochrome (that \"burst\" is mostly noise) - no saturation "
+                 "suggestion",
+        burst_over_sync);
+  else {
+    // 0.085 is render's --agc sync-tip saturation default (see
+    // render_command::decoder_config; --agc adaptive uses 0.17 and would
+    // scale that instead).
+    const double burst_ratio = burst_over_sync / 0.5;
+    std::println("  burst/sync {:.2f} vs the standard's 0.50: burst is {:.2f}x nominal. If the picture chroma is "
+                 "nominal, saturation likely wants roughly render's default scaled by that ({:.3f})",
+        burst_over_sync, burst_ratio, 0.085 * burst_ratio);
+  }
   return 0;
 }
 
