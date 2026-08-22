@@ -329,12 +329,15 @@ TEST_CASE("Screen is block-invariant") {
     CHECK(frame_whole.pixels[i] == frame_chunked.pixels[i]);
 }
 
-TEST_CASE("VerticalSync flags the detected field anchor once per field") {
-  // field_start is the DETECTED anchor - a diagnostic now that the screen
-  // keys its per-field work on the v_phase wrap - so pin it here or it rots
-  // silently. Synthetic sync bits: normal lines ~7% duty, then a vertical
-  // interval of three broad-pulse lines (~84% duty) per field; the integrator
-  // must cross its slice once per interval, and only there.
+TEST_CASE("VerticalSync snaps v_phase to the detected field anchor once per field") {
+  // Pin where the detector fires or it rots silently: with kp = 1 the PI snap
+  // lands v_phase on exactly 0 at the detected anchor (err is the phase itself,
+  // or phase - 1, so the subtraction is exact), while the free-running wrap
+  // would need the accumulator to hit exactly 1.0, which this non-dyadic omega
+  // never does - so an exact-zero output after sample 0 IS the anchor.
+  // Synthetic sync bits: normal lines ~7% duty, then a vertical interval of
+  // three broad-pulse lines (~84% duty) per field; the integrator must cross
+  // its slice once per interval, and only there.
   // Everything here is ratio-driven, so run at a small rate to keep the test
   // light: 64-sample lines, 320/field = 50 Hz fields at 1.024 MS/s.
   constexpr double kVsRate = 1.024e6;
@@ -349,13 +352,14 @@ TEST_CASE("VerticalSync flags the detected field anchor once per field") {
         sync.push_back(video::SyncSample{.sync = k < duty});
     }
 
-  video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = kVsRate}};
+  video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = kVsRate, .pll_kp = 1.0}};
   vsync.prepare(sync.size());
   const auto out = vsync.process(sync);
   std::vector<std::size_t> anchors;
-  for (std::size_t i = 0; i < out.size(); ++i)
-    if (out[i].field_start)
+  for (std::size_t i = 1; i < out.size(); ++i)
+    if (out[i].v_phase == 0.0f)
       anchors.push_back(i);
+  REQUIRE(vsync.detected_fields() == kFields);
   REQUIRE(anchors.size() == kFields);
   for (std::size_t f = 0; f < kFields; ++f) {
     // Each anchor lands inside its field's vertical interval (integrator lag
@@ -432,8 +436,8 @@ TEST_CASE("Screen fades and emits on the free-running retrace - no sync detectio
   // The bug this pins: with the fade keyed on DETECTED field starts, unlocked
   // input (cold start, a mistuned carrier during AFC pull-in) deposited with
   // the decay switched off and integrated to a white screen no real set could
-  // show. The retrace is the flywheel's v_phase wrap, which free-runs: with
-  // field_start never set, the phosphor must still fade each field and the
+  // show. The retrace is the flywheel's v_phase wrap, which free-runs: with no
+  // field ever detected, the phosphor must still fade each field and the
   // field callback must still fire (the rolling picture).
   const video::ScreenConfig cfg{.width = 8,
       .height = 8,
@@ -462,7 +466,7 @@ TEST_CASE("Screen fades and emits on the free-running retrace - no sync detectio
   };
 
   // The callback count is the pin: on the detection-gated code it is zero
-  // (field_start is never set), so the fade never ran either. Charge
+  // (no field is ever detected), so the fade never ran either. Charge
   // convergence itself can't be asserted through the quantised readout - its
   // white normalisation tracks the buffer, so any steady state reads
   // full-scale whether or not the fade runs.
@@ -619,8 +623,11 @@ namespace {
 // restore), then `active` samples at the given luma: 0.3 is true black (zero
 // drive) and 0.0 is full white (drive 0.3, which the AGC white tracker then
 // treats as full scale). Optionally one probe sample at (probe_h, probe_v).
-void feed_lines(video::Screen &screen, std::size_t lines, float luma, double probe_h = -1.0, double probe_v = 0.5) {
-  constexpr std::size_t kActive = 24;
+// active defaults to a compressed 24-sample micro-line (plenty for the per-line
+// mechanisms); pass something broadcast-shaped (~720 at kRate) when the test
+// exercises a real per-sample time constant like the PWL's sense one-pole.
+void feed_lines(video::Screen &screen, std::size_t lines, float luma, double probe_h = -1.0, double probe_v = 0.5,
+    std::size_t active = 24) {
   std::vector<video::ChromaSample> pic;
   std::vector<video::BeamSample> hbeam;
   std::vector<video::VSample> vbeam;
@@ -634,9 +641,9 @@ void feed_lines(video::Screen &screen, std::size_t lines, float luma, double pro
     pic.push_back(video::ChromaSample{.luma = 0.3f});
     hbeam.push_back(video::BeamSample{.h_phase = 0.10f, .line_start = true});
     vbeam.push_back(video::VSample{.v_phase = 0.5f});
-    for (std::size_t k = 0; k < kActive; ++k) {
+    for (std::size_t k = 0; k < active; ++k) {
       pic.push_back(video::ChromaSample{.luma = luma});
-      hbeam.push_back(video::BeamSample{.h_phase = 0.2f + 0.7f * static_cast<float>(k) / kActive});
+      hbeam.push_back(video::BeamSample{.h_phase = 0.2f + 0.7f * static_cast<float>(k) / static_cast<float>(active)});
       vbeam.push_back(video::VSample{.v_phase = 0.5f});
     }
     if (probe_h >= 0.0 && l + 1 == lines) {
@@ -773,27 +780,77 @@ TEST_CASE("peak-white limiter: one-line delay, pull to the ceiling, recovery") {
   const video::ScreenConfig cfg{
       .width = 32, .height = 32, .sample_rate_hz = kRate, .beam_sigma = 0.0, .gamma = 1.0, .pwl_threshold = 1.0};
   constexpr float kOverWhite = 0.3f - 0.8f; // luma for drive 0.8 > the 0.56 ceiling
+  // Broadcast-shaped 45 us lines: the sense one-pole is a time constant, so
+  // the default 1.5 us micro-lines would leave it half-charged and the settled
+  // gain off its geometric value.
+  const auto feed = [](video::Screen &screen, std::size_t lines, float luma) {
+    feed_lines(screen, lines, luma, -1.0, 0.5, 720);
+  };
 
   // A single over-white line between dark ones must NOT engage it: the
   // datasheet delays the start of limiting by one line period, so test
   // patterns with abrupt colour-to-white transitions are left alone.
   video::Screen flash{cfg};
-  feed_lines(flash, 5, 0.3f);
-  feed_lines(flash, 1, kOverWhite);
-  feed_lines(flash, 5, 0.3f);
+  feed(flash, 5, 0.3f);
+  feed(flash, 1, kOverWhite);
+  feed(flash, 5, 0.3f);
   CHECK(flash.limiter_gain() > 0.999);
 
   // Sustained over-white pulls the gain so the peak settles AT the ceiling:
   // gain -> 0.56 / 0.8 = 0.7.
   video::Screen cooked{cfg};
-  feed_lines(cooked, 5, 0.3f);
-  feed_lines(cooked, 50, kOverWhite);
+  feed(cooked, 5, 0.3f);
+  feed(cooked, 50, kOverWhite);
   CHECK(cooked.limiter_gain() < 0.72);
   CHECK(cooked.limiter_gain() > 0.65);
 
   // Dark content lets the control capacitor discharge back to unity.
-  feed_lines(cooked, 400, 0.3f);
+  feed(cooked, 400, 0.3f);
   CHECK(cooked.limiter_gain() > 0.99);
+}
+
+TEST_CASE("peak-white limiter: sub-microsecond ringing is ignored, a broad overload is not") {
+  // Same ceiling as above (drive 0.56). Each line is legal flat drive 0.45
+  // with one excursion to drive 1.0 of a chosen width, mid-line - the shape a
+  // Gibbs overshoot leaves on a sharp pixel edge when narrow, genuine peak
+  // white when wide.
+  const video::ScreenConfig cfg{
+      .width = 32, .height = 32, .sample_rate_hz = kRate, .beam_sigma = 0.0, .gamma = 1.0, .pwl_threshold = 1.0};
+  const auto feed = [](video::Screen &screen, std::size_t lines, std::size_t spike_samples) {
+    constexpr std::size_t kActive = 720;
+    std::vector<video::ChromaSample> pic;
+    std::vector<video::BeamSample> hbeam;
+    std::vector<video::VSample> vbeam;
+    for (std::size_t l = 0; l < lines; ++l) {
+      pic.clear();
+      hbeam.clear();
+      vbeam.clear();
+      pic.push_back(video::ChromaSample{.luma = 0.3f});
+      hbeam.push_back(video::BeamSample{.h_phase = 0.10f, .line_start = true});
+      vbeam.push_back(video::VSample{.v_phase = 0.5f});
+      for (std::size_t k = 0; k < kActive; ++k) {
+        const bool spiking = k >= kActive / 2 && k < kActive / 2 + spike_samples;
+        pic.push_back(video::ChromaSample{.luma = spiking ? -0.7f : -0.15f});
+        hbeam.push_back(
+            video::BeamSample{.h_phase = 0.2f + 0.7f * static_cast<float>(k) / static_cast<float>(kActive)});
+        vbeam.push_back(video::VSample{.v_phase = 0.5f});
+      }
+      screen.process(pic, hbeam, vbeam);
+    }
+  };
+
+  // 2 samples = 125 ns: the raw per-sample max is nearly 2x the ceiling, but
+  // the band-limited sensor barely moves - no dimming, the bug this guards.
+  video::Screen ringing{cfg};
+  feed(ringing, 50, 2);
+  CHECK(ringing.limiter_gain() > 0.999);
+
+  // The same excursion widened to 10 us charges the sensor to its true level,
+  // so the limiter pulls the peak to the ceiling: gain -> 0.56 / 1.0.
+  video::Screen overload{cfg};
+  feed(overload, 50, 160);
+  CHECK(overload.limiter_gain() < 0.6);
+  CHECK(overload.limiter_gain() > 0.5);
 }
 
 TEST_CASE("ChromaDecoder is block-invariant (the streaming guarantee)") {

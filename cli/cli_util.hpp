@@ -91,6 +91,11 @@ struct LoadOptions {
 void stream_real_blocks(const std::filesystem::path &data_path, SampleFormat format,
     const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples = std::size_t{1} << 16);
 
+// Stream real samples from stdin as float blocks until the pipe closes — the
+// live counterpart of stream_real_blocks (which reads a named file).
+void stream_real_stdin(SampleFormat format, const std::function<void(std::span<const float>)> &on_block,
+    std::size_t block_samples = std::size_t{1} << 16);
+
 // Which front end demodulates the vision carrier. The saw modes run one
 // complex-coefficient FIR shaped like a receiver SAW IF (Nyquist flank,
 // vestige cutoff, finite sound notch, group-delay ripple - see

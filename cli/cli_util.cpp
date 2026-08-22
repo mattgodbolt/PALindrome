@@ -202,9 +202,6 @@ void stream_real_blocks(const std::filesystem::path &data_path, SampleFormat for
   }
 }
 
-namespace {
-// Stream real int16 from stdin as float blocks until the pipe closes - the
-// live counterpart of stream_real_blocks (which reads a named file).
 void stream_real_stdin(
     SampleFormat format, const std::function<void(std::span<const float>)> &on_block, std::size_t block_samples) {
   const auto width = bytes_per(format);
@@ -220,6 +217,7 @@ void stream_real_stdin(
   }
 }
 
+namespace {
 // The vision front end as one object: either the SAW-era IF (one complex FIR +
 // detector) or the legacy flat chain (Hilbert + ComplexAmEnvelope). Built once
 // for a carrier and driven block by block, so the file and live sources share

@@ -1,11 +1,10 @@
 #pragma once
 
-#include "palindrome/buffer.hpp"
+#include "palindrome/deposit_backend.hpp"
 #include "palindrome/splat.hpp"
 #include "palindrome/video_types.hpp"
 
 #include <cstddef>
-#include <cstdint>
 #include <functional>
 #include <memory>
 #include <span>
@@ -69,8 +68,11 @@ struct ScreenConfig {
   // pwl_threshold × the standard white drive, the contrast is pulled down fast
   // until it doesn't, recovering slowly when clear - and its engagement is
   // delayed by one line, so a single bright line (an abrupt colour-to-white
-  // test pattern) never triggers it. Needs absolute levels: ignored when
-  // tracked_white (no absolute reference to limit against). 0 disables.
+  // test pattern) never triggers it. The drive is sensed through the detector's
+  // ~1 µs one-pole (kPwlSenseTau in screen.cpp), so sub-microsecond edge
+  // ringing doesn't count as peak white but sustained overload does. Needs
+  // absolute levels: ignored when tracked_white (no absolute reference to
+  // limit against). 0 disables.
   double pwl_threshold = 1.25;
   // Readout transfer: the "camera" between the phosphor and the PNG. The
   // framebuffer is linear light; a PNG viewed on an sRGB display gets the
@@ -126,8 +128,8 @@ struct ScreenConfig {
   double bcl_threshold = 0.0;
   double bcl_tc_fields = 0.5;
   // Deposit threads. The per-sample control pass records one splat per visible
-  // sample into a buffer; at each field boundary the field's splats are applied
-  // to the phosphor, fanned across this many threads by output band (see
+  // sample; the CPU deposit backend batches a field of them and applies it to
+  // the phosphor fanned across this many threads by output band (see
   // SplatDeposit). Bit-exact in the thread count - the picture never changes -
   // so this is a wall-clock knob only. 1 = serial (no pool). The caller sets it.
   std::size_t deposit_lanes = 1;
@@ -146,12 +148,7 @@ public:
 
   void prepare(std::size_t max_in);
 
-  struct Frame {
-    std::vector<std::uint8_t> pixels; // width*height*channels, row-major
-    std::size_t width;
-    std::size_t height;
-    std::size_t channels; // 1 = grey, 3 = interleaved RGB
-  };
+  using Frame = video::Frame;
 
   // Handed to the field callback at each boundary. Quantising a Frame is the
   // expensive part of a snapshot, so the event is lazy: frame() quantises the
@@ -187,10 +184,10 @@ public:
       const FieldCallback &on_field = {});
 
   // Read the phosphor out, scaled by the white reference (one shared scale across
-  // R/G/B so hue is preserved). The deposit is batched per field, so this first
-  // materialises any splats buffered since the last field boundary into the
-  // phosphor - a lazy finalise of work already committed, so snapshotting still
-  // doesn't disturb the running sim and stays const.
+  // R/G/B so hue is preserved). The deposit is batched, so this first hands any
+  // splats recorded since the last flush to the backend and has it land them - a
+  // lazy finalise of work already committed, so snapshotting still doesn't
+  // disturb the running sim and stays const.
   [[nodiscard]] Frame snapshot() const;
 
   // Diagnostic: the per-unit EHT (1 = unloaded; sustained full white sags it
@@ -223,45 +220,36 @@ private:
   double white_drive_ = 0.0; // peak luma drive (chroma reference, pre-gamma)
   double agc_release_; // tracked mode: per-sample release factor (multi-field)
   double phosphor_gain_; // steady-state accumulation of a per-frame re-deposit
-  // Phosphor framebuffer. The beam ADDS charge (no per-sample decay); the whole
-  // buffer is faded by field_decay_ once per field, at the field boundary. This
-  // is what a viewer's eye integrates — a field paints as one instant, so there's
-  // no top-to-bottom brightness ramp from the beam's sweep down the screen, and
-  // it's a single streaming multiply (cache- and GPU-friendly) instead of a
-  // per-pixel lazy decay keyed on a last-touched timestamp.
-  //
-  // The alternative is a continuous per-sample decay (each pixel faded forward to
-  // the read instant from when it was last hit). That's physically what a CRT does
-  // at any single moment — what a fast-shutter camera captures — but it shows the
-  // beam-sweep band a human never sees, and it costs a second random-access array
-  // plus a per-deposit exp(). To bring that "camera snapshot" look back (likely as
-  // a ScreenConfig mode selecting the deposit + snapshot path), the whole removed
-  // implementation — last_, sample_index_, the split decay LUTs, decay_for, and
-  // the fade-to-now in snapshot() — sits in the commit before "fade the phosphor
-  // per field, not per sample" (git log -- lib/video.cpp; show its parent).
-  // mutable: the phosphor is the readout, but the deposit into it is batched per
-  // field and materialised lazily by flush() (called from the const snapshot), so
-  // the charge committed by the splats is logically already part of the picture.
-  mutable std::vector<float> bright_; // per-pixel-per-channel accumulated phosphor charge
-  float field_decay_ = 1.0f; // whole-buffer multiply applied once per field
+  // The phosphor itself - the framebuffer the splats land in, its per-field
+  // fade and the quantised readout - lives behind the DepositBackend seam (the
+  // CPU backend is today's code; a GPU one can take the same record stream).
+  // The Screen keeps the control pass and the white reference. The backend is
+  // held by pointer, so the const readers below (snapshot, latched_frame) can
+  // still have it land the committed records: the deposit is batched and
+  // materialised lazily, but the charge the records carry is logically already
+  // part of the picture, so a read doesn't disturb the running sim.
+  std::unique_ptr<DepositBackend> backend_;
+  float field_decay_ = 1.0f; // whole-buffer multiply applied once per field, by the backend
 
-  // Deferred deposit. The per-sample control pass records one SplatRecord per
-  // visible sample into splats_, accumulating across blocks within a field; at
-  // each field boundary (and lazily on any read) flush() hands the whole field to
-  // deposit_, which fans the splats across its threads (by output band) into
-  // bright_. Batching to per-field is what lets the apply be threaded: the
-  // fan/join cost is paid ~once per field, not once per block, and a full field
-  // spans every row so all the deposit threads have work at once.
-  mutable Buffer<SplatRecord> splats_; // this field's pending splats (accumulated across blocks)
-  std::unique_ptr<SplatDeposit> deposit_; // applies a field of splats, threaded by band (built once the LUTs exist)
-  void flush() const; // materialise splats_ into bright_, then clear (idempotent)
+  // Deferred deposit. The per-sample control pass writes one SplatRecord per
+  // visible sample straight into staging the backend hands out (slab_, acquired
+  // for the rest of the block); flush() commits the slab_n_ written so far and
+  // drops the span. It runs at every line start, at the field boundary, and
+  // lazily on any read, so a slab-oriented backend sees a steady stream and the
+  // CPU backend batches internally to the field its band-threading wants.
+  // Recording rather than painting keeps every pixel's adds in sample order
+  // (identical output) while making a field's deposits one list the apply can
+  // fan across cores. mutable for the lazy flush from the const readers.
+  mutable std::span<SplatRecord> slab_; // the acquired staging; empty = re-acquire before writing
+  mutable std::size_t slab_n_ = 0; // records written into slab_ and not yet committed
+  void flush() const; // commit slab_n_ records to the backend, then drop slab_ (idempotent)
 
-  // FieldEvent::latch() support: the phosphor and white reference copied aside
-  // at a field boundary (a float memcpy — far cheaper than quantising a Frame
-  // per field when only the last one is kept). latched_white_ < 0 = never.
+  // FieldEvent::latch() support: the backend keeps the phosphor copied aside
+  // at a field boundary and the white reference is kept here, so
+  // latched_frame() can quantise that instant once, later. latch_white_ < 0 =
+  // never latched.
   void latch_boundary();
-  [[nodiscard]] Frame quantise(const std::vector<float> &bright, double white_ref) const;
-  std::vector<float> latch_bright_;
+  [[nodiscard]] Readout readout_of(double white_ref) const;
   double latch_white_ = -1.0;
 
   // Deflection-yoke model + vertical beam splat. A real TV's yoke is rotated a
@@ -285,7 +273,7 @@ private:
   // EHT focus softening quantises the spot into kFocusClasses sizes, one table
   // set per class; the active class is chosen per LINE (the EHT moves on field
   // timescales) and recorded on each splat so the deferred apply picks the right
-  // kernel. The tables themselves are handed to deposit_ as SplatKernels.
+  // kernel. The tables themselves are handed to the backend as SplatKernels.
   static constexpr std::size_t kGaussBins = 4096;
   static constexpr std::size_t kFocusClasses = 8;
   struct SplatLut {
@@ -331,7 +319,12 @@ private:
   double pwl_level_ = 0.0; // drive ceiling: pwl_threshold × standard white drive
   double pwl_gain_ = 1.0; // PWL gain: pulled fast while over, slow recovery
   bool pwl_armed_ = false; // previous line exceeded (the one-line delay)
-  double pwl_line_peak_ = 0.0; // this line's peak gun drive
+  double pwl_line_peak_ = 0.0; // this line's peak band-limited gun drive
+  // The sense one-pole (kPwlSenseTau in screen.cpp). Its state is double
+  // because it accumulates across a line's samples and the drive/peak path it
+  // joins is already double - a float here would only add conversions.
+  double pwl_sense_ = 0.0; // band-limited sensed drive
+  double pwl_sense_alpha_ = 0.0; // per-sample charge fraction: 1 - exp(-1/(tau * sample_rate_hz))
   double contrast_gain_ = 1.0; // the pot: cfg_.contrast (absolute), 1 (tracked)
   double video_gain_ = 1.0; // the per-line gain applied to the drive
   void start_line(); // finalize the line load, update eht_, refresh the mapping
