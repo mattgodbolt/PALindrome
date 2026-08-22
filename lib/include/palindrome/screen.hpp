@@ -69,8 +69,11 @@ struct ScreenConfig {
   // pwl_threshold × the standard white drive, the contrast is pulled down fast
   // until it doesn't, recovering slowly when clear - and its engagement is
   // delayed by one line, so a single bright line (an abrupt colour-to-white
-  // test pattern) never triggers it. Needs absolute levels: ignored when
-  // tracked_white (no absolute reference to limit against). 0 disables.
+  // test pattern) never triggers it. The drive is sensed through the detector's
+  // ~1 µs one-pole (kPwlSenseTau in screen.cpp), so sub-microsecond edge
+  // ringing doesn't count as peak white but sustained overload does. Needs
+  // absolute levels: ignored when tracked_white (no absolute reference to
+  // limit against). 0 disables.
   double pwl_threshold = 1.25;
   // Readout transfer: the "camera" between the phosphor and the PNG. The
   // framebuffer is linear light; a PNG viewed on an sRGB display gets the
@@ -331,7 +334,9 @@ private:
   double pwl_level_ = 0.0; // drive ceiling: pwl_threshold × standard white drive
   double pwl_gain_ = 1.0; // PWL gain: pulled fast while over, slow recovery
   bool pwl_armed_ = false; // previous line exceeded (the one-line delay)
-  double pwl_line_peak_ = 0.0; // this line's peak gun drive
+  double pwl_line_peak_ = 0.0; // this line's peak band-limited gun drive
+  double pwl_sense_ = 0.0; // the sense one-pole's state (a per-sample IIR, hence double)
+  double pwl_sense_alpha_ = 0.0; // its per-sample step, kPwlSenseTau in sample_rate_hz units
   double contrast_gain_ = 1.0; // the pot: cfg_.contrast (absolute), 1 (tracked)
   double video_gain_ = 1.0; // the per-line gain applied to the drive
   void start_line(); // finalize the line load, update eht_, refresh the mapping
