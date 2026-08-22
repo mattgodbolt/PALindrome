@@ -109,7 +109,7 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "Live input real sample rate Hz (required with --live; 20e6 for the AirSpy raw stream)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"](
               "Baseband low-pass cutoff Hz (--if flat: default 4.8 MHz; composite: default 5.5 MHz, System I's "
-              "vision bandwidth - at or above Nyquist disables the filter)"))
+              "vision bandwidth - at or above Nyquist disables the filter, unless decimating)"))
           .add_argument(lyra::opt(sync_cutoff_, "hz")["--sync-cutoff"]("Sync-branch low-pass cutoff Hz"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs (0 = auto from Nyquist)"))
           .add_argument(lyra::opt(width_, "px")["--width"]("Output image width"))

@@ -114,7 +114,7 @@ struct EnvelopeOptions {
   // and no default is written down twice. sample_rate_hz is the exception:
   // make_front_end fills it, since only it knows the post-decimation rate.
   video::CompositeInputConfig composite{};
-  double cutoff_hz = 5.0e6; // baseband low-pass corner (flat mode and composite; >= Nyquist = wide open)
+  double cutoff_hz = 5.0e6; // baseband low-pass corner (flat and composite; composite: >= Nyquist = wide open)
   std::size_t decimation = 1;
   IfMode if_mode = IfMode::flat;
   demod::Detector detector = demod::Detector::quasi_sync; // saw modes' detector

@@ -4,6 +4,7 @@
 #include "palindrome/demod.hpp"
 #include "palindrome/fir.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -15,6 +16,7 @@
 #include <print>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -253,11 +255,18 @@ VisionFrontEnd make_front_end(double sample_rate_hz, double carrier_hz, const En
     const auto rate_after = sample_rate_hz / static_cast<double>(opts.decimation);
     const auto wide_open = opts.cutoff_hz >= rate_after / 2.0;
     if (!wide_open || opts.decimation > 1) {
-      if (wide_open)
-        warnings.push_back(std::format("cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing",
-            opts.cutoff_hz / 1e6, rate_after / 2.0 / 1e6));
+      auto corner_hz = opts.cutoff_hz;
+      if (wide_open) {
+        warnings.push_back(std::format(
+            "cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing; pass --cutoff below {:g} MHz",
+            opts.cutoff_hz / 1e6, rate_after / 2.0 / 1e6, rate_after / 2.0 / 1e6));
+        // lowpass_kernel rejects a corner at or past the INPUT Nyquist, so an
+        // over-Nyquist cutoff here designs the widest filter the kernel
+        // allows - as wide open as a mandatory anti-alias FIR can be.
+        corner_hz = std::min(corner_hz, 0.999 * sample_rate_hz / 2.0);
+      }
       fe.composite_lp.emplace(
-          dsp::lowpass_kernel(demod::kDefaultVisionTaps, sample_rate_hz, opts.cutoff_hz), opts.decimation);
+          dsp::lowpass_kernel(demod::kDefaultVisionTaps, sample_rate_hz, corner_hz), opts.decimation);
       fe.composite_lp->prepare(block_samples);
     }
     auto cfg = opts.composite;

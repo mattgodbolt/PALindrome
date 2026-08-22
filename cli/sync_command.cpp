@@ -101,7 +101,8 @@ void SyncCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "Composite: the source's sync amplitude in volts (default 0.3)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"](
               "Baseband low-pass cutoff Hz (default 5 MHz for rf, 5.5 MHz - System I's vision band - for "
-              "composite; at or above Nyquist disables the filter)"))
+              "composite. In composite mode a cutoff at or above Nyquist disables the filter, unless "
+              "decimating; rf's low-pass is integral and never disables)"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"](
               "Keep 1 sample per N inputs (0 = the mode's default: 2 for rf, 1 for composite)"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to inspect (e.g. corpus/alex_kidd)")));
@@ -275,11 +276,14 @@ int SyncCommand::run() const {
     std::vector<double> field_lines;
     for (std::size_t i = 1; i < run_starts.size(); ++i)
       field_lines.push_back(static_cast<double>(run_starts[i] - run_starts[i - 1]) / measured_line_samples);
-    // Median, not mean, because the first interval is routinely bogus: the
-    // front end's cold start pins the rail at the sync tip until the first real
-    // tip arrives, which reads as one spurious broad pulse at sample 0 and
-    // becomes run_starts[0]. The median is robust to that and to any other
-    // single bad run (a dropout merging two fields, a run split in half).
+    // Median, not mean, because the first interval can be bogus: on the
+    // unfiltered paths (rf, or a composite bypass cutoff) the front end's cold
+    // start pins the rail at the sync tip until the first real tip arrives,
+    // which reads as one spurious broad pulse at sample 0 and becomes
+    // run_starts[0]. The composite default's vision low-pass removes that
+    // artifact (measured: 101 -> 100 runs on pattern.bin), but the median
+    // stays robust to it and to any other single bad run (a dropout merging
+    // two fields, a run split in half).
     auto sorted = field_lines;
     std::ranges::sort(sorted);
     const double median = sorted[sorted.size() / 2];
