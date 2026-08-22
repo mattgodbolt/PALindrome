@@ -14,7 +14,7 @@ add_library(palindrome::palindrome ALIAS palindrome)
 
 target_sources(palindrome PRIVATE sigmf.cpp demod.cpp fft.cpp fir.cpp mixer.cpp biquad.cpp dc_blocker.cpp wav.cpp image.cpp
         gaussian.cpp agc.cpp composite.cpp sync_separator.cpp horizontal_sweep.cpp vertical_sync.cpp chroma_decoder.cpp screen.cpp
-        splat.cpp decoder.cpp)
+        splat.cpp cpu_deposit.cpp decoder.cpp)
 
 target_sources(palindrome
         PUBLIC
@@ -46,6 +46,8 @@ target_sources(palindrome
         include/palindrome/horizontal_sweep.hpp
         include/palindrome/vertical_sync.hpp
         include/palindrome/chroma_decoder.hpp
+        include/palindrome/deposit_backend.hpp
+        include/palindrome/cpu_deposit.hpp
         include/palindrome/screen.hpp
         include/palindrome/decoder.hpp)
 
