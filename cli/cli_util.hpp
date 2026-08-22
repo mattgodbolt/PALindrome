@@ -98,6 +98,11 @@ void stream_real_blocks(const std::filesystem::path &data_path, SampleFormat for
 // replaced, kept verbatim as the legacy/comparison chain.
 enum class IfMode { saw80, saw90, flat };
 
+// System I allocates 5.5 MHz to vision, and a real set's video path admits no
+// more - noise included. The composite path's default low-pass corner, so a
+// flat-noise source shows a receiver's noise bandwidth, not the capture's.
+inline constexpr double kCompositeCutoffHz = 5.5e6;
+
 // Demod parameters that aren't carried in the recording itself. The detector
 // applies to the saw modes only: the flat chain is the legacy envelope
 // demodulator, kept verbatim.
@@ -109,7 +114,7 @@ struct EnvelopeOptions {
   // and no default is written down twice. sample_rate_hz is the exception:
   // make_front_end fills it, since only it knows the post-decimation rate.
   video::CompositeInputConfig composite{};
-  double cutoff_hz = 5.0e6; // baseband low-pass corner (flat mode; and composite when decimating)
+  double cutoff_hz = 5.0e6; // baseband low-pass corner (flat mode and composite; >= Nyquist = wide open)
   std::size_t decimation = 1;
   IfMode if_mode = IfMode::flat;
   demod::Detector detector = demod::Detector::quasi_sync; // saw modes' detector

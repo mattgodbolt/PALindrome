@@ -108,7 +108,8 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(sample_rate_, "hz")["--sample-rate"](
               "Live input real sample rate Hz (required with --live; 20e6 for the AirSpy raw stream)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"](
-              "Baseband low-pass cutoff Hz (--if flat, and composite when decimating)"))
+              "Baseband low-pass cutoff Hz (--if flat: default 4.8 MHz; composite: default 5.5 MHz, System I's "
+              "vision bandwidth - at or above Nyquist disables the filter)"))
           .add_argument(lyra::opt(sync_cutoff_, "hz")["--sync-cutoff"]("Sync-branch low-pass cutoff Hz"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs (0 = auto from Nyquist)"))
           .add_argument(lyra::opt(width_, "px")["--width"]("Output image width"))
@@ -328,8 +329,13 @@ int RenderCommand::run() const {
       "sample-format", sample_format_, {{"s16", SampleFormat::s16}, {"u8", SampleFormat::u8}});
   if (!sample_format)
     return 1;
+  // The unset cutoff takes the mode's own corner: composite gets System I's
+  // vision bandwidth; flat RF keeps 4.8 MHz, deliberately below EnvelopeOptions'
+  // 5.0 (which demod/sync keep) so the sound carrier clears after decimation
+  // while chroma survives. The saw modes' template ignores it either way.
+  const auto cutoff = cutoff_ > 0.0 ? cutoff_ : (composite ? kCompositeCutoffHz : 4.8e6);
   EnvelopeOptions opts{
-      .input = *input_mode, .sample_format = *sample_format, .cutoff_hz = cutoff_, .decimation = decimate};
+      .input = *input_mode, .sample_format = *sample_format, .cutoff_hz = cutoff, .decimation = decimate};
   if (composite_scale_ > 0.0)
     opts.composite.full_scale_volts = composite_scale_;
   if (composite_sync_v_ > 0.0)

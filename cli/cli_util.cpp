@@ -242,13 +242,18 @@ VisionFrontEnd make_front_end(double sample_rate_hz, double carrier_hz, const En
     std::size_t block_samples, std::vector<std::string> &warnings) {
   VisionFrontEnd fe;
   if (opts.input == InputMode::composite) {
-    // Filter only when decimating: at the capture rate the composite is already
-    // band-limited, and a cutoff near 4.43 MHz would bite into the chroma for
-    // no reason. Decimating first also means the clamp sees the low-passed
-    // signal, so a noise spike cannot drag it as deep.
+    // The composite signal is band-limited; the source's noise is not, and
+    // unfiltered the capture's full bandwidth of it lands in luma - no set
+    // shows that, so the vision low-pass runs here as on RF (decimating when
+    // asked; at /1 it is a pure filter). Filtering ahead of the clamp also
+    // means a noise spike cannot drag the sync tip as deep. A cutoff at or
+    // above the output Nyquist means "wide open" and bypasses the filter -
+    // except when decimating, where the anti-alias FIR is not optional and an
+    // over-Nyquist cutoff earns the aliasing warning instead.
     const auto rate_after = sample_rate_hz / static_cast<double>(opts.decimation);
-    if (opts.decimation > 1) {
-      if (opts.cutoff_hz >= rate_after / 2.0)
+    const auto wide_open = opts.cutoff_hz >= rate_after / 2.0;
+    if (!wide_open || opts.decimation > 1) {
+      if (wide_open)
         warnings.push_back(std::format("cutoff {:g} MHz exceeds the decimated Nyquist {:g} MHz; expect aliasing",
             opts.cutoff_hz / 1e6, rate_after / 2.0 / 1e6));
       fe.composite_lp.emplace(

@@ -99,7 +99,9 @@ void SyncCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "this command reports and can make most of the 'equalising' count an artifact"))
           .add_argument(lyra::opt(composite_sync_v_, "volts")["--composite-sync"](
               "Composite: the source's sync amplitude in volts (default 0.3)"))
-          .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"]("Baseband low-pass cutoff Hz"))
+          .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"](
+              "Baseband low-pass cutoff Hz (default 5 MHz for rf, 5.5 MHz - System I's vision band - for "
+              "composite; at or above Nyquist disables the filter)"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"](
               "Keep 1 sample per N inputs (0 = the mode's default: 2 for rf, 1 for composite)"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to inspect (e.g. corpus/alex_kidd)")));
@@ -126,10 +128,13 @@ int SyncCommand::run() const {
   // spurious narrow pulse per line, which lands straight in the equalising
   // count and inflates the jitter figure by an order of magnitude. Measured on
   // a 20 MS/s capture, /2 took the equalising count from 2235 to 70549 and the
-  // jitter from 0.041 to 0.394 us. Use --decimate here only deliberately.
+  // jitter from 0.041 to 0.394 us. Use --decimate here only deliberately. The
+  // undecimated vision low-pass (the composite default) is not that case:
+  // measured on pattern.bin it leaves the counts and jitter alone.
   std::vector<float> env;
   const std::size_t decimation = decimate_ != 0 ? decimate_ : (composite ? 1 : 2);
-  EnvelopeOptions opts{.input = *input, .cutoff_hz = cutoff_, .decimation = decimation};
+  const auto cutoff = cutoff_ > 0.0 ? cutoff_ : (composite ? kCompositeCutoffHz : kDefaults.cutoff_hz);
+  EnvelopeOptions opts{.input = *input, .cutoff_hz = cutoff, .decimation = decimation};
   if (composite_scale_ > 0.0)
     opts.composite.full_scale_volts = composite_scale_;
   if (composite_sync_v_ > 0.0)
