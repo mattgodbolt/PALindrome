@@ -329,12 +329,15 @@ TEST_CASE("Screen is block-invariant") {
     CHECK(frame_whole.pixels[i] == frame_chunked.pixels[i]);
 }
 
-TEST_CASE("VerticalSync flags the detected field anchor once per field") {
-  // field_start is the DETECTED anchor - a diagnostic now that the screen
-  // keys its per-field work on the v_phase wrap - so pin it here or it rots
-  // silently. Synthetic sync bits: normal lines ~7% duty, then a vertical
-  // interval of three broad-pulse lines (~84% duty) per field; the integrator
-  // must cross its slice once per interval, and only there.
+TEST_CASE("VerticalSync snaps v_phase to the detected field anchor once per field") {
+  // Pin where the detector fires or it rots silently: with kp = 1 the PI snap
+  // lands v_phase on exactly 0 at the detected anchor (err is the phase itself,
+  // or phase - 1, so the subtraction is exact), while the free-running wrap
+  // would need the accumulator to hit exactly 1.0, which this non-dyadic omega
+  // never does - so an exact-zero output after sample 0 IS the anchor.
+  // Synthetic sync bits: normal lines ~7% duty, then a vertical interval of
+  // three broad-pulse lines (~84% duty) per field; the integrator must cross
+  // its slice once per interval, and only there.
   // Everything here is ratio-driven, so run at a small rate to keep the test
   // light: 64-sample lines, 320/field = 50 Hz fields at 1.024 MS/s.
   constexpr double kVsRate = 1.024e6;
@@ -349,13 +352,14 @@ TEST_CASE("VerticalSync flags the detected field anchor once per field") {
         sync.push_back(video::SyncSample{.sync = k < duty});
     }
 
-  video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = kVsRate}};
+  video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = kVsRate, .pll_kp = 1.0}};
   vsync.prepare(sync.size());
   const auto out = vsync.process(sync);
   std::vector<std::size_t> anchors;
-  for (std::size_t i = 0; i < out.size(); ++i)
-    if (out[i].field_start)
+  for (std::size_t i = 1; i < out.size(); ++i)
+    if (out[i].v_phase == 0.0f)
       anchors.push_back(i);
+  REQUIRE(vsync.detected_fields() == kFields);
   REQUIRE(anchors.size() == kFields);
   for (std::size_t f = 0; f < kFields; ++f) {
     // Each anchor lands inside its field's vertical interval (integrator lag
@@ -432,8 +436,8 @@ TEST_CASE("Screen fades and emits on the free-running retrace - no sync detectio
   // The bug this pins: with the fade keyed on DETECTED field starts, unlocked
   // input (cold start, a mistuned carrier during AFC pull-in) deposited with
   // the decay switched off and integrated to a white screen no real set could
-  // show. The retrace is the flywheel's v_phase wrap, which free-runs: with
-  // field_start never set, the phosphor must still fade each field and the
+  // show. The retrace is the flywheel's v_phase wrap, which free-runs: with no
+  // field ever detected, the phosphor must still fade each field and the
   // field callback must still fire (the rolling picture).
   const video::ScreenConfig cfg{.width = 8,
       .height = 8,
@@ -462,7 +466,7 @@ TEST_CASE("Screen fades and emits on the free-running retrace - no sync detectio
   };
 
   // The callback count is the pin: on the detection-gated code it is zero
-  // (field_start is never set), so the fade never ran either. Charge
+  // (no field is ever detected), so the fade never ran either. Charge
   // convergence itself can't be asserted through the quantised readout - its
   // white normalisation tracks the buffer, so any steady state reads
   // full-scale whether or not the fade runs.
