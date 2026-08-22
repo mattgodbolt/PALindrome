@@ -328,8 +328,11 @@ def main():
     ap.add_argument("--height", type=int, default=576)
     ap.add_argument("--decimate", type=int, default=1,
                     help="keep 1 sample per N; >1 folds the 4.43 MHz chroma into cross-colour, so leave it at 1")
-    ap.add_argument("--deposit-threads", type=int, default=8,
+    ap.add_argument("--deposit-threads", type=int, default=12,
                     help="threads the screen deposit fans across (bit-exact); what makes 720x576 colour keep up")
+    ap.add_argument("--fps", type=int, default=50,
+                    help="stream frame rate: 50 shows every field so the eye can average the noise "
+                         "the way it does on a real set; lower (25, 10) trades that for decode margin")
     ap.add_argument("--mono", action="store_true", help="decode grey instead of colour (debug fallback only)")
     ap.add_argument("--airspy-binary", help="path to airspy_rx (default: PATH)")
     ap.add_argument("--palindrome-binary", help="path to the palindrome CLI (default: build/release/cli/palindrome)")
@@ -355,9 +358,13 @@ def main():
     channels = 1 if args.mono else 3
 
 
+    # 50 fields/s is a stride of 1; the decoder's --frame-stride counts fields
+    # per emitted frame, so fps maps to round(50/fps), floored at every-field.
+    stride = max(1, round(50 / max(1, args.fps)))
     render_cmd = [palindrome, "render", "--live",
                   "--width", str(args.width), "--height", str(args.height),
-                  "--decimate", str(args.decimate), "--deposit-threads", str(args.deposit_threads)]
+                  "--decimate", str(args.decimate), "--deposit-threads", str(args.deposit_threads),
+                  "--frame-stride", str(stride)]
 
     if args.source == "cxadc":
         # Baseband composite: the card's samples ARE the video, so there is no
