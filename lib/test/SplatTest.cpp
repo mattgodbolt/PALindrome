@@ -1,6 +1,7 @@
 #include "palindrome/splat.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -64,18 +65,17 @@ TEST_CASE("SplatDeposit is bit-exact across thread counts") {
   // a band keeps its records in list (sample) order.
   const auto recs = make_field(20000);
   const auto serial = deposit_with(1, recs);
-  for (const std::size_t lanes: {std::size_t{2}, std::size_t{3}, std::size_t{4}, std::size_t{8}, std::size_t{13}}) {
-    const auto threaded = deposit_with(lanes, recs);
-    REQUIRE(threaded.size() == serial.size());
-    bool identical = true;
-    for (std::size_t i = 0; i < serial.size(); ++i)
-      if (threaded[i] != serial[i]) {
-        identical = false;
-        break;
-      }
-    INFO("lanes = " << lanes);
-    CHECK(identical);
-  }
+  const auto lanes = GENERATE(std::size_t{2}, std::size_t{3}, std::size_t{4}, std::size_t{8}, std::size_t{13});
+  const auto threaded = deposit_with(lanes, recs);
+  REQUIRE(threaded.size() == serial.size());
+  bool identical = true;
+  for (std::size_t i = 0; i < serial.size(); ++i)
+    if (threaded[i] != serial[i]) {
+      identical = false;
+      break;
+    }
+  INFO("lanes = " << lanes);
+  CHECK(identical);
 }
 
 TEST_CASE("SplatDeposit clips spots that fall off the frame") {
