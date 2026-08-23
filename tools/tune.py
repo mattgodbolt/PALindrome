@@ -31,7 +31,7 @@ from urllib.parse import urlparse, parse_qs
 # One slider per knob: this list drives the sliders, their hover tooltips, and
 # the render invocation, so adding a knob (or fixing its help) is one entry here.
 # The knob table and its slider serialisation are shared with live_view.py.
-from knobs import KNOBS, knobs_json  # noqa: E402
+from knobs import KNOBS, knobs_json, load_profile, profile_json, resolve_profile  # noqa: E402
 
 PAGE = """<!doctype html><html><head><meta charset=utf-8><title>PALindrome tune</title><style>
 body{font-family:sans-serif;margin:1em;background:#111;color:#ddd}
@@ -56,13 +56,13 @@ button{margin:.4em .4em 0 0}#status{font:.85em monospace;margin-top:.5em;color:#
 <label>fps <input id=fps type=number min=1 max=60 step=1 value=50></label></div>
 <div id=status>rendering&hellip;</div></div></div></div>
 <script>
-const KNOBS=__KNOBS__, vals={}, kd=document.getElementById('knobs');
-for(const k of KNOBS){vals[k.name]=k.def;
+const KNOBS=__KNOBS__, VALUES=__VALUES__, vals={}, kd=document.getElementById('knobs');
+for(const k of KNOBS){vals[k.name]=(k.name in VALUES)?VALUES[k.name]:k.def;
  const r=document.createElement('div');r.className='knob';r.title=k.help;
  const l=document.createElement('label');l.textContent=k.label;
- const i=document.createElement('input');i.type='range';i.min=k.min;i.max=k.max;i.step=k.step;i.value=k.def;
+ const i=document.createElement('input');i.type='range';i.min=k.min;i.max=k.max;i.step=k.step;i.value=vals[k.name];
  const fmt=v=>k.choices?k.choices[+v]:(+v).toPrecision(4);
- const o=document.createElement('output');o.textContent=fmt(k.def);
+ const o=document.createElement('output');o.textContent=fmt(vals[k.name]);
  i.addEventListener('input',()=>o.textContent=fmt(i.value));
  i.addEventListener('change',()=>{vals[k.name]=i.value;render();});
  r.append(l,i,o);kd.append(r);}
@@ -99,10 +99,12 @@ render();
 
 
 class Tuner:
-    def __init__(self, args):
+    def __init__(self, args, seed):
         self.args = args
+        self.seed = seed  # profile-loaded starting values; also the page's slider seed
         self.tmp = tempfile.mkdtemp(prefix="palindrome_tune_")
         self.frames = []
+        self.last = None  # the last successfully rendered set, printed as a profile on exit
 
     def render(self, query):
         for old in glob.glob(os.path.join(self.tmp, "f_*.png")):
@@ -111,8 +113,10 @@ class Tuner:
                "--decimate", str(self.args.decimate),
                "--width", str(self.args.width), "--height", str(self.args.height),
                "--frame-stride", "1", "-o", os.path.join(self.tmp, "f.png")]
+        used = {}
         for k in KNOBS:
-            v = query.get(k["name"], [k["default"]])[0]
+            v = query.get(k["name"], [self.seed.get(k["name"], k["default"])])[0]
+            used[k["name"]] = v
             if k.get("choices"):  # the slider value is the index into choices
                 idx = max(0, min(len(k["choices"]) - 1, int(float(v))))  # clamp a hand-edited URL
                 cmd += [k["flag"], k["choices"][idx]]
@@ -127,6 +131,7 @@ class Tuner:
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or "render failed")
+        self.last = used
         self.frames = sorted(glob.glob(os.path.join(self.tmp, "f_*.png")))
         return len(self.frames)
 
@@ -146,7 +151,8 @@ def make_handler(tuner):
         def do_GET(self):
             u = urlparse(self.path)
             if u.path == "/":
-                html = PAGE.replace("__KNOBS__", knobs_json()).encode()
+                html = (PAGE.replace("__KNOBS__", knobs_json())
+                        .replace("__VALUES__", json.dumps(tuner.seed)).encode())
                 self._send(200, "text/html; charset=utf-8", html)
             elif u.path == "/render":
                 try:
@@ -179,15 +185,30 @@ def main():
     ap.add_argument("--width", type=int, default=643)
     ap.add_argument("--height", type=int, default=576)
     ap.add_argument("--decimate", type=int, default=0, help="0 = auto from the sample rate (the CLI default)")
+    ap.add_argument("--profile", action="append", default=[],
+                    help="start the sliders from a saved profile (a name in profiles/, or a path); may be "
+                         "repeated or comma-separated, later values winning")
     args = ap.parse_args()
 
-    tuner = Tuner(args)
+    seed = {}
+    profiles_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "profiles")
+    for spec in [s for arg in args.profile for s in arg.split(",") if s]:
+        try:
+            seed.update(load_profile(resolve_profile(spec, profiles_dir), KNOBS, "rf"))
+        except (OSError, ValueError) as e:
+            ap.error(str(e))
+
+    tuner = Tuner(args, seed)
     srv = HTTPServer((args.host, args.port), make_handler(tuner))
     print(f"tune: http://{args.host}:{args.port}/  (frames in {tuner.tmp}; Ctrl-C to stop)")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    if tuner.last is not None:
+        # The session's last rendered set, ready to drop into profiles/.
+        print(profile_json(tuner.last, "rf",
+                           description=f"tuned with tools/tune.py on {args.recording}"))
 
 
 if __name__ == "__main__":

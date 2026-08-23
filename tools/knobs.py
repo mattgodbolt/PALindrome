@@ -10,8 +10,16 @@ flags.
 composite` there is no IF and no detector, and render rejects those flags
 outright, so the tools filter them out rather than offer a slider that errors.
 The composite input-stage knobs are filtered the same way in RF mode.
+
+A profile is a JSON file - {"description", "input", "values": {knob: value}} -
+holding only the knobs a tuning session moved. That sparseness is the point:
+a source calibration (sync amplitude and the contrast/saturation that
+compensate it) and a TV's character (persistence, beam spot, gamma) can live
+in separate profiles and be layered, later values winning, because neither
+speaks for the knobs it doesn't name.
 """
 import json
+import os
 
 KNOBS = [
     dict(name="colour", flag="--colour", boolean=True, label="Colour", default=1,
@@ -308,3 +316,62 @@ def flags_for(knobs, values):
                 raise ValueError(f"{k['name']}: {v} outside {k['min']}..{k['max']}")
             out += [k["flag"], repr(v)]
     return out
+
+
+def resolve_profile(spec, profiles_dir):
+    """A bare name means <profiles_dir>/<name>.json; anything already shaped
+    like a path (a slash or a .json suffix) is used as-is."""
+    if "/" in spec or spec.endswith(".json"):
+        return spec
+    return os.path.join(profiles_dir, spec + ".json")
+
+
+def load_profile(path, knobs, input_mode=None):
+    """Read a profile file into {name: value}, validated against `knobs`.
+
+    The result is as sparse as the file: only the knobs the profile names, so
+    the caller overlays it on whatever state it already has and profiles
+    compose (see the module docstring). Validation is the same gate /set uses
+    (flags_for), so a stale or hand-edited file is a clean error naming it,
+    never a decoder relaunched with nonsense.
+    """
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{path}: {e}") from None
+    if not isinstance(data, dict) or not isinstance(data.get("values", {}), dict):
+        raise ValueError(f"{path}: not a profile ({{description, input, values}})")
+    mode = data.get("input")
+    if input_mode is not None and mode is not None and mode != input_mode:
+        raise ValueError(f"{path}: a {mode!r} profile, but this session's input is {input_mode!r}")
+    values = data.get("values", {})
+    known = {k["name"] for k in knobs}
+    for name in values:
+        if name not in known:
+            raise ValueError(f"{path}: unknown knob {name!r}")
+    try:
+        flags_for(knobs, values)
+    except ValueError as e:
+        raise ValueError(f"{path}: {e}") from None
+    return {name: float(v) for name, v in values.items()}
+
+
+def profile_json(values, input_mode, description=""):
+    """Serialise {name: value} as profile JSON. Sparse on the way out too:
+    values equal to the table default are dropped, so a saved profile carries
+    only the deliberate deviations and stays composable."""
+    kept = {}
+    for k in KNOBS:  # table order, so saved files diff stably
+        if k["name"] not in values:
+            continue
+        v = float(values[k["name"]])
+        if v == float(k["default"]):
+            continue
+        kept[k["name"]] = int(v) if v == int(v) else v
+    return json.dumps({"description": description, "input": input_mode, "values": kept}, indent=2)
+
+
+def save_profile(path, values, input_mode, description=""):
+    with open(path, "w") as f:
+        f.write(profile_json(values, input_mode, description) + "\n")
