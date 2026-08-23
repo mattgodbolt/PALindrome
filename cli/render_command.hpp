@@ -81,9 +81,14 @@ private:
   // Colour decode (PAL-D chroma channel). Off => a grey render.
   bool colour_{false};
   // saturation/contrast default per --agc mode (negative = unset): sync-tip
-  // gets the pot-up SMS calibration (0.085 / 1.6), adaptive keeps the values
-  // every pre-AGC render used (0.17 / 0.85), so a bare --agc adaptive
-  // reproduces the legacy output exactly.
+  // gets the pot-up SMS calibration, adaptive keeps the values every pre-AGC
+  // render used, so a bare --agc adaptive reproduces the legacy output
+  // exactly. Named so the help text quotes the same values decoder_config
+  // applies.
+  static constexpr double kSyncTipSaturation = 0.085;
+  static constexpr double kSyncTipContrast = 1.6;
+  static constexpr double kAdaptiveSaturation = 0.17;
+  static constexpr double kAdaptiveContrast = 0.85;
   double saturation_{-1.0}; // chroma gain (fraction of white reference)
   double contrast_{-1.0}; // the contrast pot: video gain pre-gamma (sync-tip mode)
   double h_blank_{kDefaults.screen.h_blank}; // retrace blanking end, h_phase

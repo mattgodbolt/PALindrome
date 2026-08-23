@@ -1,6 +1,7 @@
 #include "render_command.hpp"
 
 #include "cli_util.hpp"
+#include "palindrome/composite.hpp"
 #include "palindrome/decoder.hpp"
 #include "palindrome/demod.hpp"
 #include "palindrome/image.hpp"
@@ -30,6 +31,15 @@
 namespace palindrome::cli {
 
 namespace {
+// The unset --cutoff's flat-RF corner: deliberately below EnvelopeOptions'
+// 5.0 MHz (which demod/sync keep) so the sound carrier clears after
+// decimation while chroma survives. The saw modes' template ignores it.
+constexpr double kFlatRfCutoffHz = 4.8e6;
+
+// The composite defaults the flags' zero sentinels fall back to (via
+// EnvelopeOptions), quoted in the help so it cannot drift from the library.
+constexpr video::CompositeInputConfig kCompositeDefaults{};
+
 // foo/bar.png + 7 -> foo/bar_0007.png. An empty parent stays a bare filename.
 std::filesystem::path numbered_path(const std::filesystem::path &base, std::size_t idx) {
   return base.parent_path() / std::format("{}_{:04}{}", base.stem().string(), idx, base.extension().string());
@@ -92,6 +102,10 @@ int render_unsynced(const LoadedRecording &loaded, const EnvelopeOptions &opts, 
 } // namespace
 
 void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
+  // The -1 sentinel flags fall back to these template values; the help quotes
+  // the templates themselves so the numbers cannot drift.
+  const auto saw80 = demod::saw80_template();
+  const auto saw90 = demod::saw90_template();
   cli.add_argument(lyra::command("render", [this, &action](const lyra::group &) { action = [this] { return run(); }; })
           .help("Render a recording's vision signal to a PNG using a sync-locked horizontal flywheel")
           .add_argument(lyra::opt(output_, "file")["-o"]["--output"]("Output PNG (default: <recording>.png)"))
@@ -108,36 +122,42 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(sample_rate_, "hz")["--sample-rate"](
               "Live input real sample rate Hz (required with --live; 20e6 for the AirSpy raw stream)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"](
-              "Baseband low-pass cutoff Hz (--if flat: default 4.8 MHz; composite: default 5.5 MHz, System I's "
-              "vision bandwidth - at or above Nyquist disables the filter, unless decimating)"))
+              std::format("Baseband low-pass cutoff Hz (--if flat: default {} MHz; composite: default {} MHz, "
+                          "System I's vision bandwidth - at or above Nyquist disables the filter, unless decimating)",
+                  kFlatRfCutoffHz / 1e6, kCompositeCutoffHz / 1e6)))
           .add_argument(lyra::opt(sync_cutoff_, "hz")["--sync-cutoff"]("Sync-branch low-pass cutoff Hz"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"]("Keep 1 sample per N inputs (0 = auto from Nyquist)"))
           .add_argument(lyra::opt(width_, "px")["--width"]("Output image width"))
           .add_argument(lyra::opt(height_, "px")["--height"]("Output image height"))
           .add_argument(lyra::opt(persistence_, "fields")["--persistence"]("Phosphor persistence in field periods"))
           .add_argument(lyra::opt(beam_sigma_, "pitches")["--beam-sigma"](
-              "Beam-spot vertical sigma in scanline pitches (raster-relative, so --height/--overscan don't change "
-              "the spot; default 0.52 ~ the old 1.1 rows)"))
+              std::format("Beam-spot vertical sigma in scanline pitches (raster-relative, so --height/--overscan "
+                          "don't change the spot; default {} ~ the old 1.1 rows)",
+                  beam_sigma_)))
           .add_argument(lyra::opt(beam_sigma_x_, "cols")["--beam-sigma-x"](
               "Beam-spot horizontal size in output columns (<0 = match --beam-sigma, a round spot)"))
-          .add_argument(
-              lyra::opt(gamma_, "g")["--gamma"]("Electron-gun gamma (default 2.6, a real tube; 1.0 = linear)"))
-          .add_argument(lyra::opt(readout_gamma_, "g")["--readout-gamma"](
-              "Encode the phosphor light for a display with this gamma (default 2.2, sRGB-ish; 1.0 = raw linear)"))
+          .add_argument(lyra::opt(gamma_, "g")["--gamma"](
+              std::format("Electron-gun gamma (default {}, a real tube; 1.0 = linear)", gamma_)))
+          .add_argument(lyra::opt(readout_gamma_, "g")["--readout-gamma"](std::format(
+              "Encode the phosphor light for a display with this gamma (default {}, sRGB-ish; 1.0 = raw linear)",
+              readout_gamma_)))
           .add_argument(lyra::opt(overscan_, "x")["--overscan"](
-              "Fraction of the active picture cropped behind the bezel (default 0.06); negative = the old "
-              "full-scan framing, blanking on screen"))
+              std::format("Fraction of the active picture cropped behind the bezel (default {}); negative = the old "
+                          "full-scan framing, blanking on screen",
+                  overscan_)))
           .add_argument(lyra::opt(eht_sag_, "x")["--eht-sag"](
-              "EHT sag at a sustained full-white load (default 0.06: the raster breathes ~3%, dims and defocuses "
-              "on bright scenes; 0 = a perfectly regulated supply)"))
+              std::format("EHT sag at a sustained full-white load (default {}: the raster breathes ~3%, dims and "
+                          "defocuses on bright scenes; 0 = a perfectly regulated supply)",
+                  eht_sag_)))
           .add_argument(lyra::opt(eht_tc_, "fields")["--eht-tc"]("EHT sag/recovery time constant in field periods"))
           .add_argument(lyra::opt(eht_focus_, "x")["--eht-focus"]("Spot growth at full EHT sag (focus mistracking)"))
           .add_argument(lyra::opt(line_pull_, "x")["--line-pull"](
               "Line-output loading: width stretch after a full-white line (verticals bend next to bright content; "
               "0 disables)"))
           .add_argument(lyra::opt(bcl_, "x")["--bcl"](
-              "Beam-current limiter: average beam load above which the contrast is pulled down (default 0.7; "
-              "0 disables — an unprotected set)"))
+              std::format("Beam-current limiter: average beam load above which the contrast is pulled down "
+                          "(default {}; 0 disables — an unprotected set)",
+                  bcl_)))
           .add_argument(lyra::opt(bcl_tc_, "fields")["--bcl-tc"]("Beam-current limiter response, field periods"))
           .add_argument(lyra::opt(h_shift_, "x")["--h-shift"](
               "Horizontal centring (an internal service adjustment on a real set; factory default 0 should be "
@@ -151,15 +171,19 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "Signal kind: rf (default - a modulated real IF, through the vision front end) | composite "
               "(baseband CVBS, which skips the IF filter and detector; the samples are the video)"))
           .add_argument(lyra::opt(composite_scale_, "volts")["--composite-scale"](
-              "Composite: volts at input full scale (default 1.0, i.e. nominal 1 V pk-pk). Sets contrast. The "
-              "clamp anchors the tip whatever this says, so too LARGE only clips; too small shrinks the sync "
-              "depth with it, and below about a third of nominal the slicer never releases and nothing locks"))
+              std::format("Composite: volts at input full scale (default {}, i.e. nominal 1 V pk-pk). Sets "
+                          "contrast. The clamp anchors the tip whatever this says, so too LARGE only clips; too "
+                          "small shrinks the sync depth with it, and below about a third of nominal the slicer "
+                          "never releases and nothing locks",
+                  kCompositeDefaults.full_scale_volts)))
           .add_argument(lyra::opt(composite_sync_v_, "volts")["--composite-sync"](
-              "Composite: the source's sync amplitude in volts (default 0.3). Declaring a uniformly "
-              "under-modulating source's real value restores full geometry and the slicer's margin"))
+              std::format("Composite: the source's sync amplitude in volts (default {}). Declaring a uniformly "
+                          "under-modulating source's real value restores full geometry and the slicer's margin",
+                  kCompositeDefaults.sync_amplitude_v)))
           .add_argument(lyra::opt(composite_clamp_, "lines")["--composite-clamp"](
-              "Composite: sync-tip clamp release in line periods (default 128; faster droops within the line, "
-              "slower lets mains hum walk the black level)"))
+              std::format("Composite: sync-tip clamp release in line periods (default {}; faster droops within the "
+                          "line, slower lets mains hum walk the black level)",
+                  kCompositeDefaults.clamp_lines)))
           .add_argument(lyra::opt(if_mode_, "mode")["--if"](
               "IF response: saw80 (default - an 80s single-SAW set: Nyquist flank through the carrier, vestigial "
               "lower sideband, chroma a few dB down, finite sound notch, group-delay ripple) | saw90 (a 90s set: "
@@ -171,28 +195,36 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "distortion) | envelope (a diode detector: the magnitude, with the quadrature fold-through of the "
               "early sets)"))
           .add_argument(lyra::opt(sound_notch_db_, "db")["--sound-notch-db"](
-              "IF sound rejection in dB, positive (saw modes; default from the template: 26 for saw80, 40 for "
-              "saw90 - deliberately finite, the intercarrier residue is real; 0 removes the notch)"))
+              std::format("IF sound rejection in dB, positive (saw modes; default from the template: {} for saw80, "
+                          "{} for saw90 - deliberately finite, the intercarrier residue is real; 0 removes the notch)",
+                  -saw80.sound_notch_db, -saw90.sound_notch_db)))
           .add_argument(lyra::opt(gd_ripple_, "ns")["--gd-ripple"](
-              "IF group-delay ripple in ns peak (saw modes; default from the template: 50 for saw80, 8 for saw90)"))
+              std::format("IF group-delay ripple in ns peak (saw modes; default from the template: {} for saw80, "
+                          "{} for saw90)",
+                  saw80.gd_ripple_ns, saw90.gd_ripple_ns)))
           .add_argument(lyra::opt(agc_mode_, "mode")["--agc"](
               "Level scheme: sync-tip (default - the IF AGC holds the sync tip at 1.0, white is the standard's "
               "geometry) | adaptive (the legacy per-stage trackers, an autocontrast)"))
           .add_argument(lyra::opt(slice_depth_, "x")["--slice-depth"](
-              "Sync slice depth below the AGC'd tip (sync-tip mode; default 0.08 sits inside both broadcast 0.24 "
-              "and shallow console-modulator sync)"))
+              std::format("Sync slice depth below the AGC'd tip (sync-tip mode; default {} sits inside both "
+                          "broadcast 0.24 and shallow console-modulator sync)",
+                  slice_depth_)))
           .add_argument(lyra::opt(pwl_, "x")["--pwl"](
-              "Peak-white limiter ceiling as a multiple of standard white drive (default 1.25, the TDA3561A's; "
-              "0 disables; sync-tip mode only)"))
+              std::format("Peak-white limiter ceiling as a multiple of standard white drive (default {}, the "
+                          "TDA3561A's; 0 disables; sync-tip mode only)",
+                  pwl_)))
           .add_argument(lyra::opt(colour_)["--colour"]["--color"]("Decode PAL colour (RGB)"))
           .add_argument(lyra::opt(saturation_, "x")["--saturation"](
-              "Colour: chroma gain into the gun matrix (default 0.085; 0.17 in --agc adaptive)"))
+              std::format("Colour: chroma gain into the gun matrix (default {}; {} in --agc adaptive)",
+                  kSyncTipSaturation, kAdaptiveSaturation)))
           .add_argument(lyra::opt(contrast_, "x")["--contrast"](
-              "The contrast pot: video gain ahead of the gun (default 1.6, turned up for the under-modulated "
-              "SMS corpus; broadcast wants ~1.0). In --agc adaptive: the readout white point, default 0.85"))
+              std::format("The contrast pot: video gain ahead of the gun (default {}, turned up for the "
+                          "under-modulated SMS corpus; broadcast wants ~1.0). In --agc adaptive: the readout white "
+                          "point, default {}",
+                  kSyncTipContrast, kAdaptiveContrast)))
           .add_argument(lyra::opt(h_blank_, "x")["--h-blank"]("Retrace blanking end, as an h_phase fraction"))
-          .add_argument(
-              lyra::opt(subcarrier_, "hz")["--subcarrier"]("Colour: subcarrier crystal Hz (default 4.43361875 MHz)"))
+          .add_argument(lyra::opt(subcarrier_, "hz")["--subcarrier"](
+              std::format("Colour: subcarrier crystal Hz (default {} MHz)", kDefaults.chroma.subcarrier_hz / 1e6)))
           .add_argument(lyra::opt(uv_bandwidth_, "hz")["--uv-bandwidth"](
               "Colour: post-demod U/V low-pass corner Hz (0 = decoder default)"))
           .add_argument(lyra::opt(band_lo_, "hz")["--band-lo"]("Colour: chroma band-pass low edge Hz"))
@@ -204,12 +236,14 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "Colour: 1H comb — off (PAL-S) | delay-line (PAL-D, adaptive depth) | glass (PAL-D, the real fixed "
               "63.943 us block) | post (default)"))
           .add_argument(lyra::opt(no_delay_line_)["--no-delay-line"]("Colour: alias for --comb-mode off"))
-          .add_argument(lyra::opt(ref_tc_, "lines")["--ref-tc"](
-              "Colour: APC reference time constant in lines (default 10; slower = more period-faithful, [2,100])"))
+          .add_argument(lyra::opt(ref_tc_, "lines")["--ref-tc"](std::format(
+              "Colour: APC reference time constant in lines (default {}; slower = more period-faithful, [2,100])",
+              ref_tc_)))
           .add_argument(
               lyra::opt(no_killer_)["--no-killer"]("Colour: disable the colour killer (no ident-based chroma muting)"))
-          .add_argument(lyra::opt(apc_catch_, "hz")["--apc-catch"](
-              "Colour: APC crystal-pull catching range Hz (default 500, as a real crystal; 0 = fixed crystal)"))
+          .add_argument(lyra::opt(apc_catch_, "hz")["--apc-catch"](std::format(
+              "Colour: APC crystal-pull catching range Hz (default {}, as a real crystal; 0 = fixed crystal)",
+              apc_catch_)))
           .add_argument(lyra::opt(apc_pull_, "x")["--apc-pull"]("Colour: APC pull rate (fraction of drift per line)"))
           .add_argument(
               lyra::opt(sync_level_, "x")["--sync-level"]("Sync-separator slice level (--agc adaptive mode only)"))
@@ -327,7 +361,7 @@ int RenderCommand::run() const {
   // explicit value wins. The subcarrier is the textbook PAL crystal unless a
   // positive --subcarrier overrides it (matching the decoder, which ignores a
   // non-positive value — so auto_decimate never divides by zero or negative).
-  const double subcarrier_hz = subcarrier_ > 0.0 ? subcarrier_ : 4.43361875e6;
+  const double subcarrier_hz = subcarrier_ > 0.0 ? subcarrier_ : kDefaults.chroma.subcarrier_hz;
   const std::size_t decimate = decimate_ != 0 ? decimate_ : auto_decimate(loaded.sample_rate_hz, subcarrier_hz);
 
   const auto envelope_rate = loaded.sample_rate_hz / static_cast<double>(decimate);
@@ -337,10 +371,8 @@ int RenderCommand::run() const {
   if (!sample_format)
     return 1;
   // The unset cutoff takes the mode's own corner: composite gets System I's
-  // vision bandwidth; flat RF keeps 4.8 MHz, deliberately below EnvelopeOptions'
-  // 5.0 (which demod/sync keep) so the sound carrier clears after decimation
-  // while chroma survives. The saw modes' template ignores it either way.
-  const auto cutoff = cutoff_ > 0.0 ? cutoff_ : (composite ? kCompositeCutoffHz : 4.8e6);
+  // vision bandwidth, flat RF the sound-clearing one (see kFlatRfCutoffHz).
+  const auto cutoff = cutoff_ > 0.0 ? cutoff_ : (composite ? kCompositeCutoffHz : kFlatRfCutoffHz);
   EnvelopeOptions opts{
       .input = *input_mode, .sample_format = *sample_format, .cutoff_hz = cutoff, .decimation = decimate};
   if (composite_scale_ > 0.0)
@@ -525,8 +557,8 @@ std::optional<video::DecoderConfig> RenderCommand::decoder_config(double envelop
   // The pot defaults follow the level scheme (see render_command.hpp): the
   // sync-tip values are the provisional SMS calibration, the adaptive ones
   // are what every pre-AGC render used, so the legacy mode looks legacy.
-  screen.saturation = saturation_ >= 0.0 ? saturation_ : (adaptive ? 0.17 : 0.085);
-  screen.contrast = contrast_ >= 0.0 ? contrast_ : (adaptive ? 0.85 : 1.6);
+  screen.saturation = saturation_ >= 0.0 ? saturation_ : (adaptive ? kAdaptiveSaturation : kSyncTipSaturation);
+  screen.contrast = contrast_ >= 0.0 ? contrast_ : (adaptive ? kAdaptiveContrast : kSyncTipContrast);
   screen.deposit_lanes = deposit_threads_;
   screen.readout_gamma = readout_gamma_;
   screen.eht_sag = eht_sag_;
