@@ -406,7 +406,10 @@ def make_handler(latest, dec, active_knobs, values, values_lock, profiles_dir, i
                 knobs.save_profile(path, snapshot, input_mode,
                                    description=f"saved from the live view {time.strftime('%Y-%m-%d')}")
             except OSError as e:
-                self._send(500, "text/plain; charset=utf-8", str(e).replace(path, name).encode())
+                # A failing mkstemp names its random temp path, so strip the
+                # directory as well as the target path from the body.
+                msg = str(e).replace(path, name).replace(profiles_dir, "profiles")
+                self._send(500, "text/plain; charset=utf-8", msg.encode())
                 return
             self._send(200, "application/json", json.dumps(profile_names()).encode())
 

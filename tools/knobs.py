@@ -19,7 +19,9 @@ in separate profiles and be layered, later values winning, because neither
 speaks for the knobs it doesn't name.
 """
 import json
+import math
 import os
+import tempfile
 
 KNOBS = [
     dict(name="colour", flag="--colour", boolean=True, label="Colour", default=1,
@@ -303,6 +305,10 @@ def flags_for(knobs, values):
             v = float(raw)
         except (TypeError, ValueError):
             raise ValueError(f"{k['name']}: {raw!r} is not a number")
+        if not math.isfinite(v):
+            # Up front, not left to the range check: int(inf)/int(nan) in the
+            # choices and boolean branches would raise past the caller's net.
+            raise ValueError(f"{k['name']}: {raw!r} is not finite")
         if k.get("choices"):
             i = int(v)
             if not 0 <= i < len(k["choices"]):
@@ -379,9 +385,16 @@ def profile_json(values, input_mode, description=""):
 
 
 def save_profile(path, values, input_mode, description=""):
-    # Via a sibling temp file + atomic replace, so a concurrent load never
-    # sees a half-written profile.
-    tmp = f"{path}.tmp"
-    with open(tmp, "w") as f:
-        f.write(profile_json(values, input_mode, description) + "\n")
-    os.replace(tmp, path)
+    # Via an anonymous sibling temp file + atomic replace: a concurrent load
+    # never sees a half-written profile, and concurrent saves of the same name
+    # cannot interleave in a shared temp. mkstemp's private 0600 would survive
+    # the replace, so restore normal file permissions before it lands.
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(profile_json(values, input_mode, description) + "\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except OSError:
+        os.unlink(tmp)
+        raise
