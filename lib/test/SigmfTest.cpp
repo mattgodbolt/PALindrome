@@ -4,7 +4,9 @@
 #include <format>
 #include <string_view>
 
+#include <catch2/catch_message.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 using namespace std::string_view_literals;
 namespace sigmf = palindrome::sigmf;
@@ -170,26 +172,26 @@ TEST_CASE("load reports a missing file as a ParseError naming the path") {
 #ifdef PALINDROME_CORPUS_DIR
 TEST_CASE("the committed corpus metadata loads and validates") {
   const std::filesystem::path corpus{PALINDROME_CORPUS_DIR};
-  for (const auto *name: {"alex_kidd.sigmf-meta", "alex_kidd_title.sigmf-meta", "wb3.sigmf-meta"}) {
-    CAPTURE(name);
-    const auto meta = sigmf::load(corpus / name);
+  const auto *name =
+      GENERATE(as<const char *>{}, "alex_kidd.sigmf-meta", "alex_kidd_title.sigmf-meta", "wb3.sigmf-meta");
+  CAPTURE(name);
+  const auto meta = sigmf::load(corpus / name);
 
-    // The format the capture tool writes: real int16 LE at 32 MSps.
-    CHECK(meta.global.datatype == "ri16_le");
-    CHECK(meta.global.parsed_datatype.bytes_per_sample() == 2u);
-    REQUIRE(meta.global.sample_rate.has_value());
-    CHECK(meta.global.sample_rate.value() == 32000000.0);
+  // The format the capture tool writes: real int16 LE at 32 MSps.
+  CHECK(meta.global.datatype == "ri16_le");
+  CHECK(meta.global.parsed_datatype.bytes_per_sample() == 2u);
+  REQUIRE(meta.global.sample_rate.has_value());
+  CHECK(meta.global.sample_rate.value() == 32000000.0);
 
-    // The rx888 extension is declared, and its carrier fields are reachable.
-    REQUIRE(meta.global.extensions.size() == 1);
-    CHECK(meta.global.extensions.front().name == "rx888");
-    CHECK(meta.field<std::int64_t>("rx888:vision_if_hz").value() > 3000000);
+  // The rx888 extension is declared, and its carrier fields are reachable.
+  REQUIRE(meta.global.extensions.size() == 1);
+  CHECK(meta.global.extensions.front().name == "rx888");
+  CHECK(meta.field<std::int64_t>("rx888:vision_if_hz").value() > 3000000);
 
-    // One capture, one annotation covering a whole number of frames.
-    REQUIRE(meta.captures.size() == 1);
-    CHECK(meta.captures.front().frequency.value() == 590200000.0);
-    REQUIRE(meta.annotations.size() == 1);
-    CHECK(meta.annotations.front().sample_count.value() == 15360000ULL);
-  }
+  // One capture, one annotation covering a whole number of frames.
+  REQUIRE(meta.captures.size() == 1);
+  CHECK(meta.captures.front().frequency.value() == 590200000.0);
+  REQUIRE(meta.annotations.size() == 1);
+  CHECK(meta.annotations.front().sample_count.value() == 15360000ULL);
 }
 #endif

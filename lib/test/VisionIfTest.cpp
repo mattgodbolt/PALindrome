@@ -10,7 +10,9 @@
 #include <stdexcept>
 #include <vector>
 
+#include <catch2/catch_message.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 namespace demod = palindrome::demod;
@@ -158,12 +160,12 @@ TEST_CASE("Nyquist flank sums a DSB sideband pair back to flat video") {
   // leave a quadrature term the envelope detector folds in (the genuine VSB
   // quadrature distortion a quasi-sync detector removes), so it is checked
   // loosely, high side only.
-  for (const double mod_hz: {200.0e3, 312.5e3, 600.0e3}) {
-    const auto r = run(demod::saw80_template(), am_tone(40000, mod_hz, 0.5));
-    CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.02));
-    CHECK(r.mean >= 0.5);
-    CHECK(r.mean < 0.54);
-  }
+  const auto mod_hz = GENERATE(200.0e3, 312.5e3, 600.0e3);
+  CAPTURE(mod_hz);
+  const auto r = run(demod::saw80_template(), am_tone(40000, mod_hz, 0.5));
+  CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.02));
+  CHECK(r.mean >= 0.5);
+  CHECK(r.mean < 0.54);
 }
 
 TEST_CASE("VisionIf chroma-region response follows the template's shoulder") {
@@ -248,23 +250,23 @@ TEST_CASE("VisionIf is bit-exact block-invariant") {
   // sample-order recurrence carried across calls, so == costs nothing.
   const auto x = am_tone(30000, 600.0e3, 0.5);
   const auto t = demod::saw80_template();
-  for (const auto det: {demod::Detector::envelope, demod::Detector::quasi_sync}) {
-    demod::VisionIf one{kRate, kCarrier, t, det};
-    one.prepare(x.size());
-    const auto all = one.process(x);
-    const std::vector<float> whole{all.begin(), all.end()};
+  const auto det = GENERATE(demod::Detector::envelope, demod::Detector::quasi_sync);
+  CAPTURE(det);
+  demod::VisionIf one{kRate, kCarrier, t, det};
+  one.prepare(x.size());
+  const auto all = one.process(x);
+  const std::vector<float> whole{all.begin(), all.end()};
 
-    demod::VisionIf chunked{kRate, kCarrier, t, det};
-    chunked.prepare(x.size());
-    std::vector<float> pieces;
-    constexpr std::size_t kChunk = 337;
-    for (std::size_t at = 0; at < x.size(); at += kChunk) {
-      const auto n = std::min(kChunk, x.size() - at);
-      const auto out = chunked.process(std::span{x}.subspan(at, n));
-      pieces.insert(pieces.end(), out.begin(), out.end());
-    }
-    CHECK(pieces == whole);
+  demod::VisionIf chunked{kRate, kCarrier, t, det};
+  chunked.prepare(x.size());
+  std::vector<float> pieces;
+  constexpr std::size_t kChunk = 337;
+  for (std::size_t at = 0; at < x.size(); at += kChunk) {
+    const auto n = std::min(kChunk, x.size() - at);
+    const auto out = chunked.process(std::span{x}.subspan(at, n));
+    pieces.insert(pieces.end(), out.begin(), out.end());
   }
+  CHECK(pieces == whole);
 }
 
 TEST_CASE("VisionIf stays bit-exact block-invariant at a standing AFC offset") {
@@ -283,17 +285,17 @@ TEST_CASE("VisionIf stays bit-exact block-invariant at a standing AFC offset") {
   const auto all = one.process(x);
   const std::vector<float> whole{all.begin(), all.end()};
 
-  for (const std::size_t chunk: {std::size_t{1}, std::size_t{337}, std::size_t{4096}}) {
-    demod::VisionIf chunked{kRate, kCarrier, shape, demod::Detector::quasi_sync};
-    chunked.prepare(x.size());
-    std::vector<float> pieces;
-    for (std::size_t at = 0; at < x.size(); at += chunk) {
-      const auto n = std::min(chunk, x.size() - at);
-      const auto out = chunked.process(std::span{x}.subspan(at, n));
-      pieces.insert(pieces.end(), out.begin(), out.end());
-    }
-    CHECK(pieces == whole);
+  const auto chunk = GENERATE(std::size_t{1}, std::size_t{337}, std::size_t{4096});
+  CAPTURE(chunk);
+  demod::VisionIf chunked{kRate, kCarrier, shape, demod::Detector::quasi_sync};
+  chunked.prepare(x.size());
+  std::vector<float> pieces;
+  for (std::size_t at = 0; at < x.size(); at += chunk) {
+    const auto n = std::min(chunk, x.size() - at);
+    const auto out = chunked.process(std::span{x}.subspan(at, n));
+    pieces.insert(pieces.end(), out.begin(), out.end());
   }
+  CHECK(pieces == whole);
 }
 
 TEST_CASE("quasi-sync suppresses the envelope detector's VSB quadrature distortion") {
@@ -303,14 +305,14 @@ TEST_CASE("quasi-sync suppresses the envelope detector's VSB quadrature distorti
   // the carrier level up to the tank's own sideband leakage (the reference LC
   // passes a sliver of the main sideband - a real set's residual, ~1-2% at the
   // flank edge, and measurably below the envelope's lift at every tone).
-  for (const double mod_hz: {200.0e3, 312.5e3, 600.0e3}) {
-    const auto x = am_tone(60000, mod_hz, 0.5);
-    const auto r = run(demod::saw80_template(), x, kRate, kCarrier, demod::Detector::quasi_sync, kLockSkip);
-    const auto env = run(demod::saw80_template(), x, kRate, kCarrier, demod::Detector::envelope, kLockSkip);
-    CHECK_THAT(r.mean, WithinAbs(0.5, 0.015));
-    CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.02));
-    CHECK(std::abs(r.mean - 0.5) < std::abs(env.mean - 0.5)); // the residual stays below the envelope's lift
-  }
+  const auto mod_hz = GENERATE(200.0e3, 312.5e3, 600.0e3);
+  CAPTURE(mod_hz);
+  const auto x = am_tone(60000, mod_hz, 0.5);
+  const auto r = run(demod::saw80_template(), x, kRate, kCarrier, demod::Detector::quasi_sync, kLockSkip);
+  const auto env = run(demod::saw80_template(), x, kRate, kCarrier, demod::Detector::envelope, kLockSkip);
+  CHECK_THAT(r.mean, WithinAbs(0.5, 0.015));
+  CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.02));
+  CHECK(std::abs(r.mean - 0.5) < std::abs(env.mean - 0.5)); // the residual stays below the envelope's lift
 }
 
 TEST_CASE("quasi-sync rides through brief overmodulation; the envelope folds") {
@@ -339,17 +341,16 @@ TEST_CASE("quasi-sync acquires upright from any cold-start phase") {
   // Keep the sweep as the regression fence: a phase-locked reference with a
   // sign-corrected (Costas-style) error once stabilised 180 degrees too and
   // locked the RX888 corpus inverted, starving the sync slicer of every edge.
-  for (const double phase0: {0.0, 1.5, std::numbers::pi, 4.5}) {
-    std::vector<float> x(60000);
-    for (std::size_t k = 0; k < x.size(); ++k) {
-      const auto t = static_cast<double>(k) / kRate;
-      x[k] =
-          static_cast<float>((1.0 + 0.5 * std::cos(two_pi * 312.5e3 * t)) * std::cos(two_pi * kCarrier * t + phase0));
-    }
-    const auto r = run(demod::saw80_template(), x, kRate, kCarrier, demod::Detector::quasi_sync, kLockSkip);
-    CHECK_THAT(r.mean, WithinAbs(0.5, 0.005)); // +0.5, never -0.5: upright lock only
-    CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.02));
+  const auto phase0 = GENERATE(0.0, 1.5, std::numbers::pi, 4.5);
+  CAPTURE(phase0);
+  std::vector<float> x(60000);
+  for (std::size_t k = 0; k < x.size(); ++k) {
+    const auto t = static_cast<double>(k) / kRate;
+    x[k] = static_cast<float>((1.0 + 0.5 * std::cos(two_pi * 312.5e3 * t)) * std::cos(two_pi * kCarrier * t + phase0));
   }
+  const auto r = run(demod::saw80_template(), x, kRate, kCarrier, demod::Detector::quasi_sync, kLockSkip);
+  CHECK_THAT(r.mean, WithinAbs(0.5, 0.005)); // +0.5, never -0.5: upright lock only
+  CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.02));
 }
 
 TEST_CASE("quasi-sync locks under decimation - the shipped default geometry") {
@@ -357,17 +358,17 @@ TEST_CASE("quasi-sync locks under decimation - the shipped default geometry") {
   // corpus), so the decimation-folding of the tank's centre step (omega * d
   // per output sample) is load-bearing: drop that factor and the tank rings
   // megahertz off the carrier, while every d=1 test stays green.
-  for (const std::size_t d: {std::size_t{2}, std::size_t{4}}) {
-    const auto x = am_tone(120000, 312.5e3, 0.5);
-    demod::VisionIf dut{kRate, kCarrier, demod::saw80_template(), demod::Detector::quasi_sync, demod::kDefaultIfTaps,
-        palindrome::dsp::Window::Hamming, d};
-    dut.prepare(x.size());
-    const auto r = measure(dut.process(x), kLockSkip / d * 2); // fewer corrections/s: allow more settle
-    // The tank's Hz bandwidth is fixed, so decimation widens it per output
-    // sample and the sideband leakage's mean shift grows a little with d.
-    CHECK_THAT(r.mean, WithinAbs(0.5, 0.012));
-    CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.02));
-  }
+  const auto d = GENERATE(std::size_t{2}, std::size_t{4});
+  CAPTURE(d);
+  const auto x = am_tone(120000, 312.5e3, 0.5);
+  demod::VisionIf dut{kRate, kCarrier, demod::saw80_template(), demod::Detector::quasi_sync, demod::kDefaultIfTaps,
+      palindrome::dsp::Window::Hamming, d};
+  dut.prepare(x.size());
+  const auto r = measure(dut.process(x), kLockSkip / d * 2); // fewer corrections/s: allow more settle
+  // The tank's Hz bandwidth is fixed, so decimation widens it per output
+  // sample and the sideband leakage's mean shift grows a little with d.
+  CHECK_THAT(r.mean, WithinAbs(0.5, 0.012));
+  CHECK_THAT(r.amplitude, WithinRel(0.5 * 0.5, 0.02));
 }
 
 TEST_CASE("quasi-sync locks through a carrier-frequency error") {

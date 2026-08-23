@@ -11,7 +11,9 @@
 #include <span>
 #include <vector>
 
+#include <catch2/catch_message.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 namespace demod = palindrome::demod;
@@ -112,19 +114,19 @@ TEST_CASE("Hilbert is block-invariant (bit-exact across chunkings)") {
   const auto wspan = whole_dut.process(x);
   const std::vector<std::complex<float>> whole{wspan.begin(), wspan.end()};
 
-  for (const std::size_t chunk: {std::size_t{1}, std::size_t{7}, std::size_t{63}, std::size_t{64}, std::size_t{333}}) {
-    demod::Hilbert chunked_dut{};
-    chunked_dut.prepare(chunk);
-    std::vector<std::complex<float>> chunked;
-    for (std::size_t off = 0; off < x.size(); off += chunk) {
-      const std::size_t m = std::min(chunk, x.size() - off);
-      const auto out = chunked_dut.process(std::span{x}.subspan(off, m));
-      chunked.insert(chunked.end(), out.begin(), out.end());
-    }
-    REQUIRE(chunked.size() == whole.size());
-    for (std::size_t k = 0; k < whole.size(); ++k)
-      CHECK(chunked[k] == whole[k]); // FIR + delay line: chunking changes nothing
+  const auto chunk = GENERATE(std::size_t{1}, std::size_t{7}, std::size_t{63}, std::size_t{64}, std::size_t{333});
+  CAPTURE(chunk);
+  demod::Hilbert chunked_dut{};
+  chunked_dut.prepare(chunk);
+  std::vector<std::complex<float>> chunked;
+  for (std::size_t off = 0; off < x.size(); off += chunk) {
+    const std::size_t m = std::min(chunk, x.size() - off);
+    const auto out = chunked_dut.process(std::span{x}.subspan(off, m));
+    chunked.insert(chunked.end(), out.begin(), out.end());
   }
+  REQUIRE(chunked.size() == whole.size());
+  for (std::size_t k = 0; k < whole.size(); ++k)
+    CHECK(chunked[k] == whole[k]); // FIR + delay line: chunking changes nothing
 }
 
 TEST_CASE("Hilbert rejects tap counts that aren't 3 (mod 4)") {
@@ -235,19 +237,19 @@ TEST_CASE("ComplexAmEnvelope is block-invariant (bit-exact across chunkings)") {
   const auto wspan = whole_dut.process(x);
   const std::vector<float> whole{wspan.begin(), wspan.end()};
 
-  for (const std::size_t chunk: {std::size_t{1}, std::size_t{7}, std::size_t{63}, std::size_t{64}, std::size_t{333}}) {
-    demod::ComplexAmEnvelope chunked_dut{fs, fc, 1.0e5, demod::kDefaultVisionTaps, dsp::Window::Hamming, d};
-    chunked_dut.prepare(chunk);
-    std::vector<float> chunked;
-    for (std::size_t off = 0; off < n; off += chunk) {
-      const std::size_t m = std::min(chunk, n - off);
-      const auto out = chunked_dut.process(std::span{x}.subspan(off, m));
-      chunked.insert(chunked.end(), out.begin(), out.end());
-    }
-    REQUIRE(chunked.size() == whole.size());
-    for (std::size_t k = 0; k < whole.size(); ++k)
-      CHECK(chunked[k] == whole[k]);
+  const auto chunk = GENERATE(std::size_t{1}, std::size_t{7}, std::size_t{63}, std::size_t{64}, std::size_t{333});
+  CAPTURE(chunk);
+  demod::ComplexAmEnvelope chunked_dut{fs, fc, 1.0e5, demod::kDefaultVisionTaps, dsp::Window::Hamming, d};
+  chunked_dut.prepare(chunk);
+  std::vector<float> chunked;
+  for (std::size_t off = 0; off < n; off += chunk) {
+    const std::size_t m = std::min(chunk, n - off);
+    const auto out = chunked_dut.process(std::span{x}.subspan(off, m));
+    chunked.insert(chunked.end(), out.begin(), out.end());
   }
+  REQUIRE(chunked.size() == whole.size());
+  for (std::size_t k = 0; k < whole.size(); ++k)
+    CHECK(chunked[k] == whole[k]);
 }
 
 TEST_CASE("ComplexAmEnvelope rejects bad parameters") {
