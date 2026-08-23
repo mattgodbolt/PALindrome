@@ -9,6 +9,7 @@ flags.
 `rf_only` marks a knob that describes the RF front end. Under `--input
 composite` there is no IF and no detector, and render rejects those flags
 outright, so the tools filter them out rather than offer a slider that errors.
+The composite input-stage knobs are filtered the same way in RF mode.
 """
 import json
 
@@ -17,14 +18,30 @@ KNOBS = [
          help="Decode PAL colour (RGB) vs a monochrome render. With colour on, the chroma is separated "
               "and demodulated; the colour knobs below take effect."),
     dict(name="cutoff", flag="--cutoff", label="Envelope cutoff (Hz)",
-         min=3.0e6, max=4.9e6, step=5.0e4, default=4.8e6,
+         min=3.0e6, max=8.0e6, step=5.0e4, default=4.8e6,
          help="Front-end low-pass on the demodulated envelope. For colour it MUST pass the 4.43 MHz subcarrier, "
-              "so keep it ≥4.6 MHz — and below Nyquist (<5 MHz for a 10 MS/s AirSpy at --decimate 1). Lower drops "
-              "the subcarrier and colour with it."),
+              "so keep it ≥4.6 MHz — and below Nyquist (<5 MHz for a 10 MS/s AirSpy at --decimate 1; 10 MHz for "
+              "a 20 MS/s composite capture, where 5.5 MHz is the period video bandwidth). Lower drops the "
+              "subcarrier and colour with it."),
     dict(name="sync_cutoff", flag="--sync-cutoff", label="Sync LP cutoff (Hz)",
          min=0.3e6, max=3.0e6, step=1.0e5, default=1.2e6,
          help="A separate narrow low-pass on the copy of the signal used only for sync detection — keeps chroma and "
               "noise from chattering the sync slicer. Affects lock stability, not the picture itself."),
+    dict(name="composite_sync", flag="--composite-sync", label="Composite sync amplitude",
+         min=0.05, max=1.0, step=0.001, default=0.3,
+         help="The sync pulse amplitude the capture chain actually delivers, in normalised full-scale units — the "
+              "electrical calibration everything scales from (the map's gain is 0.24/this). `palindrome levels` "
+              "measures it; declaring it too small decodes everything hot (e.g. this card at level 8 wants 0.363, "
+              "not the textbook 0.3)."),
+    dict(name="composite_scale", flag="--composite-scale", label="Composite full scale",
+         min=0.2, max=4.0, step=0.01, default=1.0,
+         help="The full-scale span the sync amplitude is quoted against. A pure gain on everything after the "
+              "sync-tip anchor; usually leave at 1.0 and set the sync amplitude instead."),
+    dict(name="composite_clamp", flag="--composite-clamp", label="Clamp release (lines)",
+         min=4, max=512, step=4, default=128,
+         help="Sync-tip clamp release time, in line periods. Shorter tracks hum and baseline wander faster but "
+              "droops on bright content (4.1% white droop at 32 lines); longer is steadier (1.3% at 128) but "
+              "hum starts showing near 512."),
     dict(name="persistence", flag="--persistence", label="Phosphor persistence (fields)",
          min=0.3, max=6.0, step=0.1, default=1.6,
          help="How long the phosphor glows, in field periods (~20 ms each). Higher blends more fields together "
@@ -91,6 +108,11 @@ KNOBS = [
          help="Colour intensity: the chroma gain as a fraction of the standard white drive (the colour pot). It "
               "rides the contrast pot (both scale the guns, as the TDA3561A gangs them), so the default suits "
               "contrast 1.6; broadcast levels at contrast 1.0 want ~0.17. 0 = monochrome."),
+    dict(name="uv_bandwidth", flag="--uv-bandwidth", label="Chroma bandwidth (Hz)",
+         min=2.0e5, max=2.6e6, step=5.0e4, default=1.3e6,
+         help="Post-demodulation U/V low-pass corner. 1.3 MHz is the transmission standard; consumer sets ran "
+              "their chroma amps nearer 600 kHz, trading colour detail for less cross-colour and speckle. "
+              "Narrower softens colour edges."),
     dict(name="contrast", flag="--contrast", label="Contrast",
          min=0.4, max=3.0, step=0.05, default=1.6,
          help="The contrast pot: video-amplifier gain ahead of the gun (pre-gamma). 1.0 maps a broadcast-standard "
@@ -245,12 +267,16 @@ def knobs_json(knobs=None):
 # mode. Kept as a set of flag names so it stays true if a knob is renamed.
 RF_ONLY = {"--if", "--detector", "--sound-notch-db", "--gd-ripple"}
 
+# Flags that describe the baseband input stage: meaningless, and rejected, when
+# the front end is an RF demodulator.
+COMPOSITE_ONLY = {"--composite-sync", "--composite-scale", "--composite-clamp"}
+
 
 def for_input(mode):
     """The knobs that apply to an input mode ("rf" or "composite")."""
     if mode == "composite":
         return [k for k in KNOBS if k["flag"] not in RF_ONLY]
-    return list(KNOBS)
+    return [k for k in KNOBS if k["flag"] not in COMPOSITE_ONLY]
 
 
 def flags_for(knobs, values):
