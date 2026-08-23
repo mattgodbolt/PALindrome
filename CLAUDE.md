@@ -80,10 +80,11 @@ samples?* → `double`; otherwise `float`, and snapshot any `double` it touches.
   tested with a tolerance, not `==`). When you make that trade: switch that stage's
   block-invariance test from `==` to a tolerance, say why in the comment, and
   re-baseline the reference renders (`tools/golden.py` is the harness: CI's
-  `check` compares desensitised corpus-render hashes against `tests/golden.txt`,
-  so ULP-level drift passes untouched, while a visible change runs `diff` for
-  sign-off images then `bless` to rewrite the manifest in the same PR) - it's a
-  regression *tool*, not a contract.
+  `check` hashes each corpus render's exact pixels against `tests/golden.txt`,
+  so any change - ULP-level included - fails until a human signs it off from
+  `diff`'s side-by-side images and `bless` rewrites the manifest in the same
+  PR; the hash only detects change, it never approves one) - it's a regression
+  *tool*, not a contract.
 
   Two things stay strict, because keeping them costs nothing: (1) **thread /
   scheduling invariance** - the threaded `render` pins each stage to one in-order

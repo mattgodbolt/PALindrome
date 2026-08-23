@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Golden-image harness for the corpus renders.
 
-The manifest (tests/golden.txt) holds one desensitised hash per corpus clip:
-the clip is rendered with `--colour`, the PNG is quantised to 6 bits per
-channel and 2x2 box-downsampled, and the result is sha256-hashed (first 16 hex
-chars). ULP-level drift (SIMD reassociation and the like) passes untouched;
-any visible change fails, naming the clip.
+The manifest (tests/golden.txt) holds one hash per corpus clip: the exact
+sha256 (first 16 hex chars) of the decoded RGB pixels of the clip's `--colour`
+render. The hash only detects change - any 1-LSB difference fails, naming the
+clip - and a human approves every change: `diff` renders old and new for
+sign-off, `bless` records the approved state. Nothing is auto-approved.
+Hashing the decoded pixels rather than the PNG byte stream means a
+PNG-encoder change cannot fake (or mask) a picture change.
 
   golden.py check        render each clip, compare against the manifest
   golden.py bless        rewrite the manifest from the current renders
@@ -33,8 +35,8 @@ MANIFEST = REPO / "tests" / "golden.txt"
 DIFF_DIR = Path("/var/tmp/palindrome/golden")
 CLIPS = ["alex_kidd", "alex_kidd_title", "wb3", "wb3_airspy"]
 MANIFEST_HEADER = (
-    "# Desensitised golden render hashes - maintained by tools/golden.py"
-    " (bless to regenerate, diff to sign off)."
+    "# Exact render-pixel hashes - change detection only, never approval:"
+    " a human signs off via tools/golden.py diff, then bless."
 )
 
 
@@ -47,20 +49,11 @@ def render(binary: Path, repo: Path, clip: str, out_png: Path) -> None:
     )
 
 
-def desensitise(png: Path) -> np.ndarray:
-    """Quantise to 6 bits per channel, then 2x2 integer box-downsample."""
-    rgb = np.asarray(Image.open(png).convert("RGB"), dtype=np.uint16)
-    q = rgb >> 2
-    h, w = (q.shape[0] // 2) * 2, (q.shape[1] // 2) * 2
-    q = q[:h, :w]
-    return (q[0::2, 0::2] + q[0::2, 1::2] + q[1::2, 0::2] + q[1::2, 1::2]) // 4
-
-
-def desensitised_hash(png: Path) -> str:
-    ds = desensitise(png)
+def render_hash(png: Path) -> str:
+    rgb = np.asarray(Image.open(png).convert("RGB"), dtype=np.uint8)
     digest = hashlib.sha256()
-    digest.update(str(ds.shape).encode())
-    digest.update(np.ascontiguousarray(ds, dtype=np.uint8).tobytes())
+    digest.update(str(rgb.shape).encode())
+    digest.update(np.ascontiguousarray(rgb).tobytes())
     return digest.hexdigest()[:16]
 
 
@@ -75,7 +68,7 @@ def current_hashes(binary: Path) -> dict[str, str]:
         for clip in CLIPS:
             png = Path(tmp) / f"{clip}.png"
             render(binary, REPO, clip, png)
-            hashes[clip] = desensitised_hash(png)
+            hashes[clip] = render_hash(png)
     return hashes
 
 

@@ -1,5 +1,5 @@
-# Desensitised golden render hashes - maintained by tools/golden.py (bless to regenerate, diff to sign off).
-alex_kidd 962182028a91e35a
-alex_kidd_title 470ad1ce65ec148b
-wb3 71fa293600bfa352
-wb3_airspy a6b8024d2d99e82c
+# Exact render-pixel hashes - change detection only, never approval: a human signs off via tools/golden.py diff, then bless.
+alex_kidd c9651e18cbbaca9a
+alex_kidd_title 158636e64121f85e
+wb3 4f6817d2039e1263
+wb3_airspy e2e0756fd3a079ce

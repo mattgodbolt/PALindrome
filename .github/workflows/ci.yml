@@ -40,9 +40,9 @@ jobs:
       - name: Test
         run: env CTEST_PARALLEL_LEVEL=$(nproc) ctest --preset release
 
-  # Renders the corpus clips and compares desensitised hashes against
-  # tests/golden.txt, so a picture-changing PR fails until it re-blesses the
-  # manifest (tools/golden.py) in the same diff.
+  # Renders the corpus clips and compares exact render-pixel hashes against
+  # tests/golden.txt, so any picture-changing PR fails until a human signs
+  # off (tools/golden.py diff) and re-blesses the manifest in the same diff.
   golden:
     runs-on: ubuntu-latest
     steps:
