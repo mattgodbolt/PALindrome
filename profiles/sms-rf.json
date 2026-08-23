@@ -1,0 +1,11 @@
+{
+  "description": "Sega Master System via AirSpy RF (direct feed, gain 11) - tuned by eye 2026-08-23",
+  "input": "rf",
+  "values": {
+    "persistence": 1.2,
+    "beam_sigma_x": 0.7,
+    "h_shift": 0.008,
+    "saturation": 0.12,
+    "contrast": 1.65
+  }
+}
