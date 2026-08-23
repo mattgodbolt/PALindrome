@@ -79,9 +79,10 @@ samples?* → `double`; otherwise `float`, and snapshot any `double` it touches.
   of lossy float ops. The Mixer already lives here (block-invariant only to ~1e-7,
   tested with a tolerance, not `==`). When you make that trade: switch that stage's
   block-invariance test from `==` to a tolerance, say why in the comment, and
-  re-baseline the reference renders (there is no automated golden-image harness:
-  the "golden" is a corpus render, hash-compared before/after and re-verified by
-  eye or the blind-verification workflow when it legitimately changes) - it's a
+  re-baseline the reference renders (`tools/golden.py` is the harness: CI's
+  `check` compares desensitised corpus-render hashes against `tests/golden.txt`,
+  so ULP-level drift passes untouched, while a visible change runs `diff` for
+  sign-off images then `bless` to rewrite the manifest in the same PR) - it's a
   regression *tool*, not a contract.
 
   Two things stay strict, because keeping them costs nothing: (1) **thread /

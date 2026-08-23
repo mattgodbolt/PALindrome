@@ -40,6 +40,29 @@ jobs:
       - name: Test
         run: env CTEST_PARALLEL_LEVEL=$(nproc) ctest --preset release
 
+  # Renders the corpus clips and compares desensitised hashes against
+  # tests/golden.txt, so a picture-changing PR fails until it re-blesses the
+  # manifest (tools/golden.py) in the same diff.
+  golden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+      - name: Install GCC 15
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update -y
+          sudo apt-get install -y gcc-15 g++-15
+      - name: Install Python imaging deps
+        run: python3 -m pip install pillow numpy
+      - name: Configure
+        run: cmake --preset release
+      - name: Build
+        run: cmake --build --preset release
+      - name: Golden check
+        run: tools/golden.py check
+
   check-pre-commits:
     runs-on: ubuntu-latest
     steps:

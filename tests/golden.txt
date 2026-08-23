@@ -1,0 +1,5 @@
+# Desensitised golden render hashes - maintained by tools/golden.py (bless to regenerate, diff to sign off).
+alex_kidd 962182028a91e35a
+alex_kidd_title 470ad1ce65ec148b
+wb3 71fa293600bfa352
+wb3_airspy a6b8024d2d99e82c
