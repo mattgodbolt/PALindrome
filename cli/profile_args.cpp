@@ -185,8 +185,6 @@ ProfileExpansion expand_profiles(std::vector<std::string> args) {
       out.tokens.push_back(std::format("{}={}", flag, v.dump()));
   }
 
-  // Splice the profile-derived flags directly after the subcommand token, in
-  // front of everything the user typed, so lyra sees one flat render command.
   out.args.assign(rest.begin(), rest.begin() + 2);
   out.args.insert(out.args.end(), out.tokens.begin(), out.tokens.end());
   out.args.insert(out.args.end(), rest.begin() + 2, rest.end());

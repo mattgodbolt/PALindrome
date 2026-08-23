@@ -39,7 +39,7 @@ int main(int argc, const char **argv) {
   levels.add_to(cli, action);
 
   // render's --profile flags are spliced into the argument list up front (see
-  // profile_args.hpp); lyra then validates the flat result as usual.
+  // profile_args.hpp); lyra parses the flat result.
   const auto expanded = palindrome::cli::expand_profiles({argv, argv + argc});
   if (!expanded.error.empty()) {
     std::println(std::cerr, "{}", expanded.error);

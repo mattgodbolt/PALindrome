@@ -346,8 +346,8 @@ def load_profile(path, knobs, input_mode=None):
     the caller overlays it on whatever state it already has and profiles
     compose (see the module docstring). A stale or hand-edited file is a clean
     error naming it, never a decoder relaunched with nonsense. An input-mode
-    mismatch is a hard error too - deliberately stricter than #116's "warns",
-    since the wrong mode's knobs would be silently meaningless.
+    mismatch is a hard error, not a warning: the wrong mode's knobs would be
+    silently meaningless.
     """
     try:
         with open(path) as f:
