@@ -233,6 +233,13 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               lyra::opt(no_threads_)["--no-threads"]("Decode serially (default is a threaded stage pipeline)"))
           .add_argument(lyra::opt(deposit_threads_, "n")["--deposit-threads"](
               "Threads the screen deposit fans a field's splats across (bit-exact); 1 = serial"))
+          .add_argument(lyra::opt(profile_, "name")["--profile"](
+              "Apply a saved knob profile (profiles/*.json, shared with the tuning tools) ahead of the flags: a "
+              "bare name loads <profiles-dir>/<name>.json, a spec with a '/' or a .json suffix is a path used "
+              "as-is. Repeatable and comma-separable; later profiles override earlier ones, and explicit flags "
+              "override profiles. render only - sync/demod take no profiles"))
+          .add_argument(lyra::opt(profiles_dir_, "dir")["--profiles-dir"](
+              "Directory bare --profile names load from (default: profiles, relative to the cwd)"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to render (e.g. corpus/alex_kidd)")));
 }
 

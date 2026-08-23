@@ -10,8 +10,23 @@ flags.
 composite` there is no IF and no detector, and render rejects those flags
 outright, so the tools filter them out rather than offer a slider that errors.
 The composite input-stage knobs are filtered the same way in RF mode.
+
+A profile is a JSON file - {"description", "input", "values": {knob: value}} -
+holding only the knobs a tuning session moved. Values are typed by knob kind:
+a number for a range knob, the choice string for a choices knob (e.g.
+"comb_mode": "post", never the slider's index), true/false for a boolean.
+Knob names invert mechanically to render flags (underscores to dashes, "--"
+prefixed), which is what lets the C++ CLI consume the same files with no copy
+of this table. The sparseness is the point: a source calibration (sync
+amplitude and the contrast/saturation that compensate it) and a TV's
+character (persistence, beam spot, gamma) can live in separate profiles and
+be layered, later values winning, because neither speaks for the knobs it
+doesn't name.
 """
 import json
+import math
+import os
+import tempfile
 
 KNOBS = [
     dict(name="colour", flag="--colour", boolean=True, label="Colour", default=1,
@@ -124,7 +139,7 @@ KNOBS = [
          help="Peak-white limiter ceiling as a multiple of the standard white drive (TDA3561A: limits when any gun "
               "exceeds it for more than a line, by pulling the contrast down; recovers when clear). Crank the "
               "contrast up to watch it fight back. 0 = no limiter."),
-    dict(name="if_mode", flag="--if", choices=["saw80", "saw90", "flat"], default=0,
+    dict(name="if", flag="--if", choices=["saw80", "saw90", "flat"], default=0,
          label="IF response (SAW)",
          help="Which set's IF curve the vision carrier passes through. saw80 = an early-80s single-SAW receiver: "
               "Nyquist flank, chroma a few dB down on the shoulder, -26 dB sound notch, +/-50 ns group-delay "
@@ -136,7 +151,7 @@ KNOBS = [
               "with a slow phase lock on the carrier - linear through overmodulation, no VSB quadrature "
               "distortion. envelope = a diode detector: the magnitude, with the quadrature fold-through and "
               "rectified overshoots of the early sets."),
-    dict(name="sound_notch", flag="--sound-notch-db", label="IF sound rejection (dB)",
+    dict(name="sound_notch_db", flag="--sound-notch-db", label="IF sound rejection (dB)",
          min=10.0, max=60.0, step=1.0, default=26.0,
          help="How far the IF knocks the sound carrier down before detection (saw modes; the slider always wins, "
               "so match it to the template by hand: saw80 26, saw90 40). Deliberately finite on a real set - the "
@@ -236,7 +251,7 @@ KNOBS = [
          min=0.1, max=3.0, step=0.1, default=0.5,
          help="Time constant (in line-periods) of the filter that turns the sync bit into a vertical-sync detection. "
               "Long enough to rise during the broad-pulse train, short enough to ignore single line-sync pulses. ~0.5."),
-    dict(name="v_minfield", flag="--v-min-field", label="V min field frac",
+    dict(name="v_min_field", flag="--v-min-field", label="V min field frac",
          min=0.0, max=0.95, step=0.05, default=0.7,
          help="Debounce: ignore a second vertical-sync trigger arriving sooner than this fraction of a field after "
               "the last, so the detector can't fire twice per field. 0.7 = ignore re-triggers within 70% of a field."),
@@ -295,6 +310,10 @@ def flags_for(knobs, values):
             v = float(raw)
         except (TypeError, ValueError):
             raise ValueError(f"{k['name']}: {raw!r} is not a number")
+        if not math.isfinite(v):
+            # Up front, not left to the range check: int(inf)/int(nan) in the
+            # choices and boolean branches would raise past the caller's net.
+            raise ValueError(f"{k['name']}: {raw!r} is not finite")
         if k.get("choices"):
             i = int(v)
             if not 0 <= i < len(k["choices"]):
@@ -308,3 +327,98 @@ def flags_for(knobs, values):
                 raise ValueError(f"{k['name']}: {v} outside {k['min']}..{k['max']}")
             out += [k["flag"], repr(v)]
     return out
+
+
+def resolve_profile(spec, profiles_dir):
+    """A bare name means <profiles_dir>/<name>.json; anything already shaped
+    like a path (a slash or a .json suffix) is used as-is."""
+    if "/" in spec or spec.endswith(".json"):
+        return spec
+    return os.path.join(profiles_dir, spec + ".json")
+
+
+def load_profile(path, knobs, input_mode=None):
+    """Read a profile file into slider numerics {name: float}, validated
+    against `knobs` (a choices string becomes its index, a boolean 0/1 - the
+    tools deal in slider values; only the files are typed).
+
+    The result is as sparse as the file: only the knobs the profile names, so
+    the caller overlays it on whatever state it already has and profiles
+    compose (see the module docstring). A stale or hand-edited file is a clean
+    error naming it, never a decoder relaunched with nonsense. An input-mode
+    mismatch is a hard error, not a warning: the wrong mode's knobs would be
+    silently meaningless.
+    """
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{path}: {e}") from None
+    if not isinstance(data, dict) or not isinstance(data.get("values", {}), dict):
+        raise ValueError(f"{path}: not a profile ({{description, input, values}})")
+    mode = data.get("input")
+    if input_mode is not None and mode is not None and mode != input_mode:
+        raise ValueError(f"{path}: a {mode!r} profile, but this session's input is {input_mode!r}")
+    known = {k["name"]: k for k in knobs}
+    out = {}
+    for name, raw in data.get("values", {}).items():
+        k = known.get(name)
+        if k is None:
+            raise ValueError(f"{path}: unknown knob {name!r}")
+        if k.get("choices"):
+            if not isinstance(raw, str) or raw not in k["choices"]:
+                raise ValueError(f"{path}: {name}: {raw!r} is not one of {', '.join(k['choices'])}")
+            out[name] = float(k["choices"].index(raw))
+        elif k.get("boolean"):
+            if not isinstance(raw, bool):
+                raise ValueError(f"{path}: {name}: {raw!r} is not true/false")
+            out[name] = 1.0 if raw else 0.0
+        else:
+            # bool is an int subclass, so head it off before the number check.
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise ValueError(f"{path}: {name}: {raw!r} is not a number")
+            v = float(raw)
+            if not k["min"] <= v <= k["max"]:
+                raise ValueError(f"{path}: {name}: {v} outside {k['min']}..{k['max']}")
+            out[name] = v
+    return out
+
+
+def profile_json(values, input_mode, description=""):
+    """Serialise {name: value} as profile JSON. Sparse on the way out too:
+    values equal to the table default are dropped, so a saved profile carries
+    only the deliberate deviations and stays composable. The flip side, by
+    choice: a value deliberately set to the table default is omitted, so when
+    layered on top of another profile it will not override that profile's
+    value - only fresh (default-seeded) sessions are guaranteed to land on it.
+    """
+    kept = {}
+    for k in KNOBS:  # table order, so saved files diff stably
+        if k["name"] not in values:
+            continue
+        v = float(values[k["name"]])
+        if v == float(k["default"]):
+            continue
+        if k.get("choices"):
+            kept[k["name"]] = k["choices"][int(v)]
+        elif k.get("boolean"):
+            kept[k["name"]] = bool(int(v))
+        else:
+            kept[k["name"]] = int(v) if v == int(v) else v
+    return json.dumps({"description": description, "input": input_mode, "values": kept}, indent=2)
+
+
+def save_profile(path, values, input_mode, description=""):
+    # Via an anonymous sibling temp file + atomic replace: a concurrent load
+    # never sees a half-written profile, and concurrent saves of the same name
+    # cannot interleave in a shared temp. mkstemp's private 0600 would survive
+    # the replace, so restore normal file permissions before it lands.
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(profile_json(values, input_mode, description) + "\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except OSError:
+        os.unlink(tmp)
+        raise

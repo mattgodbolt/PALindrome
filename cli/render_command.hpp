@@ -104,6 +104,10 @@ private:
   bool no_sync_{false}; // debug: naive-fold the envelope, bypassing the sync graph
   bool no_threads_{false}; // decode serially instead of the default stage pipeline
   std::size_t deposit_threads_{kDefaults.screen.deposit_lanes}; // screen-deposit lanes (bit-exact); 1 = serial
+  // Help-only bindings: --profile/--profiles-dir are consumed and expanded
+  // before lyra parses (profile_args.hpp), so lyra never assigns these.
+  std::string profile_;
+  std::string profiles_dir_;
   // Sync/sweep hold knobs — the rest of the decoder, surfaced for the tuner.
   double sync_level_{kDefaults.sep.sync_level}; // separator slice level
   double h_kp_{kDefaults.hsweep.pll_kp}; // horizontal hold: locked (flywheel) AFC gains + omega clamp

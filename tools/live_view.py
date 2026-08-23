@@ -23,12 +23,15 @@ Usage:
 import argparse
 import http.server
 import io
+import json
 import os
+import re
 import shutil
 import socket
 import subprocess
 import sys
 import threading
+import time
 import knobs
 import urllib.parse
 
@@ -219,22 +222,30 @@ img{max-width:100%;max-height:100vh;image-rendering:auto}
 .k input{width:100%}
 .v{float:right;color:#888;font-variant-numeric:tabular-nums}
 #st{position:sticky;top:0;background:#181818;padding:4px 0;color:#8c8}
+#prof{margin:0 0 8px;padding:0 0 7px;border-bottom:1px solid #333}
+#prof select,#prof input,#prof button{background:#222;color:#ddd;border:1px solid #444;font:inherit}
+#prof select{max-width:160px}
+#prof input{width:120px}
 </style>
 <div id=wrap><div id=pic><img src="/stream.mjpeg"></div>
-<div id=side><div id=st>ready</div><div id=ks></div></div></div>
+<div id=side><div id=st>ready</div>
+<div id=prof><select id=plist></select> <button id=bload>load</button><br>
+<input id=pname placeholder="save as name"> <button id=bsave>save</button></div>
+<div id=ks></div></div></div>
 <script>
-const KNOBS=__KNOBS__, vals={}, ks=document.getElementById('ks'), st=document.getElementById('st');
+const KNOBS=__KNOBS__, VALUES=__VALUES__, vals={}, els={},
+  ks=document.getElementById('ks'), st=document.getElementById('st');
 let timer=null;
 for(const k of KNOBS){
-  vals[k.name]=k.def;
+  vals[k.name]=(k.name in VALUES)?VALUES[k.name]:k.def;
   const d=document.createElement('div'); d.className='k';
   const lab=document.createElement('label'); lab.title=k.help;
-  const v=document.createElement('span'); v.className='v'; v.textContent=fmt(k,k.def);
+  const v=document.createElement('span'); v.className='v'; v.textContent=fmt(k,vals[k.name]);
   lab.textContent=k.label; lab.appendChild(v); d.appendChild(lab);
   const i=document.createElement('input'); i.type='range';
-  i.min=k.min; i.max=k.max; i.step=k.step; i.value=k.def; i.title=k.help;
+  i.min=k.min; i.max=k.max; i.step=k.step; i.value=vals[k.name]; i.title=k.help;
   i.addEventListener('input',()=>{vals[k.name]=i.value; v.textContent=fmt(k,i.value); schedule();});
-  d.appendChild(i); ks.appendChild(d);
+  d.appendChild(i); ks.appendChild(d); els[k.name]={i,v};
 }
 function fmt(k,x){ if(k.choices) return k.choices[+x]; if(k.max<=1&&k.step==1) return +x?'on':'off'; return (+x).toString(); }
 // Coalesce drags: a restart costs the decoder its lock, so do not fire per pixel.
@@ -242,36 +253,110 @@ function schedule(){ st.textContent='pending…'; clearTimeout(timer); timer=set
 async function apply(){
   st.textContent='restarting decoder…';
   const qs=Object.entries(vals).map(([k,v])=>k+'='+encodeURIComponent(v)).join('&');
-  await fetch('/set?'+qs);
-  st.textContent='running';   // the <img> stream is untouched by the swap
+  const r=await fetch('/set?'+qs);
+  st.textContent=r.ok?'running':await r.text();   // the <img> stream is untouched by the swap
 }
+const plist=document.getElementById('plist'), pname=document.getElementById('pname');
+function fill(names){ plist.replaceChildren(...names.map(n=>new Option(n))); }
+fetch('/profiles').then(r=>r.json()).then(fill);
+document.getElementById('bload').addEventListener('click',async()=>{
+  if(!plist.value) return;
+  const r=await fetch('/load?name='+encodeURIComponent(plist.value));
+  if(!r.ok){ st.textContent=await r.text(); return; }
+  // A profile is sparse: it moves only the knobs it names and leaves the rest
+  // where they are, so a source calibration and a TV character compose.
+  const v=await r.json();
+  for(const k of KNOBS) if(k.name in v){
+    vals[k.name]=v[k.name]; els[k.name].i.value=v[k.name]; els[k.name].v.textContent=fmt(k,v[k.name]);
+  }
+  apply();
+});
+document.getElementById('bsave').addEventListener('click',async()=>{
+  if(!pname.value) return;
+  const r=await fetch('/save?name='+encodeURIComponent(pname.value),{method:'POST'});
+  if(!r.ok){ st.textContent=await r.text(); return; }
+  fill(await r.json());   // the save response is the refreshed listing
+  st.textContent='saved '+pname.value;
+});
 </script>"""
 
 
-def make_handler(latest, dec, active_knobs):
+def make_handler(latest, dec, active_knobs, values, values_lock, profiles_dir, input_mode):
+    known = {k["name"] for k in active_knobs}
+
+    def profile_names():
+        try:
+            names = os.listdir(profiles_dir)
+        except OSError:
+            return []
+        return sorted(n[:-5] for n in names if n.endswith(".json"))
+
+    def profile_path(name):
+        # The name reaches the filesystem, so anything outside a short plain
+        # filename charset is rejected outright - no separators, no traversal.
+        if len(name) > 64 or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+            return None
+        if name.endswith(".json"):
+            name = name[:-5]
+        if not name:
+            return None
+        return os.path.join(profiles_dir, name + ".json")
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass  # quiet; the decoder's own stderr is the interesting log
 
+        def _send(self, code, ctype, body):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self):
-            if self.path.startswith("/set"):
-                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                vals = {k: v[0] for k, v in q.items()}
-                # Build the flags BEFORE touching the decoder: a bad value must
-                # be a 400, not a half-restarted decode or a dead handler thread.
-                try:
-                    flags = knobs.flags_for(active_knobs, vals)
-                except ValueError as e:
-                    self.send_response(400)
-                    self.send_header("Content-Type", "text/plain; charset=utf-8")
-                    body = str(e).encode()
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-                    return
-                dec.restart(flags)
+            url = urllib.parse.urlparse(self.path)
+            q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            if url.path == "/set":
+                # Merge into the applied state and build the flags BEFORE
+                # touching the decoder: a bad value must be a 400, not a
+                # half-restarted decode or a dead handler thread. Merging (not
+                # replacing) is what lets a single-knob /set ride on top of a
+                # loaded profile.
+                with values_lock:
+                    merged = dict(values)
+                    merged.update({k: v for k, v in q.items() if k in known})
+                    try:
+                        flags = knobs.flags_for(active_knobs, merged)
+                    except ValueError as e:
+                        self._send(400, "text/plain; charset=utf-8", str(e).encode())
+                        return
+                    values.update({k: float(v) for k, v in merged.items()})
+                    dec.restart(flags)
                 self.send_response(204)
                 self.end_headers()
+                return
+            if url.path == "/profiles":
+                self._send(200, "application/json", json.dumps(profile_names()).encode())
+                return
+            if url.path == "/load":
+                name = q.get("name", "")
+                path = profile_path(name)
+                if path is None:
+                    self._send(400, "text/plain; charset=utf-8", b"profile names are [A-Za-z0-9._-] only")
+                    return
+                try:
+                    loaded = knobs.load_profile(path, active_knobs, input_mode)
+                except FileNotFoundError:
+                    self._send(404, "text/plain; charset=utf-8", f"no such profile: {name}".encode())
+                    return
+                except (OSError, ValueError) as e:
+                    # The name is the client's frame of reference; the
+                    # filesystem path is ours, so keep it out of the body.
+                    self._send(400, "text/plain; charset=utf-8", str(e).replace(path, name).encode())
+                    return
+                # As sparse as the file: the page overlays these on its current
+                # sliders and applies via /set, the one restart path.
+                self._send(200, "application/json", json.dumps(loaded).encode())
                 return
             if self.path.startswith("/stream.mjpeg"):
                 self.send_response(200)
@@ -292,14 +377,41 @@ def make_handler(latest, dec, active_knobs):
                 except (BrokenPipeError, ConnectionResetError):
                     pass  # browser navigated away
             else:
-                # Build first: the knob table is substituted in, so the
-                # template's length is not the page's.
-                page = PAGE.replace("__KNOBS__", knobs.knobs_json(active_knobs)).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(page)))
-                self.end_headers()
-                self.wfile.write(page)
+                # Build first: the knob table and the currently applied values
+                # are substituted in, so the template's length is not the
+                # page's. Seeding from `values`, not the table defaults, is
+                # what makes a reload show what the decoder is actually
+                # running.
+                with values_lock:
+                    current = json.dumps(values)
+                page = (PAGE.replace("__KNOBS__", knobs.knobs_json(active_knobs))
+                        .replace("__VALUES__", current).encode())
+                self._send(200, "text/html; charset=utf-8", page)
+
+        def do_POST(self):
+            url = urllib.parse.urlparse(self.path)
+            q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            if url.path != "/save":
+                self._send(404, "text/plain; charset=utf-8", b"not found")
+                return
+            name = q.get("name", "")
+            path = profile_path(name)
+            if path is None:
+                self._send(400, "text/plain; charset=utf-8", b"profile names are [A-Za-z0-9._-] only")
+                return
+            with values_lock:
+                snapshot = dict(values)
+            try:
+                os.makedirs(profiles_dir, exist_ok=True)
+                knobs.save_profile(path, snapshot, input_mode,
+                                   description=f"saved from the live view {time.strftime('%Y-%m-%d')}")
+            except OSError as e:
+                # A failing mkstemp names its random temp path, so strip the
+                # directory as well as the target path from the body.
+                msg = str(e).replace(path, name).replace(profiles_dir, "profiles")
+                self._send(500, "text/plain; charset=utf-8", msg.encode())
+                return
+            self._send(200, "application/json", json.dumps(profile_names()).encode())
 
     return Handler
 
@@ -336,8 +448,15 @@ def main():
     ap.add_argument("--mono", action="store_true", help="decode grey instead of colour (debug fallback only)")
     ap.add_argument("--airspy-binary", help="path to airspy_rx (default: PATH)")
     ap.add_argument("--palindrome-binary", help="path to the palindrome CLI (default: build/release/cli/palindrome)")
+    ap.add_argument("--profile", action="append", default=[],
+                    help="seed the sliders and the first decode from a saved profile: a bare name loads "
+                         "profiles/<name>.json from the repo, a path (with a / or .json) is used as-is. May be "
+                         "repeated or comma-separated; profiles merge in order, later values winning, so a "
+                         "source calibration and a TV character can be layered")
+    ap.add_argument("--profiles-dir", help="directory of named profiles (default: <repo>/profiles)")
     ap.add_argument("--extra", nargs=argparse.REMAINDER, default=[],
-                    help="everything after --extra is passed through to `palindrome render` (e.g. --extra --contrast 1.8)")
+                    help="everything after --extra is passed through to `palindrome render`. For flags without a "
+                         "slider only: a flag a slider also owns is passed twice and the copies collide")
     args = ap.parse_args()
 
     if Image is None:
@@ -387,10 +506,20 @@ def main():
     print("dec :", " ".join(render_cmd), file=sys.stderr)
 
     latest = LatestFrame()
-    active_knobs = knobs.for_input("composite" if args.source == "cxadc" else "rf")
-    values = {k["name"]: k["default"] for k in active_knobs}
+    input_mode = "composite" if args.source == "cxadc" else "rf"
+    profiles_dir = args.profiles_dir or os.path.join(here, "profiles")
+    active_knobs = knobs.for_input(input_mode)
+    values = {k["name"]: float(k["default"]) for k in active_knobs}
+    for spec in [s for arg in args.profile for s in arg.split(",") if s]:
+        try:
+            values.update(knobs.load_profile(knobs.resolve_profile(spec, profiles_dir),
+                                             active_knobs, input_mode))
+        except (OSError, ValueError) as e:
+            sys.exit(f"--profile: {e}")
     if args.mono:
-        values["colour"] = 0
+        # After the profiles: the reader is sized for 1-channel frames, so a
+        # profile must not be able to switch colour back on underneath it.
+        values["colour"] = 0.0
     dec = Decoder(render_cmd, args, latest, channels)
     dec.airspy_cmd = airspy_cmd if args.source != "cxadc" else None
     dec.tail = list(args.extra)
@@ -399,7 +528,9 @@ def main():
     host = socket.gethostname()
     print(f"\nlive view: http://{host}:{args.port}/\n", file=sys.stderr)
 
-    server = http.server.ThreadingHTTPServer(("0.0.0.0", args.port), make_handler(latest, dec, active_knobs))
+    server = http.server.ThreadingHTTPServer(
+        ("0.0.0.0", args.port),
+        make_handler(latest, dec, active_knobs, values, threading.Lock(), profiles_dir, input_mode))
     # Stop the server if the decoder dies (bad gain, device gone), so we don't
     # keep the last frame up forever.
     threading.Thread(target=lambda: (dec.wait_dead(), server.shutdown()), daemon=True).start()
