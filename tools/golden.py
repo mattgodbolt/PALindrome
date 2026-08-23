@@ -38,11 +38,11 @@ MANIFEST_HEADER = (
 )
 
 
-def render(binary: Path, clip: str, out_png: Path) -> None:
+def render(binary: Path, repo: Path, clip: str, out_png: Path) -> None:
     subprocess.run(
-        [binary, "render", REPO / "corpus" / clip, "--colour", "-o", out_png],
+        [binary, "render", repo / "corpus" / clip, "--colour", "-o", out_png],
         check=True,
-        cwd=REPO,
+        cwd=repo,
         stdout=subprocess.DEVNULL,
     )
 
@@ -74,7 +74,7 @@ def current_hashes(binary: Path) -> dict[str, str]:
     with scratch_dir() as tmp:
         for clip in CLIPS:
             png = Path(tmp) / f"{clip}.png"
-            render(binary, clip, png)
+            render(binary, REPO, clip, png)
             hashes[clip] = desensitised_hash(png)
     return hashes
 
@@ -128,6 +128,12 @@ def build_ref(ref: str, worktree: Path) -> Path:
     return worktree / "build" / "release" / "cli" / "palindrome"
 
 
+def pad_to(img: np.ndarray, h: int, w: int) -> np.ndarray:
+    out = np.full((h, w, 3), 128, dtype=img.dtype)
+    out[: img.shape[0], : img.shape[1]] = img
+    return out
+
+
 def cmd_diff(ref: str) -> int:
     DIFF_DIR.mkdir(parents=True, exist_ok=True)
     with scratch_dir() as tmp:
@@ -137,10 +143,23 @@ def cmd_diff(ref: str) -> int:
             for clip in CLIPS:
                 ref_png = Path(tmp) / f"{clip}_ref.png"
                 new_png = Path(tmp) / f"{clip}_new.png"
-                render(ref_binary, clip, ref_png)
-                render(BINARY, clip, new_png)
+                render(ref_binary, worktree, clip, ref_png)
+                render(BINARY, REPO, clip, new_png)
                 before = np.asarray(Image.open(ref_png).convert("RGB"), dtype=np.int16)
                 after = np.asarray(Image.open(new_png).convert("RGB"), dtype=np.int16)
+                if before.shape != after.shape:
+                    h = max(before.shape[0], after.shape[0])
+                    w = max(before.shape[1], after.shape[1])
+                    side = np.concatenate(
+                        [pad_to(before, h, w), pad_to(after, h, w)], axis=1
+                    ).astype(np.uint8)
+                    Image.fromarray(side).save(DIFF_DIR / f"{clip}_side_by_side.png")
+                    print(
+                        f"{clip:>16} size mismatch: ref {before.shape[1]}x{before.shape[0]}"
+                        f" vs current {after.shape[1]}x{after.shape[0]}"
+                        " - amplified diff skipped"
+                    )
+                    continue
                 delta = np.abs(after - before)
                 side = np.concatenate([before, after], axis=1).astype(np.uint8)
                 amplified = np.clip(delta * 8, 0, 255).astype(np.uint8)
