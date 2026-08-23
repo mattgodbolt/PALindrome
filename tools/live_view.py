@@ -257,11 +257,8 @@ async function apply(){
   st.textContent=r.ok?'running':await r.text();   // the <img> stream is untouched by the swap
 }
 const plist=document.getElementById('plist'), pname=document.getElementById('pname');
-async function relist(){
-  const names=await (await fetch('/profiles')).json();
-  plist.replaceChildren(...names.map(n=>new Option(n)));
-}
-relist();
+function fill(names){ plist.replaceChildren(...names.map(n=>new Option(n))); }
+fetch('/profiles').then(r=>r.json()).then(fill);
 document.getElementById('bload').addEventListener('click',async()=>{
   if(!plist.value) return;
   const r=await fetch('/load?name='+encodeURIComponent(plist.value));
@@ -278,8 +275,8 @@ document.getElementById('bsave').addEventListener('click',async()=>{
   if(!pname.value) return;
   const r=await fetch('/save?name='+encodeURIComponent(pname.value),{method:'POST'});
   if(!r.ok){ st.textContent=await r.text(); return; }
+  fill(await r.json());   // the save response is the refreshed listing
   st.textContent='saved '+pname.value;
-  relist();
 });
 </script>"""
 
@@ -295,12 +292,14 @@ def make_handler(latest, dec, active_knobs, values, values_lock, profiles_dir, i
         return sorted(n[:-5] for n in names if n.endswith(".json"))
 
     def profile_path(name):
-        # The name reaches the filesystem, so anything outside a plain
+        # The name reaches the filesystem, so anything outside a short plain
         # filename charset is rejected outright - no separators, no traversal.
-        if not name or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        if len(name) > 64 or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
             return None
         if name.endswith(".json"):
             name = name[:-5]
+        if not name:
+            return None
         return os.path.join(profiles_dir, name + ".json")
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -340,14 +339,20 @@ def make_handler(latest, dec, active_knobs, values, values_lock, profiles_dir, i
                 self._send(200, "application/json", json.dumps(profile_names()).encode())
                 return
             if url.path == "/load":
-                path = profile_path(q.get("name", ""))
+                name = q.get("name", "")
+                path = profile_path(name)
                 if path is None:
                     self._send(400, "text/plain; charset=utf-8", b"profile names are [A-Za-z0-9._-] only")
                     return
                 try:
                     loaded = knobs.load_profile(path, active_knobs, input_mode)
+                except FileNotFoundError:
+                    self._send(404, "text/plain; charset=utf-8", f"no such profile: {name}".encode())
+                    return
                 except (OSError, ValueError) as e:
-                    self._send(400, "text/plain; charset=utf-8", str(e).encode())
+                    # The name is the client's frame of reference; the
+                    # filesystem path is ours, so keep it out of the body.
+                    self._send(400, "text/plain; charset=utf-8", str(e).replace(path, name).encode())
                     return
                 # As sparse as the file: the page overlays these on its current
                 # sliders and applies via /set, the one restart path.
@@ -389,15 +394,20 @@ def make_handler(latest, dec, active_knobs, values, values_lock, profiles_dir, i
             if url.path != "/save":
                 self._send(404, "text/plain; charset=utf-8", b"not found")
                 return
-            path = profile_path(q.get("name", ""))
+            name = q.get("name", "")
+            path = profile_path(name)
             if path is None:
                 self._send(400, "text/plain; charset=utf-8", b"profile names are [A-Za-z0-9._-] only")
                 return
             with values_lock:
                 snapshot = dict(values)
-            os.makedirs(profiles_dir, exist_ok=True)
-            knobs.save_profile(path, snapshot, input_mode,
-                               description=f"saved from the live view {time.strftime('%Y-%m-%d')}")
+            try:
+                os.makedirs(profiles_dir, exist_ok=True)
+                knobs.save_profile(path, snapshot, input_mode,
+                                   description=f"saved from the live view {time.strftime('%Y-%m-%d')}")
+            except OSError as e:
+                self._send(500, "text/plain; charset=utf-8", str(e).replace(path, name).encode())
+                return
             self._send(200, "application/json", json.dumps(profile_names()).encode())
 
     return Handler

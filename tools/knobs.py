@@ -333,7 +333,9 @@ def load_profile(path, knobs, input_mode=None):
     the caller overlays it on whatever state it already has and profiles
     compose (see the module docstring). Validation is the same gate /set uses
     (flags_for), so a stale or hand-edited file is a clean error naming it,
-    never a decoder relaunched with nonsense.
+    never a decoder relaunched with nonsense. An input-mode mismatch is a hard
+    error too - deliberately stricter than #116's "warns", since the wrong
+    mode's knobs would be silently meaningless.
     """
     try:
         with open(path) as f:
@@ -360,7 +362,11 @@ def load_profile(path, knobs, input_mode=None):
 def profile_json(values, input_mode, description=""):
     """Serialise {name: value} as profile JSON. Sparse on the way out too:
     values equal to the table default are dropped, so a saved profile carries
-    only the deliberate deviations and stays composable."""
+    only the deliberate deviations and stays composable. The flip side, by
+    choice: a value deliberately set to the table default is omitted, so when
+    layered on top of another profile it will not override that profile's
+    value - only fresh (default-seeded) sessions are guaranteed to land on it.
+    """
     kept = {}
     for k in KNOBS:  # table order, so saved files diff stably
         if k["name"] not in values:
@@ -373,5 +379,9 @@ def profile_json(values, input_mode, description=""):
 
 
 def save_profile(path, values, input_mode, description=""):
-    with open(path, "w") as f:
+    # Via a sibling temp file + atomic replace, so a concurrent load never
+    # sees a half-written profile.
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
         f.write(profile_json(values, input_mode, description) + "\n")
+    os.replace(tmp, path)

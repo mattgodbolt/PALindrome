@@ -121,6 +121,7 @@ class Tuner:
             used[k["name"]] = v
             if k.get("choices"):  # the slider value is the index into choices
                 idx = max(0, min(len(k["choices"]) - 1, int(float(v))))  # clamp a hand-edited URL
+                used[k["name"]] = idx  # record what actually rendered, so the exit profile validates
                 cmd += [k["flag"], k["choices"][idx]]
             elif k.get("boolean"):
                 if float(v) >= 0.5:  # a bare flag, no value
