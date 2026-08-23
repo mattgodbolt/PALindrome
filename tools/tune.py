@@ -31,7 +31,7 @@ from urllib.parse import urlparse, parse_qs
 # One slider per knob: this list drives the sliders, their hover tooltips, and
 # the render invocation, so adding a knob (or fixing its help) is one entry here.
 # The knob table and its slider serialisation are shared with live_view.py.
-from knobs import KNOBS, knobs_json, load_profile, profile_json, resolve_profile  # noqa: E402
+from knobs import for_input, knobs_json, load_profile, profile_json, resolve_profile  # noqa: E402
 
 PAGE = """<!doctype html><html><head><meta charset=utf-8><title>PALindrome tune</title><style>
 body{font-family:sans-serif;margin:1em;background:#111;color:#ddd}
@@ -99,9 +99,10 @@ render();
 
 
 class Tuner:
-    def __init__(self, args, seed):
+    def __init__(self, args, seed, knobs):
         self.args = args
         self.seed = seed  # profile-loaded starting values; also the page's slider seed
+        self.knobs = knobs  # the input mode's slice of the table, so render never sees the other mode's flags
         self.tmp = tempfile.mkdtemp(prefix="palindrome_tune_")
         self.frames = []
         self.last = None  # the last successfully rendered set, printed as a profile on exit
@@ -110,11 +111,12 @@ class Tuner:
         for old in glob.glob(os.path.join(self.tmp, "f_*.png")):
             os.remove(old)
         cmd = [self.args.binary, "render", self.args.recording,
+               "--input", self.args.input,
                "--decimate", str(self.args.decimate),
                "--width", str(self.args.width), "--height", str(self.args.height),
                "--frame-stride", "1", "-o", os.path.join(self.tmp, "f.png")]
         used = {}
-        for k in KNOBS:
+        for k in self.knobs:
             v = query.get(k["name"], [self.seed.get(k["name"], k["default"])])[0]
             used[k["name"]] = v
             if k.get("choices"):  # the slider value is the index into choices
@@ -151,7 +153,7 @@ def make_handler(tuner):
         def do_GET(self):
             u = urlparse(self.path)
             if u.path == "/":
-                html = (PAGE.replace("__KNOBS__", knobs_json())
+                html = (PAGE.replace("__KNOBS__", knobs_json(tuner.knobs))
                         .replace("__VALUES__", json.dumps(tuner.seed)).encode())
                 self._send(200, "text/html; charset=utf-8", html)
             elif u.path == "/render":
@@ -185,20 +187,24 @@ def main():
     ap.add_argument("--width", type=int, default=643)
     ap.add_argument("--height", type=int, default=576)
     ap.add_argument("--decimate", type=int, default=0, help="0 = auto from the sample rate (the CLI default)")
+    ap.add_argument("--input", choices=("rf", "composite"), default="rf",
+                    help="what the recording is: rf (modulated, the corpus) or composite (baseband, e.g. a "
+                         "cxadc capture). Picks the knob set - render rejects the other mode's flags")
     ap.add_argument("--profile", action="append", default=[],
                     help="start the sliders from a saved profile (a name in profiles/, or a path); may be "
                          "repeated or comma-separated, later values winning")
     args = ap.parse_args()
 
+    active = for_input(args.input)
     seed = {}
     profiles_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "profiles")
     for spec in [s for arg in args.profile for s in arg.split(",") if s]:
         try:
-            seed.update(load_profile(resolve_profile(spec, profiles_dir), KNOBS, "rf"))
+            seed.update(load_profile(resolve_profile(spec, profiles_dir), active, args.input))
         except (OSError, ValueError) as e:
             ap.error(str(e))
 
-    tuner = Tuner(args, seed)
+    tuner = Tuner(args, seed, active)
     srv = HTTPServer((args.host, args.port), make_handler(tuner))
     print(f"tune: http://{args.host}:{args.port}/  (frames in {tuner.tmp}; Ctrl-C to stop)")
     try:
@@ -207,7 +213,7 @@ def main():
         pass
     if tuner.last is not None:
         # The session's last rendered set, ready to drop into profiles/.
-        print(profile_json(tuner.last, "rf",
+        print(profile_json(tuner.last, args.input,
                            description=f"tuned with tools/tune.py on {args.recording}"))
 
 
