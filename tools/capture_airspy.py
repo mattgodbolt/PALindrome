@@ -29,7 +29,7 @@ yet still be undecodable (see the gain note below).
 
 Usage:
     capture_airspy.py wb3 --source "SMS II, Wonder Boy III, UK PAL"
-    capture_airspy.py wb3 --frequency 591200000 --gain 9 --frames 25
+    capture_airspy.py wb3 --frequency 591200000 --gain 11 --frames 25
 """
 import argparse
 import datetime
@@ -152,10 +152,11 @@ def main():
     # drifting vertical bars and wrecks the decode -- while the ADC clip
     # percentage stays 0%, so it's invisible unless you look at the spectrum
     # (inspect_capture.py flags it). Below ~6 the front end is under-driven.
-    ap.add_argument("--gain", type=int, default=9,
-                    help="airspy_rx linearity gain (0-21); 9 = sweet spot. "
-                         ">=13 drives the front end into an intermod ghost that "
-                         "kills the decode (clip % stays 0); <=6 under-drives")
+    ap.add_argument("--gain", type=int, default=11,
+                    help="airspy_rx linearity gain (0-21); 11 = the measured knee "
+                         "(35.4 dB envelope SNR vs 28.3 at 9 on a direct feed). "
+                         ">=13 drives the front end into intermod that kills the "
+                         "decode while clip %% stays 0; <=6 under-drives")
     # Clip geometry. Default 25 frames = 1 s — longer than the 0.48 s RX888
     # corpus, to give the sync flywheels room to settle.
     ap.add_argument("--frames", type=int, default=25,

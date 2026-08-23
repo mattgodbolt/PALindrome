@@ -18,7 +18,7 @@ doesn't stall the pipeline and backpressure the SDR. Ctrl-C stops all three.
 
 Usage:
     tools/live_view.py                     # defaults: SMS recipe, port 8080
-    tools/live_view.py --frequency 591200000 --gain 9 --port 8080
+    tools/live_view.py --frequency 591200000 --gain 11 --port 8080
 """
 import argparse
 import http.server
@@ -431,7 +431,9 @@ def main():
                          "(the RF creeps up ~50 kHz/week)")
     ap.add_argument("--sample-rate", type=int, default=10_000_000,
                     help="AirSpy complex rate; the real ADC stream is 2x this (the decoder's rate)")
-    ap.add_argument("--gain", type=int, default=9, help="airspy_rx linearity gain (0-21); 9 = sweet spot")
+    ap.add_argument("--gain", type=int, default=11,
+                    help="airspy_rx linearity gain (0-21); 11 = the measured knee (>=13 collapses "
+                         "into front-end intermod with clip%% still 0; 9 gives up ~7 dB of SNR)")
     ap.add_argument("--port", type=int, default=8080, help="HTTP port to serve the live picture on")
     # Colour at full sample rate (decimate 1) is the only clean path - decimate 2
     # folds the 4.43 MHz chroma into cross-colour, so don't. Full 720x576 colour
