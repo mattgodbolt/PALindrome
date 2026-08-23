@@ -51,11 +51,19 @@ int main(int argc, const char **argv) {
     return 0;
   }
   if (!result) {
-    for (const auto &profile: expanded.profiles)
-      std::println(std::cerr, "while applying profile {}:", profile);
     std::println(std::cerr, "Error in command line: {}", result.message());
-    if (!expanded.profiles.empty())
+    if (!expanded.profiles.empty()) {
+      // Lyra never names the token it choked on, so show what the profiles
+      // contributed - the failure may equally be the user's own typo.
+      std::string profiles;
+      for (const auto &p: expanded.profiles)
+        profiles += std::format("{}{}", profiles.empty() ? "" : ", ", p);
+      std::string tokens;
+      for (const auto &t: expanded.tokens)
+        tokens += std::format("{}{}", tokens.empty() ? "" : " ", t);
+      std::println(std::cerr, "with profile {} applied (expanded: {})", profiles, tokens);
       std::println(std::cerr, "(an unknown profile key becomes an unknown flag)");
+    }
     return 1;
   }
   if (!action) {

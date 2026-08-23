@@ -13,6 +13,7 @@ namespace palindrome::cli {
 struct ProfileExpansion {
   std::vector<std::string> args; // argv[0] first, as lyra::args expects
   std::vector<std::string> profiles; // resolved paths, for parse-error context
+  std::vector<std::string> tokens; // the derived flags, so a parse failure can show them
   std::string error; // non-empty: print it and exit 1
 };
 
