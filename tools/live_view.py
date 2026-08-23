@@ -126,10 +126,12 @@ class Decoder:
         with self.lock:
             self._spawn()
 
-    def restart(self, extra):
+    def restart(self, extra, channels=None):
         with self.lock:
             self.gen += 1            # tells the outgoing reader its exit is expected
             self.extra = list(extra)
+            if channels is not None:
+                self.channels = channels
             self._kill()
             self._spawn()
 
@@ -331,7 +333,7 @@ def make_handler(latest, dec, active_knobs, values, values_lock, profiles_dir, i
                         self._send(400, "text/plain; charset=utf-8", str(e).encode())
                         return
                     values.update({k: float(v) for k, v in merged.items()})
-                    dec.restart(flags)
+                    dec.restart(flags, channels=3 if values.get("colour", 1.0) else 1)
                 self.send_response(204)
                 self.end_headers()
                 return
@@ -525,7 +527,7 @@ def main():
     dec = Decoder(render_cmd, args, latest, channels)
     dec.airspy_cmd = airspy_cmd if args.source != "cxadc" else None
     dec.tail = list(args.extra)
-    dec.restart(knobs.flags_for(active_knobs, values))
+    dec.restart(knobs.flags_for(active_knobs, values), channels=3 if values.get("colour", 1.0) else 1)
 
     host = socket.gethostname()
     print(f"\nlive view: http://{host}:{args.port}/\n", file=sys.stderr)
