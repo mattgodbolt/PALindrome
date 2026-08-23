@@ -128,6 +128,23 @@ Colour needs nothing extra. The subcarrier rides the composite rail exactly as
 it rides a detector's output, and the map's inversion rotates burst and chroma
 together, which the burst-referenced decode cancels.
 
+## Profiles
+
+A tuning session's slider set can be saved as a JSON profile (the files in
+`profiles/`, written by the live view's Save box), and `render` consumes the
+same files:
+
+    palindrome render --profile bbc-master-composite --input composite \
+        --sample-format u8 --sample-rate 20e6 capture.bin
+
+`--profile` takes a bare name (loaded from `--profiles-dir`, default
+`profiles/` relative to the current directory) or a path, and may be repeated
+or comma-separated. The profile expands into ordinary flags before the rest
+of the command line is parsed, so the override rule is simple: later profiles
+beat earlier ones for the same knob, and an explicit flag on the command line
+beats any profile. A profile that declares an input mode must agree with
+`--input`. Only `render` takes profiles; sync and demod do not.
+
 ## Levels are absolute
 
 Levels are absolute, the way a receiver knows them. The IF AGC

@@ -2,6 +2,7 @@
 #include "demod_command.hpp"
 #include "info_command.hpp"
 #include "levels_command.hpp"
+#include "profile_args.hpp"
 #include "render_command.hpp"
 #include "sync_command.hpp"
 
@@ -37,13 +38,24 @@ int main(int argc, const char **argv) {
   sync.add_to(cli, action);
   levels.add_to(cli, action);
 
-  const auto result = cli.parse({argc, argv});
+  // render's --profile flags are spliced into the argument list up front (see
+  // profile_args.hpp); lyra then validates the flat result as usual.
+  const auto expanded = palindrome::cli::expand_profiles({argv, argv + argc});
+  if (!expanded.error.empty()) {
+    std::println(std::cerr, "{}", expanded.error);
+    return 1;
+  }
+  const auto result = cli.parse(lyra::args(expanded.args.begin(), expanded.args.end()));
   if (show_help) {
     std::cout << cli << '\n';
     return 0;
   }
   if (!result) {
+    for (const auto &profile: expanded.profiles)
+      std::println(std::cerr, "while applying profile {}:", profile);
     std::println(std::cerr, "Error in command line: {}", result.message());
+    if (!expanded.profiles.empty())
+      std::println(std::cerr, "(an unknown profile key becomes an unknown flag)");
     return 1;
   }
   if (!action) {
