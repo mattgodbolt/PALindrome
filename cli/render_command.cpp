@@ -349,8 +349,7 @@ int RenderCommand::run() const {
     opts.composite.sync_amplitude_v = composite_sync_v_;
   if (composite_clamp_ > 0.0)
     opts.composite.clamp_lines = composite_clamp_;
-  const auto if_mode = parse_choice<IfMode>(
-      "if", if_mode_, {{"saw80", IfMode::saw80}, {"saw90", IfMode::saw90}, {"flat", IfMode::flat}});
+  const auto if_mode = parse_if_mode("render", if_mode_);
   if (!if_mode)
     return 1;
   opts.if_mode = *if_mode;

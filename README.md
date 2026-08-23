@@ -86,7 +86,8 @@ television is mostly knobs.
 with. It reports the pulse-width histogram, line-sync jitter, the field
 structure, and what the timebases locked to. No picture, just numbers. It and
 `demod` read through the plain low-pass front end rather than the SAW shape,
-so they measure the signal, not the receiver.
+so they measure the signal, not the receiver; `sync --if saw80` opts into
+the receiver's-eye view when that's the question.
 
 `palindrome levels --input composite --sample-rate 20e6 --sample-format u8
 capture.bin` is the amplitude counterpart of `sync`: it slices line syncs out

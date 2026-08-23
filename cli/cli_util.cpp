@@ -100,6 +100,17 @@ std::optional<InputMode> parse_input_mode(std::string_view command, std::string_
   return std::nullopt;
 }
 
+std::optional<IfMode> parse_if_mode(std::string_view command, std::string_view value) {
+  if (value == "saw80")
+    return IfMode::saw80;
+  if (value == "saw90")
+    return IfMode::saw90;
+  if (value == "flat")
+    return IfMode::flat;
+  std::println(std::cerr, "{}: --if must be one of: saw80, saw90, flat", command);
+  return std::nullopt;
+}
+
 LoadedRecording load_recording(const std::filesystem::path &recording, const LoadOptions &opts) {
   LoadedRecording loaded;
   loaded.meta_path = resolve_meta(recording);

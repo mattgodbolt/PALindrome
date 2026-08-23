@@ -99,12 +99,18 @@ void SyncCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "this command reports and can make most of the 'equalising' count an artifact"))
           .add_argument(lyra::opt(composite_sync_v_, "volts")["--composite-sync"](
               "Composite: the source's sync amplitude in volts (default 0.3)"))
+          .add_argument(lyra::opt(if_mode_, "mode")["--if"](
+              "IF response to diagnose through: flat (default - the ideal symmetric low-pass, so the report "
+              "measures the signal rather than a receiver's SAW curve) | saw80 | saw90 (the receiver curves "
+              "render decodes through, for a receiver's-eye view; the template then decides the bandwidth "
+              "and --cutoff does not apply)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"](
               "Baseband low-pass cutoff Hz (default 5 MHz for rf, 5.5 MHz - System I's vision band - for "
               "composite. In composite mode a cutoff at or above Nyquist disables the filter, unless "
               "decimating; rf's low-pass is integral and never disables)"))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"](
-              "Keep 1 sample per N inputs (0 = the mode's default: 2 for rf, 1 for composite)"))
+              "Keep 1 sample per N inputs (0 = the mode's default: 2 for flat rf, 1 for composite and the saw "
+              "modes, whose chroma /2 would alias)"))
           .add_argument(lyra::arg(recording_, "recording")("Recording to inspect (e.g. corpus/alex_kidd)")));
 }
 
@@ -115,6 +121,13 @@ int SyncCommand::run() const {
   const bool composite = *input == InputMode::composite;
   if (composite && carrier_ > 0.0) {
     std::println(std::cerr, "sync: --carrier describes the RF front end; --input composite has no carrier");
+    return 1;
+  }
+  const auto if_mode = parse_if_mode("sync", if_mode_);
+  if (!if_mode)
+    return 1;
+  if (composite && *if_mode != IfMode::flat) {
+    std::println(std::cerr, "sync: --if describes the RF front end; --input composite has no IF");
     return 1;
   }
   const auto loaded = load_recording(recording_, {.carrier_override = carrier_, .input = *input});
@@ -133,9 +146,15 @@ int SyncCommand::run() const {
   // undecimated vision low-pass (the composite default) is not that case:
   // measured on pattern.bin it leaves the counts and jitter alone.
   std::vector<float> env;
-  const std::size_t decimation = decimate_ != 0 ? decimate_ : (composite ? 1 : 2);
+  // The saw modes also default to no decimation: the SAW template passes the
+  // 4.43 MHz chroma, which /2 at 16 MS/s would fold to ~3.57 MHz and inflate
+  // the very statistics this tool reports. render avoids that with a
+  // subcarrier-aware auto_decimate; here the receiver's-eye view just keeps
+  // the full rate, and an explicit --decimate still wins.
+  const std::size_t decimation =
+      decimate_ != 0 ? decimate_ : (composite || *if_mode != IfMode::flat ? std::size_t{1} : std::size_t{2});
   const auto cutoff = cutoff_ > 0.0 ? cutoff_ : (composite ? kCompositeCutoffHz : kDefaults.cutoff_hz);
-  EnvelopeOptions opts{.input = *input, .cutoff_hz = cutoff, .decimation = decimation};
+  EnvelopeOptions opts{.input = *input, .cutoff_hz = cutoff, .decimation = decimation, .if_mode = *if_mode};
   if (composite_scale_ > 0.0)
     opts.composite.full_scale_volts = composite_scale_;
   if (composite_sync_v_ > 0.0)
@@ -161,6 +180,10 @@ int SyncCommand::run() const {
 
   std::println("recording: {} samples @ {:g} MS/s ({:.1f} ms), ~{:.1f} samples/line nominal", env.size(), rate / 1e6,
       static_cast<double>(env.size()) * us_per_sample / 1000.0, nominal_line_samples);
+  // Reported only when the saw modes' quasi-sync loop actually ran; the flat
+  // default has no AFC and "no loop" must not print as "measured zero".
+  if (es.afc_offset_hz)
+    std::println("quasi-sync AFC settled {:+.1f} Hz from the carrier", *es.afc_offset_hz);
   std::println("separator sliced {} sync pulses", pulses.size());
   if (pulses.empty())
     return 0;

@@ -103,6 +103,11 @@ void stream_real_stdin(SampleFormat format, const std::function<void(std::span<c
 // replaced, kept verbatim as the legacy/comparison chain.
 enum class IfMode { saw80, saw90, flat };
 
+// Parse an --if value, printing `<command>: --if must be one of: ...` to
+// stderr and returning nullopt if it is not one — the parse_input_mode
+// pattern, shared so render and sync cannot drift on the mode names.
+[[nodiscard]] std::optional<IfMode> parse_if_mode(std::string_view command, std::string_view value);
+
 // System I allocates 5.5 MHz to vision, and a real set's video path admits no
 // more - noise included. The composite path's default low-pass corner, so a
 // flat-noise source shows a receiver's noise bandwidth, not the capture's.

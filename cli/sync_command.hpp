@@ -35,10 +35,13 @@ private:
   // composite filter leaves the statistics alone (jitter 0.029 -> 0.026 us,
   // equalising 30 -> 43 of ~31k pulses, line rate within 0.001%).
   double cutoff_{0.0};
-  // 0 = take the mode's default: /2 for RF, where sync only needs the slow
-  // pulse shapes, and /1 for composite, where the pulse shapes are already at
-  // baseband and there is no chroma to keep under Nyquist. Any explicit
-  // --decimate wins in either mode.
+  // "flat" by default, unlike render: the microscope measures the signal, not
+  // a receiver's SAW curve. The saw modes opt into the receiver's-eye view.
+  std::string if_mode_{"flat"};
+  // 0 = take the mode's default: /2 for flat RF, where sync only needs the
+  // slow pulse shapes, and /1 for composite and the saw modes, where there is
+  // chroma (or baseband detail) to keep under Nyquist. Any explicit
+  // --decimate wins in every mode.
   std::size_t decimate_{0};
 };
 
