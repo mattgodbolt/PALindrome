@@ -1,5 +1,7 @@
 #pragma once
 
+#include "palindrome/denormals.hpp"
+
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -118,7 +120,12 @@ public:
 
 private:
   stdexec::run_loop loop_;
-  std::jthread thread_{[this] { loop_.run(); }};
+  // Every stage's DSP runs on this thread, so it needs the per-thread MXCSR
+  // denormal flush (issue #126) before any of it executes.
+  std::jthread thread_{[this] {
+    flush_denormals_to_zero();
+    loop_.run();
+  }};
 };
 
 // First worker exception, captured under a mutex; the relaxed flag lets stages

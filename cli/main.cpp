@@ -6,6 +6,8 @@
 #include "render_command.hpp"
 #include "sync_command.hpp"
 
+#include "palindrome/denormals.hpp"
+
 #include <exception>
 #include <functional>
 #include <iostream>
@@ -14,6 +16,10 @@
 #include <lyra/lyra.hpp>
 
 int main(int argc, const char **argv) {
+  // Covers every command's serial path (--no-threads included); the pipeline and
+  // splat worker threads set their own MXCSR in their thread bodies (issue #126).
+  palindrome::flush_denormals_to_zero();
+
   using palindrome::cli::ConvertCommand;
 
   bool show_help{};

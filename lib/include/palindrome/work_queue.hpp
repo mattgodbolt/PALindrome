@@ -1,5 +1,7 @@
 #pragma once
 
+#include "palindrome/denormals.hpp"
+
 #include <condition_variable>
 #include <cstddef>
 #include <exception>
@@ -99,6 +101,10 @@ private:
   }
 
   void worker() {
+    // The tasks are the deposit FMAs, so this thread needs the per-thread MXCSR
+    // denormal flush (issue #126). The calling thread drains too; it is either a
+    // pipeline sink worker or the main thread, both already flushed.
+    flush_denormals_to_zero();
     std::unique_lock lk{mtx_};
     for (;;) {
       work_cv_.wait(lk, [this] { return stop_ || next_ < tasks_.size(); });
