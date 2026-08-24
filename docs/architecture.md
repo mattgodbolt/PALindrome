@@ -7,7 +7,9 @@ per-stage headers carry the detail; this is the contract they all share.
 
 ## The stage protocol
 
-Every stage is a streaming block with the same three-call surface:
+The one-span transform stages - the FIRs and detectors, the AGC, the sync
+separator, both timebases, the chroma decoder - share the same three-call
+surface:
 
 - `prepare(max_in)` sizes the internal buffers for the largest block a call
   will see. It is the one allocation: the output `Buffer` deliberately never
@@ -23,6 +25,13 @@ Every stage is a streaming block with the same three-call surface:
   caller can size what comes next. The decimating DSP stages (the FIRs and
   the detectors) return fewer; the video stages are 1:1 and theirs is the
   identity.
+
+Two nodes sit outside the one-span shape, deliberately. The Screen is the
+graph's join, not a transform: `process` takes the three rails as
+same-length spans and emits frames through a field callback rather than
+returning a span (so there is no `max_output_for`). The Decoder is the
+whole graph reified as one node: `prepare` / `decode_into` / `deposit`, the
+two halves a pipeline can run on separate threads.
 
 That uniformity is a load-bearing invariant, not a style preference. Input
 shape - block size, looping, settling, decimation policy, when to emit a
