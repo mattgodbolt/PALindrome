@@ -13,7 +13,9 @@
 #include <span>
 #include <vector>
 
+#include <catch2/catch_message.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
 #include <catch2/matchers/catch_matchers_range_equals.hpp>
 
@@ -53,12 +55,11 @@ TEST_CASE("separator + sweep are block-invariant (the streaming guarantee)") {
   const auto same_beam = [](const video::BeamSample &a, const video::BeamSample &b) {
     return a.h_phase == b.h_phase && a.line_start == b.line_start;
   };
-  for (const bool adaptive: {false, true}) {
-    const auto whole = run_chunked(env, env.size(), adaptive);
-    for (const std::size_t chunk: {std::size_t{1}, std::size_t{7}, std::size_t{333}, std::size_t{4096}}) {
-      CHECK_THAT(run_chunked(env, chunk, adaptive), Catch::Matchers::RangeEquals(whole, same_beam));
-    }
-  }
+  const auto adaptive = GENERATE(false, true);
+  const auto whole = run_chunked(env, env.size(), adaptive);
+  const auto chunk = GENERATE(std::size_t{1}, std::size_t{7}, std::size_t{333}, std::size_t{4096});
+  CAPTURE(adaptive, chunk);
+  CHECK_THAT(run_chunked(env, chunk, adaptive), Catch::Matchers::RangeEquals(whole, same_beam));
 }
 
 TEST_CASE("Agc normalises an arbitrary carrier scale to tip = 1.0") {
@@ -91,17 +92,17 @@ TEST_CASE("Agc is block-invariant (the streaming guarantee)") {
   const auto whole_view = whole_agc.process(env);
   const std::vector<float> whole(whole_view.begin(), whole_view.end());
 
-  for (const std::size_t chunk: {std::size_t{1}, std::size_t{7}, std::size_t{333}, std::size_t{4096}}) {
-    video::Agc agc{video::AgcConfig{.sample_rate_hz = kRate}};
-    agc.prepare(chunk);
-    std::vector<float> chunked;
-    for (std::size_t off = 0; off < env.size(); off += chunk) {
-      const std::size_t n = std::min(chunk, env.size() - off);
-      const auto out = agc.process(std::span{env}.subspan(off, n));
-      chunked.insert(chunked.end(), out.begin(), out.end());
-    }
-    CHECK(chunked == whole); // per-sample recurrence: bit-exact
+  const auto chunk = GENERATE(std::size_t{1}, std::size_t{7}, std::size_t{333}, std::size_t{4096});
+  CAPTURE(chunk);
+  video::Agc agc{video::AgcConfig{.sample_rate_hz = kRate}};
+  agc.prepare(chunk);
+  std::vector<float> chunked;
+  for (std::size_t off = 0; off < env.size(); off += chunk) {
+    const std::size_t n = std::min(chunk, env.size() - off);
+    const auto out = agc.process(std::span{env}.subspan(off, n));
+    chunked.insert(chunked.end(), out.begin(), out.end());
   }
+  CHECK(chunked == whole); // per-sample recurrence: bit-exact
 }
 
 TEST_CASE("Agc recovers after the carrier level drops") {

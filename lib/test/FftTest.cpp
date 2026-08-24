@@ -7,7 +7,9 @@
 #include <stdexcept>
 #include <vector>
 
+#include <catch2/catch_message.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 namespace dsp = palindrome::dsp;
@@ -40,18 +42,18 @@ TEST_CASE("fft rejects non-power-of-two sizes") {
 }
 
 TEST_CASE("fft matches the naive DFT") {
-  for (const std::size_t n: {std::size_t{2}, std::size_t{8}, std::size_t{64}, std::size_t{256}}) {
-    std::vector<std::complex<double>> x(n);
-    for (std::size_t k = 0; k < n; ++k) // a deterministic, non-trivial signal
-      x[k] = std::complex<double>{std::sin(0.3 * static_cast<double>(k)) + 0.2 * static_cast<double>(k % 5),
-          std::cos(0.11 * static_cast<double>(k))};
-    const auto ref = naive_dft(x);
-    dsp::fft(x);
-    REQUIRE(x.size() == ref.size());
-    for (std::size_t k = 0; k < n; ++k) {
-      CHECK_THAT(x[k].real(), WithinAbs(ref[k].real(), 1e-9));
-      CHECK_THAT(x[k].imag(), WithinAbs(ref[k].imag(), 1e-9));
-    }
+  const auto n = GENERATE(std::size_t{2}, std::size_t{8}, std::size_t{64}, std::size_t{256});
+  CAPTURE(n);
+  std::vector<std::complex<double>> x(n);
+  for (std::size_t k = 0; k < n; ++k) // a deterministic, non-trivial signal
+    x[k] = std::complex<double>{std::sin(0.3 * static_cast<double>(k)) + 0.2 * static_cast<double>(k % 5),
+        std::cos(0.11 * static_cast<double>(k))};
+  const auto ref = naive_dft(x);
+  dsp::fft(x);
+  REQUIRE(x.size() == ref.size());
+  for (std::size_t k = 0; k < n; ++k) {
+    CHECK_THAT(x[k].real(), WithinAbs(ref[k].real(), 1e-9));
+    CHECK_THAT(x[k].imag(), WithinAbs(ref[k].imag(), 1e-9));
   }
 }
 

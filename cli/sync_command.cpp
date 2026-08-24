@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <format>
 #include <iostream>
 #include <optional>
 #include <print>
@@ -20,6 +21,12 @@
 namespace palindrome::cli {
 
 namespace {
+
+// The per-mode decimation an unset --decimate falls back to (see run() for why
+// composite - and the saw modes, which share the undecimated default - must
+// stay undecimated), named so the help quotes the same values.
+constexpr std::size_t kRfDecimation = 2;
+constexpr std::size_t kCompositeDecimation = 1;
 
 struct Pulse {
   std::size_t leading; // sample index of the leading edge
@@ -97,20 +104,22 @@ void SyncCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
               "Composite: volts at input full scale. Declaring the source's real value matters here - a "
               "mis-scaled rail moves where the fixed slice cuts the sync edge, which changes the pulse widths "
               "this command reports and can make most of the 'equalising' count an artifact"))
-          .add_argument(lyra::opt(composite_sync_v_, "volts")["--composite-sync"](
-              "Composite: the source's sync amplitude in volts (default 0.3)"))
+          .add_argument(lyra::opt(composite_sync_v_, "volts")["--composite-sync"](std::format(
+              "Composite: the source's sync amplitude in volts (default {})", kDefaults.composite.sync_amplitude_v)))
           .add_argument(lyra::opt(if_mode_, "mode")["--if"](
               "IF response to diagnose through: flat (default - the ideal symmetric low-pass, so the report "
               "measures the signal rather than a receiver's SAW curve) | saw80 | saw90 (the receiver curves "
               "render decodes through, for a receiver's-eye view; the template then decides the bandwidth "
               "and --cutoff does not apply)"))
           .add_argument(lyra::opt(cutoff_, "hz")["--cutoff"](
-              "Baseband low-pass cutoff Hz (default 5 MHz for rf, 5.5 MHz - System I's vision band - for "
-              "composite. In composite mode a cutoff at or above Nyquist disables the filter, unless "
-              "decimating; rf's low-pass is integral and never disables)"))
+              std::format("Baseband low-pass cutoff Hz (default {} MHz for rf, {} MHz - System I's vision band - "
+                          "for composite. In composite mode a cutoff at or above Nyquist disables the filter, "
+                          "unless decimating; rf's low-pass is integral and never disables)",
+                  kDefaults.cutoff_hz / 1e6, kCompositeCutoffHz / 1e6)))
           .add_argument(lyra::opt(decimate_, "n")["--decimate"](
-              "Keep 1 sample per N inputs (0 = the mode's default: 2 for flat rf, 1 for composite and the saw "
-              "modes, whose chroma /2 would alias)"))
+              std::format("Keep 1 sample per N inputs (0 = the mode's default: {} for flat rf, {} for composite "
+                          "and the saw modes, whose chroma /{} would alias)",
+                  kRfDecimation, kCompositeDecimation, kRfDecimation)))
           .add_argument(lyra::arg(recording_, "recording")("Recording to inspect (e.g. corpus/alex_kidd)")));
 }
 
@@ -152,7 +161,7 @@ int SyncCommand::run() const {
   // subcarrier-aware auto_decimate; here the receiver's-eye view just keeps
   // the full rate, and an explicit --decimate still wins.
   const std::size_t decimation =
-      decimate_ != 0 ? decimate_ : (composite || *if_mode != IfMode::flat ? std::size_t{1} : std::size_t{2});
+      decimate_ != 0 ? decimate_ : (composite || *if_mode != IfMode::flat ? kCompositeDecimation : kRfDecimation);
   const auto cutoff = cutoff_ > 0.0 ? cutoff_ : (composite ? kCompositeCutoffHz : kDefaults.cutoff_hz);
   EnvelopeOptions opts{.input = *input, .cutoff_hz = cutoff, .decimation = decimation, .if_mode = *if_mode};
   if (composite_scale_ > 0.0)
