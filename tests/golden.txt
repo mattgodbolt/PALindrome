@@ -1,0 +1,5 @@
+# Exact render-pixel hashes - change detection only, never approval: a human signs off via tools/golden.py diff, then bless.
+alex_kidd c9651e18cbbaca9a
+alex_kidd_title 158636e64121f85e
+wb3 4f6817d2039e1263
+wb3_airspy e2e0756fd3a079ce
