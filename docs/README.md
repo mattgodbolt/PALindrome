@@ -4,6 +4,9 @@ The design and reference notes the code assumes. Start with the top-level
 README (what the project is, how to build and run it, the signal-flow graph);
 these go deeper on single topics.
 
+- [architecture.md](architecture.md) - the signal chain at altitude: the
+  stage protocol, the wire types, the Decoder graph, the pipe::run threading
+  model, and where the invariants are written down.
 - [render.md](render.md) - the decode stage by stage: the IF curve, detector,
   levels, hold loops, colour path and CRT model, every `render` flag, and the
   TLA glossary.
