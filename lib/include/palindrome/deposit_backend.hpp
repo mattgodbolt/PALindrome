@@ -74,9 +74,12 @@ public:
   virtual void end_field(float decay) = 0;
   // Keep the phosphor as it stands now (after landing anything committed) for
   // readout_latched() later. That state is the promise, not a copy: a backend
-  // that lands lazily leaves the live buffer as the latch until something has
-  // to move it on, so a driver that latches every field and reads only the
-  // last never pays for a copy. A latch supersedes any earlier one.
+  // that lands lazily leaves the live buffer as the latch and copies it only
+  // when the live phosphor has to move on beneath it - a live readout(), or a
+  // later end_field() landing its fade and records with no latch() in between.
+  // A latch supersedes any earlier one (the old state is dropped, never
+  // copied), so a driver that latches every field and reads only the last
+  // never pays for a copy.
   virtual void latch() = 0;
   // Quantise the live phosphor (after landing anything committed) / the latched
   // state, delivering the Frame to sink. A live readout leaves the latched

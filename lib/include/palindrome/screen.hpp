@@ -153,8 +153,9 @@ public:
   // Handed to the field callback at each boundary. Quantising a Frame is the
   // expensive part of a snapshot, so the event is lazy: frame() quantises the
   // field now (the per-field PNG sequence), while latch() just keeps the float
-  // state (the backend copies it only if the live phosphor is read before the
-  // next latch) so latched_frame() can quantise it once, later — the
+  // state (the backend copies it only if the live phosphor has to move on
+  // beneath it - a live snapshot, or a later field boundary - before the next
+  // latch supersedes it) so latched_frame() can quantise it once, later — the
   // single-image "keep the last clean boundary" shape, which would otherwise
   // quantise and discard every field but the last.
   //

@@ -22,9 +22,11 @@ namespace palindrome::video {
 //
 // That laziness is what makes latch() free: the latched frame is the live
 // buffer as it stands, and the fade and records that arrive after it stay
-// unapplied, so nothing has to be copied unless the live phosphor is read
-// (or a fresh latch supersedes it, which drops the old one). A single-image
-// render latches every field and reads only the last, so it never copies.
+// unapplied. land() copies it aside first only when it has to move the live
+// buffer on beneath a live latch - a live readout(), or a second end_field()
+// with no latch() between - while a fresh latch() drops the old one instead
+// of copying it. A single-image render latches every field and reads only
+// the last, so it never copies.
 class CpuDepositBackend final : public DepositBackend {
 public:
   CpuDepositBackend(
