@@ -137,8 +137,9 @@ preset. The input stage puts the vision carrier there and the AFC absorbs the
 drift, the same way a tuned set does - no set scans at switch-on. Decoded
 frames leave as raw RGB writes on `--frame-fd`, so whoever owns that fd does
 the image encoding and the decoder stays a plain CLI. `--frame-stride` sets
-the snapshot cadence (default every 5th field, about 10 fps) and
-`--deposit-threads 8` buys the real-time margin at 20 MS/s colour.
+the snapshot cadence (default every 5th field, about 10 fps) and the threaded
+deposit (`--deposit-threads`, default 12) buys the real-time margin at 20 MS/s
+colour.
 
 `tools/live_view.py` wires it up: it spawns
 `airspy_rx -r /dev/stdout | palindrome render --live --frame-fd ...`,
