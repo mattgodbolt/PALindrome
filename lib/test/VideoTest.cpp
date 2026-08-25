@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <random>
 #include <span>
 #include <vector>
 
@@ -103,6 +104,48 @@ TEST_CASE("Agc is block-invariant (the streaming guarantee)") {
     chunked.insert(chunked.end(), out.begin(), out.end());
   }
   CHECK(chunked == whole); // per-sample recurrence: bit-exact
+}
+
+TEST_CASE("Agc equals the per-sample reference recurrence bit for bit") {
+  // The blocked path gathers each lane's decayed candidates and regroups the
+  // max across them; it must reproduce the serial recurrence exactly, on a
+  // signal where every lane position wins in turn (noise, both signs) as well
+  // as the composite shape, and through chunk sizes that leave every tail.
+  constexpr double kDecayFields = 0.01;
+  const auto reference = [](std::span<const float> env) {
+    const double release = std::exp(-1.0 / (kDecayFields * (kRate / video::kNominalFieldHz)));
+    std::vector<float> out(env.size());
+    double tip = env.empty() ? 0.0 : static_cast<double>(env[0]);
+    for (std::size_t k = 0; k < env.size(); ++k) {
+      tip = std::max(static_cast<double>(env[k]), tip * release);
+      out[k] = env[k] * static_cast<float>(tip > 0.0 ? 1.0 / tip : 0.0);
+    }
+    return out;
+  };
+  const auto noise = [](float lo, float hi) {
+    std::minstd_rand rng{12345};
+    std::uniform_real_distribution<float> dist{lo, hi};
+    std::vector<float> e(100'003);
+    for (auto &s: e)
+      s = dist(rng);
+    return e;
+  };
+
+  const auto signal = GENERATE(0, 1, 2);
+  const auto env = signal == 0 ? synth_composite(40, 1028) : signal == 1 ? noise(0.0f, 1.0f) : noise(-1.0f, 1.0f);
+  const auto chunk = GENERATE(std::size_t{1}, std::size_t{7}, std::size_t{8}, std::size_t{9}, std::size_t{333},
+      std::size_t{4096}, std::size_t{1 << 20});
+  CAPTURE(signal, chunk);
+
+  video::Agc agc{video::AgcConfig{.sample_rate_hz = kRate, .decay_fields = kDecayFields}};
+  agc.prepare(chunk);
+  std::vector<float> chunked;
+  for (std::size_t off = 0; off < env.size(); off += chunk) {
+    const std::size_t n = std::min(chunk, env.size() - off);
+    const auto out = agc.process(std::span{env}.subspan(off, n));
+    chunked.insert(chunked.end(), out.begin(), out.end());
+  }
+  CHECK(chunked == reference(env));
 }
 
 TEST_CASE("Agc recovers after the carrier level drops") {

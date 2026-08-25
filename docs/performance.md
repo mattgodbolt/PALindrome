@@ -144,6 +144,40 @@ downstream work), so the balance legitimately differs between them.
   thread. Wall neutral (median of 6: 7.67s -> 7.75s, noise-bimodal), user CPU
   40.8s -> 40.0s. Renders and composite frame dumps byte-identical; ctest
   green with the `==` block-invariance tests untouched.
+- **AGC peak detector as a blocked max-plus scan (#96).** `Agc::process` ran
+  `tip = max(env, r * tip)` per sample: a multiply and a max on one
+  loop-carried chain, ~9 cycles/sample, the per-sample divide hidden under it.
+  Unrolled, tip[k] is the max over j of env[j] decayed k-j times, and because
+  rounding is monotone `r * max(a, b) == max(r*a, r*b)` bit for bit, so the max
+  regroups freely across the lanes of an 8-wide AVX-512 block: each lane
+  gathers its own candidates by a masked shift-and-decay scan, the incoming
+  tip is decayed once per lane by a scalar chain of eight multiplies, and the
+  divide, the float snapshot and the output multiply run as vector ops. The
+  decay chain itself cannot be shortened: `fl(fl(x*r)*r) != fl(x*fl(r*r))`, so
+  the powers-of-r prefix scan the issue sketched is not bit-exact in the tip
+  (its pictures were byte-identical only by the ~2^-29 odds of a 1-ULP double
+  change moving the float snapshot). The loop-carried chain is therefore
+  8 `vmulsd` + 1 `vmaxsd` = 36 cycles per 8 samples, the floor for an exact
+  result. Microbench (200M samples, cycles:u): scalar 9.05 cycles/sample ->
+  6.55 (1.38x). The gap to the 4.5 floor is consistent with scheduler/ROB
+  residency of the dependent tail queued behind the chain (gather -> max ->
+  cmp -> `vdivpd` zmm (23 cycles) -> cvt -> mul -> store). Shapes measured and
+  not kept: store/reload gather of the carry 9.7 cycles/sample (store-forward
+  stall); blend-after-divide identical (gcc folds it back into the masked
+  divide); the scan loop left rolled 6.75. Diagnostics (not exact, for
+  attribution only): dropping the divide 5.9, dropping the carry gather 5.85,
+  dropping both 5.4 - so the tail accounts for ~1.1 of the ~2-cycle gap and
+  the rest is the 512-bit scan ops (which fuse p0+p1 on Skylake-X) contending
+  with the scalar `vmulsd` chain for its ports; a 256-bit scan in two halves
+  is the untried follow-up. RF fixture (wb3_airspy x10,
+  20 MS/s, 12 deposit threads): the AGC loop inlined in `decode_into` 0.81G
+  -> 0.52G cycles; the decode thread 9.95G -> 7.82G (-21%, part of which is
+  run-to-run attribution noise: `Fir::process` also read lower). Wall neutral
+  (median of 5: composite 4.60s -> 4.70s, RF 8.14s -> 8.29s; user CPU 22.3s ->
+  22.2s and 42.6s -> 42.8s). Renders byte-identical: the golden check passes
+  unchanged; ctest green with the `==` block-invariance tests untouched plus a
+  new test pinning the vector path to the scalar recurrence across chunk
+  sizes and both signs of input.
 
 ## Dead ends (measured, do not repeat)
 
@@ -207,9 +241,11 @@ changes on the full-render A/B, never a microbench delta.
   it now ties with the sink - see above). Post #63 its spend: `Fir::process`
   ~34% (chroma band-pass, U/V low-pass pair, sync low-pass), `decode_into`
   ~28% (now mostly the AGC and the pass-1 NCO mix, each latency-bound on an
-  8-cycle loop-carried double chain that scalar micro-opts cannot touch - the
-  AGC's per-sample divide is fully hidden under its chain, don't chase it),
-  the sweeps ~25% (~12% after #95). Remaining levers: the std::simd FIR
+  8-cycle loop-carried double chain that scalar micro-opts cannot touch; #96
+  took the AGC's chain down to its 4-cycle multiply, with the divide and the
+  rest of the per-sample work in vector lanes beside it - what remains there
+  is the ~2-cycle gap to that floor, see the #96 bullet), the sweeps ~25%
+  (~12% after #95). Remaining levers: the std::simd FIR
   widening below; blocking the pass-1 phasor recurrence (advance by step^8,
   ~-13% of decode_into) - but that ULP-shifts the NCO *inside the APC feedback
   loop*, so it needs its own tolerance-based verification protocol,
