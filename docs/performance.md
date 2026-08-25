@@ -230,6 +230,27 @@ changes on the full-render A/B, never a microbench delta.
   (~4-8% of live wall), and the file renders don't care (decode-bound). The
   banked PR #70 attacks the apply side, still hidden while bursts fit the
   pipeline slack.
+
+  What was measured for the GPU move (#100, amending #59): the feedback
+  recurrences in this pass (EHT sag, BCL, line pull, focus) step once per
+  line, 312 times a field, and cost ~0.01% of program cycles. The rest of the
+  per-sample body is a pure function of the sample and the per-line
+  constants - the controls update at h_blank (~0.16 of a line) and the
+  visible span starts 0.09-0.14 of a line later, so they are fixed across
+  it - and of the ~20% of cycles the deposit symbol carries, about 27% is
+  the gamma LUT. So the pass is line-rate, not serial-forever. What keeps it
+  on the CPU is different: WGSL has only f32 for the accumulators the
+  CLAUDE.md rule keeps in double, and a kernel launch plus sync has a floor
+  of 9.8 us (RTX 2070; ~214 us pinned round trip for a line of data), so
+  per-line uploads are fine and per-sample interaction is not. The ceiling
+  for taking the whole deposit side (splat, decay, readout) off the CPU is
+  ~15% of file-render wall (gutted-deposit proxy 4.19 s vs 4.95 s at 8
+  lanes, measured concurrently with other work on the shared box, so
+  re-measure serially before quoting it) and 60-64% of program CPU
+  returned, which is the number that matters for WASM, higher sample rates
+  and #42 bloom. PR #105 carved the DepositBackend seam (stage 0); #103 is
+  the stage-1 plan. #64 is the snapshot-per-line-to-float lever on this same
+  pass.
 - **Wider SIMD via std::simd (gcc 16+).** The strip tiers are AVX2 (256-bit) on
   a box with AVX-512 and two 512-bit FMA units; 512-bit lanes would halve the
   strip count. Held for `std::simd` rather than hand-rolled AVX-512. The
