@@ -148,10 +148,13 @@ private:
   // on any of those members would silently see stale values.
   void finalize_line();
   void snapshot_controls(); // refresh the float per-line controls after they change
-  // One internally-chunked piece of process(): the three decode passes over a
-  // segment that ends at a burst-gate close, so an NCO retune there reaches
-  // the next segment's mix at the same sample whatever the caller's chunking.
-  void decode_segment(std::span<const float> envelope, std::span<const BeamSample> hbeam, std::span<ChromaSample> out);
+  // One internally-chunked piece of process(): the NCO mix, demod low-pass and
+  // pass 3 over a segment that ends at a burst-gate close, so an NCO retune
+  // there reaches the next segment's mix at the same sample whatever the
+  // caller's chunking. The band-pass (chroma) and the luma notch (luma) are
+  // already run over the whole block; the segment gets its slices.
+  void decode_segment(std::span<const float> chroma, std::span<const float> luma, std::span<const BeamSample> hbeam,
+      std::span<ChromaSample> out);
   // Pass 3 specialised per comb mode, so the dispatch (and each mode's unused
   // work) is hoisted out of the per-sample loop.
   template<CombMode Mode>

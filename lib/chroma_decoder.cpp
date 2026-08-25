@@ -5,10 +5,18 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <cstddef>
 #include <format>
 #include <numbers>
+#include <span>
 #include <stdexcept>
 #include <utility>
+
+#if defined(__AVX__)
+#include <bit>
+#include <cstring>
+#include <immintrin.h>
+#endif
 
 namespace palindrome::video {
 
@@ -57,6 +65,59 @@ const ChromaDecoderConfig &validate(const ChromaDecoderConfig &cfg) {
   if (!(cfg.apc_pull > 0.0 && cfg.apc_pull <= 1.0))
     throw std::invalid_argument{std::format("ChromaDecoder: apc_pull must be in (0, 1], got {}", cfg.apc_pull)};
   return cfg;
+}
+
+// The end of the segment that begins at `start`: one past the first burst-gate
+// close at or after it (a sample the gate is shut on after being open on the
+// previous one; a line start shuts the gate without a close), or n when the
+// block has none. Pass 3 walks the same transitions for real; this is a pure
+// search over hbeam, so the AVX path tests eight h_phase values at once and
+// only looks at the (rare) candidate closes one by one.
+[[nodiscard]] std::size_t segment_end(
+    std::span<const BeamSample> hbeam, std::size_t start, bool gate_prev, float lo, float hi) noexcept {
+  const auto n = hbeam.size();
+  auto k = start;
+#if defined(__AVX__)
+  // Four BeamSamples are one 256-bit load with h_phase in the even float lanes
+  // and line_start plus padding in the odd ones.
+  static_assert(sizeof(BeamSample) == 2 * sizeof(float) && offsetof(BeamSample, h_phase) == 0,
+      "the lane layout below assumes h_phase leads an 8-byte BeamSample");
+  const __m256 vlo = _mm256_set1_ps(lo);
+  const __m256 vhi = _mm256_set1_ps(hi);
+  // One in-gate bit per sample for four consecutive BeamSamples: duplicating
+  // each h_phase over its sample's odd lane keeps the padding bytes out of the
+  // compares and lets the double-lane sign mask read out one bit per sample.
+  const auto in_gate_bits = [vlo, vhi](const BeamSample *p) {
+    __m256 hp;
+    std::memcpy(&hp, p, sizeof hp);
+    hp = _mm256_moveldup_ps(hp);
+    const __m256 in = _mm256_and_ps(_mm256_cmp_ps(hp, vlo, _CMP_GE_OQ), _mm256_cmp_ps(hp, vhi, _CMP_LT_OQ));
+    return static_cast<unsigned>(_mm256_movemask_pd(_mm256_castps_pd(in)));
+  };
+  unsigned prev = gate_prev ? 1u : 0u;
+  for (; k + 8 <= n; k += 8) {
+    const unsigned in_gate = in_gate_bits(&hbeam[k]) | (in_gate_bits(&hbeam[k + 4]) << 4);
+    unsigned closes = ((in_gate << 1) | prev) & ~in_gate & 0xFFu;
+    while (closes != 0) {
+      const auto j = static_cast<std::size_t>(std::countr_zero(closes));
+      if (!hbeam[k + j].line_start)
+        return k + j + 1;
+      closes &= closes - 1;
+    }
+    prev = in_gate >> 7;
+  }
+  gate_prev = prev != 0;
+#endif
+  for (; k < n; ++k) {
+    if (hbeam[k].line_start)
+      gate_prev = false;
+    const float hp = hbeam[k].h_phase;
+    const bool in_gate = hp >= lo && hp < hi;
+    if (!in_gate && gate_prev)
+      return k + 1;
+    gate_prev = in_gate;
+  }
+  return n;
 }
 } // namespace
 
@@ -228,6 +289,12 @@ std::span<const ChromaSample> ChromaDecoder::process(
     throw std::invalid_argument{"ChromaDecoder: envelope and hbeam rails must be the same length"};
   const auto out = out_.write_n(n);
 
+  // The band-pass and the luma notch are fixed FIRs nothing feeds back into, so
+  // they run once over the whole block; only the APC-retunable work below is
+  // done per segment.
+  const auto chroma = bandpass_.process(envelope);
+  const auto luma = lp_luma_.process(envelope);
+
   // The APC frequency pull feeds BACK into pass 1's mix, so a retune must take
   // effect at the same sample whatever the caller's chunking — otherwise the
   // loop's delay would be the block size and the result chunk-dependent. Split
@@ -236,43 +303,26 @@ std::span<const ChromaSample> ChromaDecoder::process(
   // and recurrences all stream, so the only effect is that each segment's mix
   // runs at the frequency set by the previous gate close. With the pull
   // disabled nothing feeds back and the whole block is one segment.
-  std::size_t start = 0;
   const auto gate_lo = static_cast<float>(cfg_.burst_gate_lo);
   const auto gate_hi = static_cast<float>(cfg_.burst_gate_hi);
+  std::size_t start = 0;
   while (start < n) {
-    std::size_t end = n;
-    if (cfg_.apc_catch_range_hz > 0.0) {
-      // Replay the gate state machine (reads only hbeam) to find the first
-      // close at or after `start`; pass 3 will then walk the same transitions.
-      bool gate_prev = in_gate_prev_;
-      for (std::size_t k = start; k < n; ++k) {
-        if (hbeam[k].line_start)
-          gate_prev = false;
-        const float hp = hbeam[k].h_phase;
-        const bool in_gate = hp >= gate_lo && hp < gate_hi;
-        const bool closes = !in_gate && gate_prev;
-        gate_prev = in_gate;
-        if (closes) {
-          end = k + 1;
-          break;
-        }
-      }
-    }
+    const auto end = cfg_.apc_catch_range_hz > 0.0 ? segment_end(hbeam, start, in_gate_prev_, gate_lo, gate_hi) : n;
+    const auto len = end - start;
     decode_segment(
-        envelope.subspan(start, end - start), hbeam.subspan(start, end - start), out.subspan(start, end - start));
+        chroma.subspan(start, len), luma.subspan(start, len), hbeam.subspan(start, len), out.subspan(start, len));
     start = end;
   }
   return out_.view();
 }
 
-void ChromaDecoder::decode_segment(
-    std::span<const float> envelope, std::span<const BeamSample> hbeam, std::span<ChromaSample> out) {
-  const std::size_t n = envelope.size();
+void ChromaDecoder::decode_segment(std::span<const float> chroma, std::span<const float> luma,
+    std::span<const BeamSample> hbeam, std::span<ChromaSample> out) {
+  const auto n = chroma.size();
 
-  // Pass 1: isolate the chroma subcarrier and synchronously demodulate it
-  // against the crystal LO. nco_phasor_ is e^{+i2πθ}, so (c·cosθ, c·sinθ) are
-  // the raw U and V quadratures (matching cos/sin demodulation).
-  const auto chroma = bandpass_.process(envelope.first(n));
+  // Pass 1: synchronously demodulate the band-passed chroma against the crystal
+  // LO. nco_phasor_ is e^{+i2πθ}, so (c·cosθ, c·sinθ) are the raw U and V
+  // quadratures (matching cos/sin demodulation).
   const auto mu = mix_u_.write_n(n);
   const auto mv = mix_v_.write_n(n);
   for (std::size_t k = 0; k < n; ++k) {
@@ -285,10 +335,9 @@ void ChromaDecoder::decode_segment(
   }
 
   // Pass 2: band-limit the quadratures to the chroma bandwidth (this is where the
-  // 2·fsc image and noise go), and notch the envelope to a chroma-free luma.
+  // 2·fsc image and noise go).
   const auto raw_u = lp_u_.process(mu);
   const auto raw_v = lp_v_.process(mv);
-  const auto luma = lp_luma_.process(envelope.first(n));
 
   // Pass 3: gate the burst out of the clean quadratures (closing the gate updates
   // this line's rotation), then de-rotate each sample to transmitted U/V, flip V

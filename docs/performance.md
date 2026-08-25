@@ -201,6 +201,30 @@ memory bound directly) becomes the follow-on. Measurement caveat for all splat-l
 JCC erratum swings identical tight loops up to 35% across code layouts - judge
 changes on the full-render A/B, never a microbench delta.
 
+- **Chroma: FIRs hoisted out of the gate-close split, vectorised close search
+  (#98).** `ChromaDecoder::process` splits every block at each burst-gate
+  close so an APC retune reaches the next sample's mix whatever the caller's
+  chunking. The fixed band-pass and luma notch were run once per segment
+  (per line), paying each call's history copy and the strip tiers' sub-8-output
+  scalar tail, and the split point came from a scalar replay of the gate
+  state machine. Now the two FIRs run once over the whole block and the
+  segments take slices - bit-exact by the Fir tier contract (every output is
+  the same natural-order FMA chain whichever tier it lands in) - and the
+  search is an AVX compare/movemask/ctz over eight `h_phase` values with the
+  scalar machine as the tail. Microbench (`ChromaBench`, 64 lines x 1028
+  samples per call, pull on): 1.220 ms -> 1.156 ms per block (-5%); the
+  pull-off case (one segment) is unchanged at ~1.13 ms, so the split now
+  costs ~0.03 ms per block, the per-segment U/V low-pass calls and NCO mix.
+  A search-only build measured equal to main: the scalar replay was a
+  well-predicted 8-instruction loop worth ~1-2% of the stage, not the ~8%
+  the profile had attributed to it. RF fixture (wb3_airspy x10, 20 MS/s):
+  `decode_into` 2.60G -> 2.30G cycles, `Fir::process` 3.34G -> 3.16G, one
+  perf run each with about +/-5% run-to-run noise on those symbols - trust
+  the microbench. Wall and user CPU neutral within noise (composite median
+  4.19 s -> 4.14 s wall, 21.7 s -> 21.4 s user; RF 7.82 s -> 7.17 s wall,
+  41.4 s -> 40.0 s user, bimodal as before). Renders byte-identical (golden
+  check passes); the `==` block-invariance tests are untouched.
+
 ## Levers not yet pulled
 
 - **The decode thread** (still the wall on the file renders; on the live paths
