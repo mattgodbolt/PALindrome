@@ -144,41 +144,22 @@ downstream work), so the balance legitimately differs between them.
   thread. Wall neutral (median of 6: 7.67s -> 7.75s, noise-bimodal), user CPU
   40.8s -> 40.0s. Renders and composite frame dumps byte-identical; ctest
   green with the `==` block-invariance tests untouched.
-- **AGC peak detector as a blocked max-plus scan (#96).** `Agc::process` ran
-  `tip = max(env, r * tip)` per sample: a multiply and a max on one
-  loop-carried chain, ~9 cycles/sample, the per-sample divide hidden under it.
-  Unrolled, tip[k] is the max over j of env[j] decayed k-j times, and because
-  rounding is monotone `r * max(a, b) == max(r*a, r*b)` bit for bit, so the max
-  regroups freely across the lanes of an 8-wide AVX-512 block: each lane
-  gathers its own candidates by a masked shift-and-decay scan, the incoming
-  tip is decayed once per lane by a scalar chain of eight multiplies, and the
-  divide, the float snapshot and the output multiply run as vector ops. The
-  decay chain itself cannot be shortened: `fl(fl(x*r)*r) != fl(x*fl(r*r))`, so
-  the powers-of-r prefix scan the issue sketched is not bit-exact in the tip
-  (its pictures were byte-identical only by the ~2^-29 odds of a 1-ULP double
-  change moving the float snapshot). The loop-carried chain is therefore
-  8 `vmulsd` + 1 `vmaxsd` = 36 cycles per 8 samples, the floor for an exact
-  result. Microbench (200M samples, cycles:u): scalar 9.05 cycles/sample ->
-  6.55 (1.38x). The gap to the 4.5 floor is consistent with scheduler/ROB
-  residency of the dependent tail queued behind the chain (gather -> max ->
-  cmp -> `vdivpd` zmm (23 cycles) -> cvt -> mul -> store). Shapes measured and
-  not kept: store/reload gather of the carry 9.7 cycles/sample (store-forward
-  stall); blend-after-divide identical (gcc folds it back into the masked
-  divide); the scan loop left rolled 6.75. Diagnostics (not exact, for
-  attribution only): dropping the divide 5.9, dropping the carry gather 5.85,
-  dropping both 5.4 - so the tail accounts for ~1.1 of the ~2-cycle gap and
-  the rest is the 512-bit scan ops (which fuse p0+p1 on Skylake-X) contending
-  with the scalar `vmulsd` chain for its ports; a 256-bit scan in two halves
-  is the untried follow-up. RF fixture (wb3_airspy x10,
-  20 MS/s, 12 deposit threads): the AGC loop inlined in `decode_into` 0.81G
-  -> 0.52G cycles; the decode thread 9.95G -> 7.82G (-21%, part of which is
-  run-to-run attribution noise: `Fir::process` also read lower). Wall neutral
-  (median of 5: composite 4.60s -> 4.70s, RF 8.14s -> 8.29s; user CPU 22.3s ->
-  22.2s and 42.6s -> 42.8s). Renders byte-identical: the golden check passes
-  unchanged; ctest green with the `==` block-invariance tests untouched plus a
-  new test pinning the vector path to the scalar recurrence across chunk
-  sizes and both signs of input.
-
+- **AGC peak detector as a blocked max-plus scan (#96).** `tip = max(env,
+  r * tip)` per sample is a multiply and a max on one loop-carried chain,
+  ~9 cycles/sample. Rounding is monotone, so `r * max(a, b) == max(r*a, r*b)`
+  bit for bit and the max regroups across the 8 lanes of an AVX-512 block:
+  each lane gathers its candidates by a masked shift-and-decay scan, the
+  incoming tip is decayed by a scalar chain of eight multiplies, and the
+  divide, float snapshot and output multiply are vector ops. The chain cannot
+  be shortened exactly - `fl(fl(x*r)*r) != fl(x*fl(r*r))` - so the powers-of-r
+  scan the issue sketched is not bit-exact (its byte-identical pictures were
+  ~2^-29-per-sample luck). Microbench 9.05 -> 6.55 cycles/sample (1.38x);
+  the exact floor is 4.5, the rest is the dependent tail plus 512-bit ops
+  contending with the scalar chain for p0/p1. Measured worse: store/reload
+  gather (9.7), the scan left rolled (6.75); a 256-bit scan is untried. RF
+  fixture: the AGC loop 0.81G -> 0.52G cycles on the decode thread; wall and
+  CPU neutral on both fixtures. Golden unchanged; a new `==` test pins the
+  vector path to the scalar recurrence across chunk sizes.
 ## Dead ends (measured, do not repeat)
 
 - **Per-block fork-join deposit parallelism.** Fanning each 64k-block's splats
