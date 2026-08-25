@@ -64,6 +64,7 @@ constexpr double kLevelRetain = 0.999999;
 template<int predicate>
 [[nodiscard]] std::uint64_t compare_mask(const float *src, __m256 threshold) {
   std::uint64_t mask = 0;
+#pragma GCC unroll 8
   for (int c = 0; c < 8; ++c) {
     const auto v = _mm256_loadu_ps(src + 8 * c);
     const auto bits = static_cast<unsigned>(_mm256_movemask_ps(_mm256_cmp_ps(v, threshold, predicate)));
@@ -72,19 +73,20 @@ template<int predicate>
   return mask;
 }
 
-// Spread 64 state bits to 64 one-byte SyncSamples: each 32-bit half of the mask
-// is broadcast, byte j of the vector picks mask byte j / 8 and tests bit j % 8,
-// and min-with-1 turns the surviving bit into the 0/1 a bool must hold.
+// Spread 64 state bits to 64 one-byte SyncSamples: the word is broadcast, byte
+// j of each output vector picks mask byte j / 8 and tests bit j % 8, and
+// min-with-1 turns the surviving bit into the 0/1 a bool must hold.
 void expand_mask(std::uint64_t mask, SyncSample *dst) {
   static_assert(sizeof(SyncSample) == 1);
-  const auto byte_select =
-      _mm256_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3);
+  const auto word = _mm256_set1_epi64x(static_cast<long long>(mask));
+  const __m256i byte_select[2] = {
+      _mm256_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3),
+      _mm256_setr_epi8(4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7)};
   const auto bit_select = _mm256_setr_epi8(1, 2, 4, 8, 16, 32, 64, -128, 1, 2, 4, 8, 16, 32, 64, -128, 1, 2, 4, 8, 16,
       32, 64, -128, 1, 2, 4, 8, 16, 32, 64, -128);
   const auto one = _mm256_set1_epi8(1);
   for (int half = 0; half < 2; ++half) {
-    const auto broadcast = _mm256_set1_epi32(static_cast<int>(static_cast<std::uint32_t>(mask >> (32 * half))));
-    const auto bits = _mm256_and_si256(_mm256_shuffle_epi8(broadcast, byte_select), bit_select);
+    const auto bits = _mm256_and_si256(_mm256_shuffle_epi8(word, byte_select[half]), bit_select);
     _mm256_storeu_si256(reinterpret_cast<__m256i *>(dst + 32 * half), _mm256_min_epu8(bits, one));
   }
 }

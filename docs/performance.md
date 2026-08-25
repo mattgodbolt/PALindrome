@@ -207,8 +207,9 @@ changes on the full-render A/B, never a microbench delta.
   is two AVX2 compare masks, one 64-bit add and a mask-to-bytes expand.
   Bit-identical (the thresholds are rounded *up* to float once, which gives the
   old double compare's verdict exactly; golden check unchanged, `==` tests
-  kept). Standalone: 3.6 -> 0.55 cycles/sample on 64k blocks. In situ on the
-  composite live fixture the slicer's self cycles went 0.39% -> 0.17% of the
+  kept). Standalone: 3.6 -> 0.35 cycles/sample on 64k blocks (0.55 before the
+  movemask loops were unrolled). In situ on the composite live fixture (at the
+  0.55 stage) the slicer's self cycles went 0.39% -> 0.17% of the
   program (2.1% -> 0.8% of the decode thread; perf at 1 kHz, so +-20% on those
   small counts). Wall and CPU unchanged within noise, 6 interleaved reps:
   composite 4.27 -> 4.16 s wall / 21.7 -> 21.5 s user, RF 7.5 -> 7.7 s wall /
