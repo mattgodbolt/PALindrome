@@ -201,28 +201,31 @@ memory bound directly) becomes the follow-on. Measurement caveat for all splat-l
 JCC erratum swings identical tight loops up to 35% across code layouts - judge
 changes on the full-render A/B, never a microbench delta.
 
-- **Chroma: FIRs hoisted out of the gate-close split, vectorised close search
-  (#98).** `ChromaDecoder::process` splits every block at each burst-gate
-  close so an APC retune reaches the next sample's mix whatever the caller's
-  chunking. The fixed band-pass and luma notch were run once per segment
-  (per line), paying each call's history copy and the strip tiers' sub-8-output
-  scalar tail, and the split point came from a scalar replay of the gate
-  state machine. Now the two FIRs run once over the whole block and the
-  segments take slices - bit-exact by the Fir tier contract (every output is
-  the same natural-order FMA chain whichever tier it lands in) - and the
-  search is an AVX compare/movemask/ctz over eight `h_phase` values with the
-  scalar machine as the tail. Microbench (`ChromaBench`, 64 lines x 1028
-  samples per call, pull on): 1.220 ms -> 1.156 ms per block (-5%); the
-  pull-off case (one segment) is unchanged at ~1.13 ms, so the split now
-  costs ~0.03 ms per block, the per-segment U/V low-pass calls and NCO mix.
-  A search-only build measured equal to main: the scalar replay was a
-  well-predicted 8-instruction loop worth ~1-2% of the stage, not the ~8%
-  the profile had attributed to it. RF fixture (wb3_airspy x10, 20 MS/s):
-  `decode_into` 2.60G -> 2.30G cycles, `Fir::process` 3.34G -> 3.16G, one
-  perf run each with about +/-5% run-to-run noise on those symbols - trust
-  the microbench. Wall and user CPU neutral within noise (composite median
-  4.19 s -> 4.14 s wall, 21.7 s -> 21.4 s user; RF 7.82 s -> 7.17 s wall,
-  41.4 s -> 40.0 s user, bimodal as before). Renders byte-identical (golden
+- **Chroma: fixed FIRs hoisted out of the gate-close split (#98) - both
+  halves of the issue measured neutral.** `ChromaDecoder::process` splits
+  every block at each burst-gate close so an APC retune reaches the next
+  sample's mix whatever the caller's chunking. The fixed band-pass and luma
+  notch were run once per segment (per line); they now run once over the
+  whole block and the segments take slices - bit-exact by the Fir tier
+  contract (every output is the same natural-order FMA chain whichever tier
+  it lands in), and the cleaner structure is why it is kept. But it does not
+  pay: `ChromaBench` (new; 64 lines x 1028 samples per call, pull on) reads
+  1.220 ms on main and 1.231 ms after the hoist, and `perf stat` over the
+  bench run shows instructions -0.7% with cycles flat (10.36G vs 10.40G) -
+  the per-call cost the hoist removes (a history copy and the strip tiers'
+  sub-8-output scalar tail, whose FMA chains the OoO window overlaps anyway)
+  is ~1% of the stage. The other half of #98, an AVX compare/movemask/ctz
+  version of the scalar gate-close replay that finds the split point, was
+  built and measured too: alone it equalled main (1.222 ms), and the scalar
+  replay is a well-predicted 8-instruction loop worth ~1-2% of the stage, not
+  the ~8% the profile had attributed to it - so it stays scalar and is not
+  worth intrinsics. One combined build (hoist + AVX search) did read
+  1.156 ms (-5%), but neither half reproduces it alone and the perf counters
+  show the builds shifting uops between the DSB and the legacy decoder
+  (`idq.mite_uops` 6.15G -> 6.60G), i.e. the JCC-erratum layout swing the
+  caveat above warns about, not a real saving. RF pipeline fixture: wall and
+  user CPU neutral within noise (composite median 4.19 s -> 4.14 s wall, RF
+  7.82 s -> 7.17 s wall, bimodal as before). Renders byte-identical (golden
   check passes); the `==` block-invariance tests are untouched.
 
 ## Levers not yet pulled

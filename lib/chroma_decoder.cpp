@@ -12,12 +12,6 @@
 #include <stdexcept>
 #include <utility>
 
-#if defined(__AVX__)
-#include <bit>
-#include <cstring>
-#include <immintrin.h>
-#endif
-
 namespace palindrome::video {
 
 namespace {
@@ -70,45 +64,13 @@ const ChromaDecoderConfig &validate(const ChromaDecoderConfig &cfg) {
 // The end of the segment that begins at `start`: one past the first burst-gate
 // close at or after it (a sample the gate is shut on after being open on the
 // previous one; a line start shuts the gate without a close), or n when the
-// block has none. Pass 3 walks the same transitions for real; this is a pure
-// search over hbeam, so the AVX path tests eight h_phase values at once and
-// only looks at the (rare) candidate closes one by one.
+// block has none. A pure search over hbeam; pass 3 walks the same transitions
+// for real. Scalar on purpose: this well-predicted loop is ~1-2% of the stage,
+// and an AVX compare/movemask version measured no faster (docs/performance.md).
 [[nodiscard]] std::size_t segment_end(
     std::span<const BeamSample> hbeam, std::size_t start, bool gate_prev, float lo, float hi) noexcept {
   const auto n = hbeam.size();
-  auto k = start;
-#if defined(__AVX__)
-  // Four BeamSamples are one 256-bit load with h_phase in the even float lanes
-  // and line_start plus padding in the odd ones.
-  static_assert(sizeof(BeamSample) == 2 * sizeof(float) && offsetof(BeamSample, h_phase) == 0,
-      "the lane layout below assumes h_phase leads an 8-byte BeamSample");
-  const __m256 vlo = _mm256_set1_ps(lo);
-  const __m256 vhi = _mm256_set1_ps(hi);
-  // One in-gate bit per sample for four consecutive BeamSamples: duplicating
-  // each h_phase over its sample's odd lane keeps the padding bytes out of the
-  // compares and lets the double-lane sign mask read out one bit per sample.
-  const auto in_gate_bits = [vlo, vhi](const BeamSample *p) {
-    __m256 hp;
-    std::memcpy(&hp, p, sizeof hp);
-    hp = _mm256_moveldup_ps(hp);
-    const __m256 in = _mm256_and_ps(_mm256_cmp_ps(hp, vlo, _CMP_GE_OQ), _mm256_cmp_ps(hp, vhi, _CMP_LT_OQ));
-    return static_cast<unsigned>(_mm256_movemask_pd(_mm256_castps_pd(in)));
-  };
-  unsigned prev = gate_prev ? 1u : 0u;
-  for (; k + 8 <= n; k += 8) {
-    const unsigned in_gate = in_gate_bits(&hbeam[k]) | (in_gate_bits(&hbeam[k + 4]) << 4);
-    unsigned closes = ((in_gate << 1) | prev) & ~in_gate & 0xFFu;
-    while (closes != 0) {
-      const auto j = static_cast<std::size_t>(std::countr_zero(closes));
-      if (!hbeam[k + j].line_start)
-        return k + j + 1;
-      closes &= closes - 1;
-    }
-    prev = in_gate >> 7;
-  }
-  gate_prev = prev != 0;
-#endif
-  for (; k < n; ++k) {
+  for (auto k = start; k < n; ++k) {
     if (hbeam[k].line_start)
       gate_prev = false;
     const float hp = hbeam[k].h_phase;
