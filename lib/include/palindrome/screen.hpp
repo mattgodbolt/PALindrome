@@ -131,8 +131,10 @@ struct ScreenConfig {
   // sample; the CPU deposit backend batches a field of them and applies it to
   // the phosphor fanned across this many threads by output band (see
   // SplatDeposit). Bit-exact in the thread count - the picture never changes -
-  // so this is a wall-clock knob only. 1 = serial (no pool). The caller sets it.
-  std::size_t deposit_lanes = 1;
+  // so this is a wall-clock knob only. 1 = serial (no pool). 12 is where the
+  // sweep on the 18-core dev box put the wall/CPU knee (docs/performance.md);
+  // other machines may land elsewhere.
+  std::size_t deposit_lanes = 12;
 };
 
 // The picture tube. A join sink fed three aligned rails — the picture (luma +

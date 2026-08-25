@@ -73,8 +73,8 @@ downstream work), so the balance legitimately differs between them.
   (`kInFlight`) so the decode stage runs ahead *through* the burst instead of
   stalling on it - the pipelining that makes the threading pay. This is what takes
   colour to real time. 720x576 colour: RX888 /2 corpus 0.52s -> ~0.45-0.49s at 8
-  threads; AirSpy /1 live path ~0.87s for a 1.0s second (~13% margin), which is
-  why `live_view.py` defaults to `--deposit-threads 8`.
+  threads; AirSpy /1 live path ~0.87s for a 1.0s second (~13% margin). The
+  default is now 12 lanes; the sweep is under "Dead ends" below.
 - **Detector sqrt-hoist (#51).** The quasi-sync detector's per-sample `1/|y|`
   normaliser (a sqrt + divide on the carrier-recovery critical path) is lifted to
   a feed-forward `1/|i,q|` computed over the whole block (`|nco|~=1` in lock).
@@ -162,11 +162,34 @@ downstream work), so the balance legitimately differs between them.
 - Earlier deposit-layout micro-experiments (RGBA-pad, SoA-planar, per-block SIMD
   splat) all measured losses; see git history around the `perf`/`screen-gun-inline`
   branches.
-- **More than 8 deposit threads.** 16 lanes measures *slower* than 8 on the live
-  path: the wider burst lights up more cores at once and Skylake-X drops its
-  all-core turbo (~7.5% clock, measured), context switches go 2.6x, and 15
-  workers + 3 pipeline threads exactly fills the 18 physical cores. 8 lanes is
-  the sweet spot on this box for a reason, not by luck.
+- **More than 12 deposit threads.** Lane sweep of `--deposit-threads N` on
+  the two live fixtures (i9-9980XE, 18C/36T), median wall s / user CPU s.
+  Serial on an idle box, 2026-08 (5 reps composite, 3 RF, round-robin):
+
+      composite   4: 5.24/16.6   8: 4.69/18.9   12: 4.05/20.3   16: 4.27/22.0   24: 4.25/26.4
+      RF x10      4: 9.29/35.0   8: 8.04/38.6   12: 7.72/41.1   16: 7.64/42.7   24: 7.97/50.7
+
+  Re-run 2026-08-24 on the #94 branch under the shared-box lock (3 reps,
+  round-robin; the box was quiet but other agents were present, so treat
+  these walls as noisier than the idle-box row):
+
+      composite   8: 4.67/20.2   12: 4.36/21.7   16: 4.09/22.7
+      RF x10      8: 8.44/38.9   12: 7.60/41.0   16: 7.40/43.1
+
+  12 beats 8 on wall both times (composite -14% then -7%, RF -4% then -10%).
+  12 against 16 does not settle: the idle-box run had 12 ahead on composite
+  and level on RF, the re-run has 16 ahead by 6% on composite and 3% on RF,
+  so the two sit within a few percent of each other either way. CPU, though,
+  climbs with every lane added and never stops (24 lanes burns 30% more than
+  12 for no wall at all), which is
+  the fanned-out deposit hitting the memory system (see #61 below) rather
+  than doing more useful work, and that CPU is the margin a real-time source
+  and the MJPEG encoder beside it live on: 15 workers plus the three pipeline
+  threads already fill the 18 physical cores, and the wider burst drops
+  Skylake-X's all-core turbo (~7.5% clock, measured on the original 8-vs-16
+  run). So the default is 12. The earlier "16 is slower than 8" reading was
+  true of the build it was taken on and is not true now; the reason not to go
+  wider is CPU, not wall.
 
 ## Measured neutral, kept for later (issue #61, draft PR #70)
 
