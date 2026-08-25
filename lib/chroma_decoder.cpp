@@ -61,16 +61,14 @@ const ChromaDecoderConfig &validate(const ChromaDecoderConfig &cfg) {
   return cfg;
 }
 
-// The end of the segment that begins at `start`: one past the first burst-gate
-// close at or after it (a sample the gate is shut on after being open on the
-// previous one; a line start shuts the gate without a close), or n when the
-// block has none. A pure search over hbeam; pass 3 walks the same transitions
+// The length of the segment at the head of `hbeam`: up to and including the
+// first burst-gate close (a sample the gate is shut on after being open on the
+// previous one; a line start shuts the gate without a close), or the whole span
+// when it has none. A pure search over hbeam; pass 3 walks the same transitions
 // for real. Scalar on purpose: this well-predicted loop is ~1-2% of the stage,
 // and an AVX compare/movemask version measured no faster (docs/performance.md).
-[[nodiscard]] std::size_t segment_end(
-    std::span<const BeamSample> hbeam, std::size_t start, bool gate_prev, float lo, float hi) noexcept {
-  const auto n = hbeam.size();
-  for (auto k = start; k < n; ++k) {
+[[nodiscard]] std::size_t segment_len(std::span<const BeamSample> hbeam, bool gate_prev, float lo, float hi) noexcept {
+  for (std::size_t k = 0; k < hbeam.size(); ++k) {
     if (hbeam[k].line_start)
       gate_prev = false;
     const float hp = hbeam[k].h_phase;
@@ -79,7 +77,7 @@ const ChromaDecoderConfig &validate(const ChromaDecoderConfig &cfg) {
       return k + 1;
     gate_prev = in_gate;
   }
-  return n;
+  return hbeam.size();
 }
 } // namespace
 
@@ -269,11 +267,10 @@ std::span<const ChromaSample> ChromaDecoder::process(
   const auto gate_hi = static_cast<float>(cfg_.burst_gate_hi);
   std::size_t start = 0;
   while (start < n) {
-    const auto end = cfg_.apc_catch_range_hz > 0.0 ? segment_end(hbeam, start, in_gate_prev_, gate_lo, gate_hi) : n;
-    const auto len = end - start;
-    decode_segment(
-        chroma.subspan(start, len), luma.subspan(start, len), hbeam.subspan(start, len), out.subspan(start, len));
-    start = end;
+    const auto rest = hbeam.subspan(start);
+    const auto len = cfg_.apc_catch_range_hz > 0.0 ? segment_len(rest, in_gate_prev_, gate_lo, gate_hi) : rest.size();
+    decode_segment(chroma.subspan(start, len), luma.subspan(start, len), rest.first(len), out.subspan(start, len));
+    start += len;
   }
   return out_.view();
 }
