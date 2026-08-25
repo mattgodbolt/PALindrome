@@ -246,6 +246,15 @@ changes on the full-render A/B, never a microbench delta.
   (medians of 3), sink-thread samples 11343 -> 11241 (-0.9%), the latch
   memmove (231 samples, 2% of the sink thread) gone; the other two threads
   unchanged. Inside the day-to-day variance band, so filed as neutral.
+- **VerticalSync duty integrator as one FMA (#104).** `integ += alpha * (x -
+  integ)` put a subtract ahead of the FMA on the loop-carried chain; written as
+  `fma(integ, 1 - alpha, x ? alpha : 0)` the chain is a single FMA (gcc hoists
+  the `1 - alpha`). Not bit-identical, but a shadow run of the old form on all
+  four corpus clips and both live fixtures agreed on every one of 1757 slice
+  crossings (integrators within 1.4e-14), so goldens and live frame streams are
+  unchanged. Stage in isolation 8.3 -> 5.5 cycles/sample, now issue-bound at
+  ~21 instructions/sample; wall and CPU neutral on both fixtures. The next
+  lever here is instruction count, not latency.
 - **Fixed-slicer hysteresis as a 64-sample carry-chain scan (#97).** The
   sync separator's per-sample enter/leave/hold FSM is the same boolean function
   as an adder's carry (set generates, clear kills, hold propagates), so a block
