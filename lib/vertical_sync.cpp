@@ -59,8 +59,11 @@ std::span<const VSample> VerticalSync::process(std::span<const SyncSample> in) {
     // ~0.07; the broad-pulse train drives it toward ~0.84. A single FMA keeps
     // the loop-carried chain to one op (the textbook alpha * (x - integ) form
     // puts a subtract ahead of it, and this loop is bound by that chain).
-    // integ_ stays a convex combination in [0, 1]: decay_ + alpha_ rounds to
-    // exactly 1, and every operand is non-negative.
+    // integ_ stays a convex combination in [0, 1]: every operand is
+    // non-negative, and decay_ = fl(1 - alpha_) sits within half an ulp of
+    // 1 - alpha_ (exactly on it for alpha_ >= 0.5), close enough that
+    // decay_ + alpha_ rounds back to exactly 1, so the fixed point at 1 is
+    // never overshot.
     const double drive = in[k].sync ? alpha_ : 0.0;
     integ_ = std::fma(integ_, decay_, drive);
 

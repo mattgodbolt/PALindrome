@@ -49,6 +49,11 @@ std::vector<video::BeamSample> run_chunked(std::span<const float> env, std::size
 constexpr double kVsRate = 1.024e6;
 constexpr std::size_t kVsLineLen = 64;
 constexpr std::size_t kVsLinesPerField = 320;
+// The stage derives its integrator and flywheel rates from the nominal line
+// and field frequencies, so hand it the synthetic stream's own rather than
+// PAL's (which would put 65.536 samples in a 64-sample line).
+constexpr double kVsLineHz = kVsRate / kVsLineLen;
+constexpr double kVsFieldHz = kVsRate / (kVsLinesPerField * kVsLineLen);
 
 std::vector<video::SyncSample> synth_sync_bits(std::size_t fields) {
   std::vector<video::SyncSample> sync;
@@ -64,7 +69,8 @@ std::vector<video::SyncSample> synth_sync_bits(std::size_t fields) {
 // Run VerticalSync over `sync` fed in fixed-size chunks, returning the full
 // VSample stream. chunk == sync.size() is the single-block reference.
 std::vector<video::VSample> run_vsync_chunked(std::span<const video::SyncSample> sync, std::size_t chunk) {
-  video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = kVsRate}};
+  video::VerticalSync vsync{video::VerticalSyncConfig{
+      .sample_rate_hz = kVsRate, .nominal_field_hz = kVsFieldHz, .nominal_line_hz = kVsLineHz}};
   vsync.prepare(chunk);
   std::vector<video::VSample> out;
   for (std::size_t off = 0; off < sync.size(); off += chunk) {
@@ -276,7 +282,8 @@ TEST_CASE("VerticalSync snaps v_phase to the detected field anchor once per fiel
   constexpr std::size_t kFields = 4;
   const auto sync = synth_sync_bits(kFields);
 
-  video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = kVsRate, .pll_kp = 1.0}};
+  video::VerticalSync vsync{video::VerticalSyncConfig{
+      .sample_rate_hz = kVsRate, .nominal_field_hz = kVsFieldHz, .nominal_line_hz = kVsLineHz, .pll_kp = 1.0}};
   vsync.prepare(sync.size());
   const auto out = vsync.process(sync);
   std::vector<std::size_t> anchors;
