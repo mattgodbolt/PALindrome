@@ -5,6 +5,7 @@
 #include "palindrome/splat.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -15,8 +16,15 @@ namespace palindrome::video {
 // streaming multiply per field, quantised on the calling thread. Slabs are
 // batched to the field internally - the band-threaded apply wants a whole
 // field of work so the fan/join is paid once per field and every band has
-// records - so commit() only extends the pending run; the next
-// end_field()/latch()/readout lands it. Bit-exact in the lane count.
+// records - so commit() only extends the pending run, and end_field()'s fade
+// is owed rather than applied. Both land, in order (fade, then records), the
+// next time the phosphor is actually needed. Bit-exact in the lane count.
+//
+// That laziness is what makes latch() free: the latched frame is the live
+// buffer as it stands, and the fade and records that arrive after it stay
+// unapplied, so nothing has to be copied unless the live phosphor is read
+// (or a fresh latch supersedes it, which drops the old one). A single-image
+// render latches every field and reads only the last, so it never copies.
 class CpuDepositBackend final : public DepositBackend {
 public:
   CpuDepositBackend(
@@ -31,7 +39,7 @@ public:
   void readout_latched(const Readout &ro, FrameSink sink) override;
 
 private:
-  void apply_pending(); // land pending_ into bright_, then clear (idempotent)
+  void land(); // bring bright_ up to date: the owed fade, then pending_ (idempotent)
   [[nodiscard]] Frame quantise(const std::vector<float> &bright, const Readout &ro) const;
 
   std::size_t width_;
@@ -55,7 +63,12 @@ private:
   // snapshot() - sits in the commit before "fade the phosphor per field, not per
   // sample" (git log -- lib/video.cpp; show its parent).
   std::vector<float> bright_; // per-pixel-per-channel accumulated phosphor charge
-  std::vector<float> latch_bright_; // latch(): the phosphor copied aside (a float memcpy); empty = never
+  // The latched frame: Live = bright_ before the owed fade and pending_ land,
+  // Copied = latch_bright_ (made only when land() had to move bright_ on).
+  enum class Latch { None, Live, Copied };
+  Latch latch_ = Latch::None;
+  std::vector<float> latch_bright_;
+  std::optional<float> owed_decay_; // end_field()'s fade, applied by the next land()
   // The record staging. [0, size()) is committed and waiting to land; acquire()
   // hands out the capacity beyond that, commit() extends size() over it.
   Buffer<SplatRecord> pending_;
