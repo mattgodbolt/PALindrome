@@ -201,6 +201,33 @@ memory bound directly) becomes the follow-on. Measurement caveat for all splat-l
 JCC erratum swings identical tight loops up to 35% across code layouts - judge
 changes on the full-render A/B, never a microbench delta.
 
+- **VerticalSync duty integrator as one FMA (#104).** The per-sample loop
+  was bound by `integ += alpha * (x - integ)`: a subtract feeding an FMA on
+  the loop-carried chain, 8 cycles/sample. Rewritten as
+  `fma(integ, 1 - alpha, x ? alpha : 0)` the chain is a single FMA. Not
+  bit-identical (different rounding) but verified not to move a single field
+  decision: a scratch build ran the old form as a shadow with its own
+  hysteresis and logged every slice crossing of either on all four corpus
+  clips and both live fixtures - 0 of 1757 crossing events disagree, the two
+  integrators differ by at most 1.4e-14, golden hashes and live frame streams
+  are unchanged. In isolation (micro-bench, 20 MS/s synthetic, 64k blocks)
+  the stage goes 8.3 -> 5.5 cycles/sample; at that point it is issuing ~21
+  instructions/sample at ~4 IPC, so it has swapped a latency bound for the
+  issue-width bound. That is why the live RF pipeline shows nothing:
+  fixed-period perf on the decode thread has VerticalSync::process at
+  491/530 -> 498/511 samples of 1M cycles (n=2 each), and an issue-bound loop
+  sharing a physical core with a busy hyperthread sibling (12 deposit
+  workers, plus whatever else the box is doing) runs at the sibling's mercy,
+  while the old latency-bound loop did not care. Wall and CPU neutral on
+  both fixtures (composite median of 4: 4.25 s -> 4.16 s wall, 21.6 -> 21.3 s
+  user; RF 7.60 -> 7.69 s wall, 41.2 -> 41.5 s user). The next lever on this
+  loop is instruction count, not latency: gcc cannot prove the `VSample`
+  output store does not alias `this`, so it reloads `in_vsync_`/`alpha_` and
+  stores `integ_` every sample - the #63 recipe (loop state in locals with
+  write-back) would cut ~4 of the ~21. Note `std::fma` without hardware FMA
+  (an empty `PALINDROME_ARCH`, or a WASM build) is a libm call on the chain,
+  far slower than the old two-op form; -march=native makes it a `vfmadd`.
+
 ## Levers not yet pulled
 
 - **The decode thread** (still the wall on the file renders; on the live paths

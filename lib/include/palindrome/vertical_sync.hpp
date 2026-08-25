@@ -51,6 +51,7 @@ public:
 private:
   VerticalSyncConfig cfg_;
   double alpha_; // integrator coefficient (per-sample low-pass toward sync duty)
+  double decay_; // 1 - alpha_, hoisted so the integrator update is a single FMA
   double omega_; // field oscillator rate, cycles/sample
   double integ_ = 0.0; // leaky-integrated sync bit
   double v_phase_ = 0.0; // [0, 1), advances by omega_ each sample

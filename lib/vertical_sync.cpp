@@ -3,6 +3,7 @@
 #include "palindrome/phase.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <stdexcept>
 
@@ -37,6 +38,7 @@ VerticalSync::VerticalSync(const VerticalSyncConfig &cfg) : cfg_{cfg} {
   // Integrator time constant expressed in lines: alpha = 1 / (tc * samples/line).
   const double line_samples = cfg_.sample_rate_hz / cfg_.nominal_line_hz;
   alpha_ = 1.0 / (cfg_.integrator_tc_lines * line_samples);
+  decay_ = 1.0 - alpha_;
   omega_ = cfg_.nominal_field_hz / cfg_.sample_rate_hz;
 }
 
@@ -54,8 +56,13 @@ std::span<const VSample> VerticalSync::process(std::span<const SyncSample> in) {
 
   for (std::size_t k = 0; k < n; ++k) {
     // Low-pass the sync bit toward its duty cycle. Line sync settles it near
-    // ~0.07; the broad-pulse train drives it toward ~0.84.
-    integ_ += alpha_ * ((in[k].sync ? 1.0 : 0.0) - integ_);
+    // ~0.07; the broad-pulse train drives it toward ~0.84. A single FMA keeps
+    // the loop-carried chain to one op (the textbook alpha * (x - integ) form
+    // puts a subtract ahead of it, and this loop is bound by that chain).
+    // integ_ stays a convex combination in [0, 1]: decay_ + alpha_ rounds to
+    // exactly 1, and every operand is non-negative.
+    const double drive = in[k].sync ? alpha_ : 0.0;
+    integ_ = std::fma(integ_, decay_, drive);
 
     // Rising crossing of the slice marks the vertical interval. The hold gate
     // rejects a second crossing within the same field (the integrator can dip

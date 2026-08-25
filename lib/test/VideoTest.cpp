@@ -42,6 +42,39 @@ std::vector<video::BeamSample> run_chunked(std::span<const float> env, std::size
   return out;
 }
 
+// Synthetic sync bits for the vertical stage: normal lines ~7% duty, then a
+// vertical interval of three broad-pulse lines (~84% duty) per field.
+// Everything in VerticalSync is ratio-driven, so a small rate keeps the tests
+// light: 64-sample lines, 320/field = 50 Hz fields at 1.024 MS/s.
+constexpr double kVsRate = 1.024e6;
+constexpr std::size_t kVsLineLen = 64;
+constexpr std::size_t kVsLinesPerField = 320;
+
+std::vector<video::SyncSample> synth_sync_bits(std::size_t fields) {
+  std::vector<video::SyncSample> sync;
+  for (std::size_t f = 0; f < fields; ++f)
+    for (std::size_t l = 0; l < kVsLinesPerField; ++l) {
+      const std::size_t duty = l < 3 ? (kVsLineLen * 84) / 100 : kVsLineLen / 14;
+      for (std::size_t k = 0; k < kVsLineLen; ++k)
+        sync.push_back(video::SyncSample{.sync = k < duty});
+    }
+  return sync;
+}
+
+// Run VerticalSync over `sync` fed in fixed-size chunks, returning the full
+// VSample stream. chunk == sync.size() is the single-block reference.
+std::vector<video::VSample> run_vsync_chunked(std::span<const video::SyncSample> sync, std::size_t chunk) {
+  video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = kVsRate}};
+  vsync.prepare(chunk);
+  std::vector<video::VSample> out;
+  for (std::size_t off = 0; off < sync.size(); off += chunk) {
+    const std::size_t n = std::min(chunk, sync.size() - off);
+    const auto v = vsync.process(sync.subspan(off, n));
+    out.insert(out.end(), v.begin(), v.end());
+  }
+  return out;
+}
+
 } // namespace
 
 TEST_CASE("separator + sweep are block-invariant (the streaming guarantee)") {
@@ -238,22 +271,10 @@ TEST_CASE("VerticalSync snaps v_phase to the detected field anchor once per fiel
   // or phase - 1, so the subtraction is exact), while the free-running wrap
   // would need the accumulator to hit exactly 1.0, which this non-dyadic omega
   // never does - so an exact-zero output after sample 0 IS the anchor.
-  // Synthetic sync bits: normal lines ~7% duty, then a vertical interval of
-  // three broad-pulse lines (~84% duty) per field; the integrator must cross
-  // its slice once per interval, and only there.
-  // Everything here is ratio-driven, so run at a small rate to keep the test
-  // light: 64-sample lines, 320/field = 50 Hz fields at 1.024 MS/s.
-  constexpr double kVsRate = 1.024e6;
-  constexpr std::size_t kLineLen = 64;
-  constexpr std::size_t kLinesPerField = 320;
+  // The integrator must cross its slice once per vertical interval, and only
+  // there.
   constexpr std::size_t kFields = 4;
-  std::vector<video::SyncSample> sync;
-  for (std::size_t f = 0; f < kFields; ++f)
-    for (std::size_t l = 0; l < kLinesPerField; ++l) {
-      const std::size_t duty = l < 3 ? (kLineLen * 84) / 100 : kLineLen / 14;
-      for (std::size_t k = 0; k < kLineLen; ++k)
-        sync.push_back(video::SyncSample{.sync = k < duty});
-    }
+  const auto sync = synth_sync_bits(kFields);
 
   video::VerticalSync vsync{video::VerticalSyncConfig{.sample_rate_hz = kVsRate, .pll_kp = 1.0}};
   vsync.prepare(sync.size());
@@ -267,8 +288,23 @@ TEST_CASE("VerticalSync snaps v_phase to the detected field anchor once per fiel
   for (std::size_t f = 0; f < kFields; ++f) {
     // Each anchor lands inside its field's vertical interval (integrator lag
     // keeps it within the broad-pulse lines, well before line 5).
-    const std::size_t base = f * kLinesPerField * kLineLen;
+    const std::size_t base = f * kVsLinesPerField * kVsLineLen;
     CHECK(anchors[f] >= base);
-    CHECK(anchors[f] < base + 5 * kLineLen);
+    CHECK(anchors[f] < base + 5 * kVsLineLen);
   }
+}
+
+TEST_CASE("VerticalSync is block-invariant (the streaming guarantee)") {
+  // Every piece of state (the duty integrator, the flywheel phase and rate,
+  // the hysteresis and hold gate) advances one sample at a time from members,
+  // and nothing reads the block length or position, so chunking changes
+  // nothing and the output must be bit-for-bit identical to the single call -
+  // `==` is the cheapest possible test. Block sizes straddle line and field
+  // boundaries.
+  const auto sync = synth_sync_bits(4);
+  const auto whole = run_vsync_chunked(sync, sync.size());
+  const auto chunk = GENERATE(std::size_t{1}, std::size_t{7}, std::size_t{333}, std::size_t{4096});
+  CAPTURE(chunk);
+  const auto same_phase = [](const video::VSample &a, const video::VSample &b) { return a.v_phase == b.v_phase; };
+  CHECK_THAT(run_vsync_chunked(sync, chunk), Catch::Matchers::RangeEquals(whole, same_phase));
 }
