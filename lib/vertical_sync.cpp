@@ -3,6 +3,7 @@
 #include "palindrome/phase.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <stdexcept>
 
@@ -54,8 +55,11 @@ std::span<const VSample> VerticalSync::process(std::span<const SyncSample> in) {
 
   for (std::size_t k = 0; k < n; ++k) {
     // Low-pass the sync bit toward its duty cycle. Line sync settles it near
-    // ~0.07; the broad-pulse train drives it toward ~0.84.
-    integ_ += alpha_ * ((in[k].sync ? 1.0 : 0.0) - integ_);
+    // ~0.07; the broad-pulse train drives it toward ~0.84. One FMA on the
+    // loop-carried chain: the textbook alpha * (x - integ) form puts a
+    // subtract ahead of it. A convex combination, so integ_ stays in [0, 1].
+    const double drive = in[k].sync ? alpha_ : 0.0;
+    integ_ = std::fma(integ_, 1.0 - alpha_, drive);
 
     // Rising crossing of the slice marks the vertical interval. The hold gate
     // rejects a second crossing within the same field (the integrator can dip
