@@ -61,22 +61,35 @@ void CpuDepositBackend::commit(std::size_t n) {
   static_cast<void>(pending_.write_n(pending_.size() + n));
 }
 
-void CpuDepositBackend::apply_pending() {
-  if (pending_.empty())
+void CpuDepositBackend::land() {
+  if (!owed_decay_ && pending_.empty())
     return;
-  deposit_.apply(pending_.view(), bright_);
-  pending_.clear();
+  if (latch_ == Latch::Live) {
+    latch_bright_ = bright_;
+    latch_ = Latch::Copied;
+  }
+  if (owed_decay_) {
+    const auto decay = *owed_decay_;
+    for (float &b: bright_)
+      b *= decay;
+    owed_decay_.reset();
+  }
+  if (!pending_.empty()) {
+    deposit_.apply(pending_.view(), bright_);
+    pending_.clear();
+  }
 }
 
 void CpuDepositBackend::end_field(float decay) {
-  apply_pending();
-  for (float &b: bright_)
-    b *= decay;
+  land();
+  owed_decay_ = decay;
 }
 
 void CpuDepositBackend::latch() {
-  apply_pending();
-  latch_bright_.assign(bright_.begin(), bright_.end());
+  // A new latch supersedes the old, so drop it before land() would copy it.
+  latch_ = Latch::None;
+  land();
+  latch_ = Latch::Live;
 }
 
 Frame CpuDepositBackend::quantise(const std::vector<float> &bright, const Readout &ro) const {
@@ -102,16 +115,17 @@ Frame CpuDepositBackend::quantise(const std::vector<float> &bright, const Readou
 }
 
 void CpuDepositBackend::readout(const Readout &ro, FrameSink sink) {
-  apply_pending();
+  land();
   sink(quantise(bright_, ro));
 }
 
 void CpuDepositBackend::readout_latched(const Readout &ro, FrameSink sink) {
-  if (latch_bright_.empty()) {
-    readout(ro, std::move(sink));
-    return;
+  switch (latch_) {
+    case Latch::None: readout(ro, std::move(sink)); return;
+    case Latch::Live: sink(quantise(bright_, ro)); return;
+    case Latch::Copied: sink(quantise(latch_bright_, ro)); return;
   }
-  sink(quantise(latch_bright_, ro));
+  std::unreachable();
 }
 
 } // namespace palindrome::video

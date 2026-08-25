@@ -68,14 +68,23 @@ public:
   // end_field(), latch() or readout.
   virtual void commit(std::size_t n) = 0;
   // The field boundary: land anything committed, then fade the whole phosphor
-  // by decay (a multiply) before the next field paints on top.
+  // by decay (a multiply) before the next field paints on top. Like the
+  // records, the fade may be applied now or deferred until the phosphor is
+  // next needed; either way it lands before anything committed after it.
   virtual void end_field(float decay) = 0;
-  // Copy the phosphor as it stands now (after landing anything committed) aside,
-  // for readout_latched() later.
+  // Keep the phosphor as it stands now (after landing anything committed) for
+  // readout_latched() later. That state is the promise, not a copy: a backend
+  // that lands lazily leaves the live buffer as the latch and copies it only
+  // when the live phosphor has to move on beneath it - a live readout(), or a
+  // later end_field() landing its fade and records with no latch() in between.
+  // A latch supersedes any earlier one (the old state is dropped, never
+  // copied), so a driver that latches every field and reads only the last
+  // never pays for a copy.
   virtual void latch() = 0;
   // Quantise the live phosphor (after landing anything committed) / the latched
-  // copy, delivering the Frame to sink. readout_latched() before any latch()
-  // reads the live phosphor, as readout() does.
+  // state, delivering the Frame to sink. A live readout leaves the latched
+  // state as it was. readout_latched() before any latch() reads the live
+  // phosphor, as readout() does.
   virtual void readout(const Readout &ro, FrameSink sink) = 0;
   virtual void readout_latched(const Readout &ro, FrameSink sink) = 0;
 

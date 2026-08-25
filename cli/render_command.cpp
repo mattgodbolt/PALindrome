@@ -418,10 +418,11 @@ int RenderCommand::run() const {
     output = std::format("{}.png", loaded.meta_path.stem().string());
 
   // Snapshot at field boundaries: in sequence mode quantise and write every Nth
-  // as <stem>_NNNN.png; otherwise just latch the boundary state (a float copy)
-  // so the last clean boundary is quantised once at the end — cleaner than the
-  // mid-field state wherever the stream happens to end, without paying a full
-  // quantise pass per field for frames that are thrown away.
+  // as <stem>_NNNN.png; otherwise just latch the boundary state so the last
+  // clean boundary is quantised once at the end — cleaner than the mid-field
+  // state wherever the stream happens to end, without paying a quantise pass
+  // (or, with a lazy backend, even a copy) per field for frames that are
+  // thrown away.
   std::size_t fields_seen = 0;
   std::size_t written = 0;
   const auto save = [](const std::filesystem::path &p, const video::Screen::Frame &f) {

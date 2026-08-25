@@ -73,8 +73,8 @@ downstream work), so the balance legitimately differs between them.
   (`kInFlight`) so the decode stage runs ahead *through* the burst instead of
   stalling on it - the pipelining that makes the threading pay. This is what takes
   colour to real time. 720x576 colour: RX888 /2 corpus 0.52s -> ~0.45-0.49s at 8
-  threads; AirSpy /1 live path ~0.87s for a 1.0s second (~13% margin), which is
-  why `live_view.py` defaults to `--deposit-threads 8`.
+  threads; AirSpy /1 live path ~0.87s for a 1.0s second (~13% margin). The
+  default is now 12 lanes; the sweep is under "Dead ends" below.
 - **Detector sqrt-hoist (#51).** The quasi-sync detector's per-sample `1/|y|`
   normaliser (a sqrt + divide on the carrier-recovery critical path) is lifted to
   a feed-forward `1/|i,q|` computed over the whole block (`|nco|~=1` in lock).
@@ -162,11 +162,34 @@ downstream work), so the balance legitimately differs between them.
 - Earlier deposit-layout micro-experiments (RGBA-pad, SoA-planar, per-block SIMD
   splat) all measured losses; see git history around the `perf`/`screen-gun-inline`
   branches.
-- **More than 8 deposit threads.** 16 lanes measures *slower* than 8 on the live
-  path: the wider burst lights up more cores at once and Skylake-X drops its
-  all-core turbo (~7.5% clock, measured), context switches go 2.6x, and 15
-  workers + 3 pipeline threads exactly fills the 18 physical cores. 8 lanes is
-  the sweet spot on this box for a reason, not by luck.
+- **More than 12 deposit threads.** Lane sweep of `--deposit-threads N` on
+  the two live fixtures (i9-9980XE, 18C/36T), median wall s / user CPU s.
+  Serial on an idle box, 2026-08 (5 reps composite, 3 RF, round-robin):
+
+      composite   4: 5.24/16.6   8: 4.69/18.9   12: 4.05/20.3   16: 4.27/22.0   24: 4.25/26.4
+      RF x10      4: 9.29/35.0   8: 8.04/38.6   12: 7.72/41.1   16: 7.64/42.7   24: 7.97/50.7
+
+  Re-run 2026-08-24 on the #94 branch under the shared-box lock (3 reps,
+  round-robin; the box was quiet but other agents were present, so treat
+  these walls as noisier than the idle-box row):
+
+      composite   8: 4.67/20.2   12: 4.36/21.7   16: 4.09/22.7
+      RF x10      8: 8.44/38.9   12: 7.60/41.0   16: 7.40/43.1
+
+  12 beats 8 on wall both times (composite -14% then -7%, RF -4% then -10%).
+  12 against 16 does not settle: the idle-box run had 12 ahead on composite
+  and level on RF, the re-run has 16 ahead by 6% on composite and 3% on RF,
+  so the two sit within a few percent of each other either way. CPU, though,
+  climbs with every lane added and never stops (24 lanes burns 30% more than
+  12 for no wall at all), which is
+  the fanned-out deposit hitting the memory system (see #61 below) rather
+  than doing more useful work, and that CPU is the margin a real-time source
+  and the MJPEG encoder beside it live on: 15 workers plus the three pipeline
+  threads already fill the 18 physical cores, and the wider burst drops
+  Skylake-X's all-core turbo (~7.5% clock, measured on the original 8-vs-16
+  run). So the default is 12. The earlier "16 is slower than 8" reading was
+  true of the build it was taken on and is not true now; the reason not to go
+  wider is CPU, not wall.
 
 ## Measured neutral, kept for later (issue #61, draft PR #70)
 
@@ -201,6 +224,28 @@ memory bound directly) becomes the follow-on. Measurement caveat for all splat-l
 JCC erratum swings identical tight loops up to 35% across code layouts - judge
 changes on the full-render A/B, never a microbench delta.
 
+- **Latch without the copy (#99).** The single-image render latched the
+  phosphor at every field boundary - a 5 MB float copy on the sink thread per
+  field - and read only the last one. The CPU deposit backend now lands lazily
+  all the way: end_field()'s fade is owed rather than applied (settled by the
+  next land(), before the records committed after it), and latch() names the
+  live buffer as the latched frame; the copy is only made if the live phosphor
+  has to move on beneath a live latch (a live readout), and a new latch drops
+  the old one first, so latch-every-field / read-the-last never copies. The
+  per-pixel op order (fade, then adds) is unchanged, so every output is
+  byte-identical: golden check, --no-threads vs --deposit-threads 1/12,
+  sequence-mode PNGs and the composite live frame dump all match main. The
+  live fixtures never latch (they quantise every 5th field), so they are
+  neutral by construction: composite (m1cap, 12 lanes) wall 4.35 -> 4.46 s,
+  user 21.9 -> 22.0 s; RF (wb3_airspy x10) wall 7.98 -> 7.69 s, user 41.3 ->
+  40.9 s (medians of 3, spreads overlap). wb3 file render: 0.53 -> 0.54 s
+  wall, 1.10 -> 1.08 s user (median of 5) - only ~24 fields, so ~9 ms of
+  sink work removed. On a ~10 s file render (wb3_airspy looped x10 as a
+  sigmf, ~500 fields, default 1 deposit lane, where the sink is the busiest
+  thread at ~37% of samples): wall 11.59 -> 11.30 s, user 26.3 -> 25.8 s
+  (medians of 3), sink-thread samples 11343 -> 11241 (-0.9%), the latch
+  memmove (231 samples, 2% of the sink thread) gone; the other two threads
+  unchanged. Inside the day-to-day variance band, so filed as neutral.
 - **Fixed-slicer hysteresis as a 64-sample carry-chain scan (#97).** The
   sync separator's per-sample enter/leave/hold FSM is the same boolean function
   as an adder's carry (set generates, clear kills, hold propagates), so a block
@@ -245,6 +290,27 @@ changes on the full-render A/B, never a microbench delta.
   (~4-8% of live wall), and the file renders don't care (decode-bound). The
   banked PR #70 attacks the apply side, still hidden while bursts fit the
   pipeline slack.
+
+  What was measured for the GPU move (#100, amending #59): the feedback
+  recurrences in this pass (EHT sag, BCL, line pull, focus) step once per
+  line, 312 times a field, and cost ~0.01% of program cycles. The rest of the
+  per-sample body is a pure function of the sample and the per-line
+  constants - the controls update at h_blank (~0.16 of a line) and the
+  visible span starts 0.09-0.14 of a line later, so they are fixed across
+  it - and of the ~20% of cycles the deposit symbol carries, about 27% is
+  the gamma LUT. So the pass is line-rate, not serial-forever. What keeps it
+  on the CPU is different: WGSL has only f32 for the accumulators the
+  CLAUDE.md rule keeps in double, and a kernel launch plus sync has a floor
+  of 9.8 us (RTX 2070; ~214 us pinned round trip for a line of data), so
+  per-line uploads are fine and per-sample interaction is not. The ceiling
+  for taking the whole deposit side (splat, decay, readout) off the CPU is
+  ~15% of file-render wall (gutted-deposit proxy 4.19 s vs 4.95 s at 8
+  lanes, measured concurrently with other work on the shared box, so
+  re-measure serially before quoting it) and 60-64% of program CPU
+  returned, which is the number that matters for WASM, higher sample rates
+  and #42 bloom. PR #105 carved the DepositBackend seam (stage 0); #103 is
+  the stage-1 plan. #64 is the snapshot-per-line-to-float lever on this same
+  pass.
 - **Wider SIMD via std::simd (gcc 16+).** The strip tiers are AVX2 (256-bit) on
   a box with AVX-512 and two 512-bit FMA units; 512-bit lanes would halve the
   strip count. Held for `std::simd` rather than hand-rolled AVX-512. The
