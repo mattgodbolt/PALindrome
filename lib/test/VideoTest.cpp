@@ -138,7 +138,7 @@ TEST_CASE("Agc equals the per-sample reference recurrence bit for bit") {
   CAPTURE(signal, chunk);
 
   video::Agc agc{video::AgcConfig{.sample_rate_hz = kRate, .decay_fields = kDecayFields}};
-  agc.prepare(chunk);
+  agc.prepare(std::min(chunk, env.size()));
   std::vector<float> chunked;
   for (std::size_t off = 0; off < env.size(); off += chunk) {
     const std::size_t n = std::min(chunk, env.size() - off);
