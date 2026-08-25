@@ -131,8 +131,10 @@ struct ScreenConfig {
   // sample; the CPU deposit backend batches a field of them and applies it to
   // the phosphor fanned across this many threads by output band (see
   // SplatDeposit). Bit-exact in the thread count - the picture never changes -
-  // so this is a wall-clock knob only. 1 = serial (no pool). The caller sets it.
-  std::size_t deposit_lanes = 1;
+  // so this is a wall-clock knob only. 1 = serial (no pool). 12 is where the
+  // sweep on the 18-core dev box put the wall/CPU knee (docs/performance.md);
+  // other machines may land elsewhere.
+  std::size_t deposit_lanes = 12;
 };
 
 // The picture tube. A join sink fed three aligned rails — the picture (luma +
@@ -152,8 +154,10 @@ public:
 
   // Handed to the field callback at each boundary. Quantising a Frame is the
   // expensive part of a snapshot, so the event is lazy: frame() quantises the
-  // field now (the per-field PNG sequence), while latch() just copies the float
-  // state aside so latched_frame() can quantise it once, later — the
+  // field now (the per-field PNG sequence), while latch() just keeps the float
+  // state (the backend copies it only if the live phosphor has to move on
+  // beneath it - a live snapshot, or a later field boundary - before the next
+  // latch supersedes it) so latched_frame() can quantise it once, later — the
   // single-image "keep the last clean boundary" shape, which would otherwise
   // quantise and discard every field but the last.
   //
@@ -244,8 +248,8 @@ private:
   mutable std::size_t slab_n_ = 0; // records written into slab_ and not yet committed
   void flush() const; // commit slab_n_ records to the backend, then drop slab_ (idempotent)
 
-  // FieldEvent::latch() support: the backend keeps the phosphor copied aside
-  // at a field boundary and the white reference is kept here, so
+  // FieldEvent::latch() support: the backend keeps the phosphor as it stood at
+  // a field boundary and the white reference is kept here, so
   // latched_frame() can quantise that instant once, later. latch_white_ < 0 =
   // never latched.
   void latch_boundary();
