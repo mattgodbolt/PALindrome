@@ -246,33 +246,17 @@ changes on the full-render A/B, never a microbench delta.
   (medians of 3), sink-thread samples 11343 -> 11241 (-0.9%), the latch
   memmove (231 samples, 2% of the sink thread) gone; the other two threads
   unchanged. Inside the day-to-day variance band, so filed as neutral.
-- **Chroma: fixed FIRs hoisted out of the gate-close split (#98) - both
-  halves of the issue measured neutral.** `ChromaDecoder::process` splits
-  every block at each burst-gate close so an APC retune reaches the next
-  sample's mix whatever the caller's chunking. The fixed band-pass and luma
-  notch were run once per segment (per line); they now run once over the
-  whole block and the segments take slices - bit-exact by the Fir tier
-  contract (every output is the same natural-order FMA chain whichever tier
-  it lands in), and the cleaner structure is why it is kept. But it does not
-  pay: `ChromaBench` (new; 64 lines x 1028 samples per call, pull on) reads
-  1.220 ms on main and 1.231 ms after the hoist, and `perf stat` over the
-  bench run shows instructions -0.7% with cycles flat (10.36G vs 10.40G) -
-  the per-call cost the hoist removes (a history copy and the strip tiers'
-  sub-8-output scalar tail, whose FMA chains the OoO window overlaps anyway)
-  is ~1% of the stage. The other half of #98, an AVX compare/movemask/ctz
-  version of the scalar gate-close replay that finds the split point, was
-  built and measured too: alone it equalled main (1.222 ms), and the scalar
-  replay is a well-predicted 8-instruction loop worth ~1-2% of the stage, not
-  the ~8% the profile had attributed to it - so it stays scalar and is not
-  worth intrinsics. One combined build (hoist + AVX search) did read
-  1.156 ms (-5%), but neither half reproduces it alone and the perf counters
-  show the builds shifting uops between the DSB and the legacy decoder
-  (`idq.mite_uops` 6.15G -> 6.60G), i.e. the JCC-erratum layout swing the
-  caveat above warns about, not a real saving. RF pipeline fixture: wall and
-  user CPU neutral within noise (composite median 4.19 s -> 4.14 s wall, RF
-  7.82 s -> 7.17 s wall, bimodal as before). Renders byte-identical (golden
-  check passes); the `==` block-invariance tests are untouched.
-
+- **Chroma: fixed FIRs hoisted out of the gate-close split (#98) - measured
+  neutral.** The band-pass and luma notch ran once per burst-gate segment
+  (per line); they now run once per block and the segments take slices,
+  bit-exact by the Fir tier contract. `ChromaBench` (new): 1.220 -> 1.231 ms
+  per block, instructions -0.7%, cycles flat - the per-segment overhead is
+  ~1% of the stage. The issue's other half, a vectorised gate-close search,
+  also measured neutral (the scalar replay is ~1-2% of the stage, not the
+  ~8% the profile attributed) and stays scalar. One combined build read -5%,
+  but neither half reproduces it and the counters show a DSB/legacy-decoder
+  layout swing (the JCC-erratum caveat above), not a saving. Kept for the
+  structure and the bench.
 ## Levers not yet pulled
 
 - **The decode thread** (still the wall on the file renders; on the live paths
