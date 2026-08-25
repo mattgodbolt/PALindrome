@@ -201,6 +201,20 @@ memory bound directly) becomes the follow-on. Measurement caveat for all splat-l
 JCC erratum swings identical tight loops up to 35% across code layouts - judge
 changes on the full-render A/B, never a microbench delta.
 
+- **Fixed-slicer hysteresis as a 64-sample carry-chain scan (#97).** The
+  sync separator's per-sample enter/leave/hold FSM is the same boolean function
+  as an adder's carry (set generates, clear kills, hold propagates), so a block
+  is two AVX2 compare masks, one 64-bit add and a mask-to-bytes expand.
+  Bit-identical (the thresholds are rounded *up* to float once, which gives the
+  old double compare's verdict exactly; golden check unchanged, `==` tests
+  kept). Standalone: 3.6 -> 0.55 cycles/sample on 64k blocks. In situ on the
+  composite live fixture the slicer's self cycles went 0.39% -> 0.17% of the
+  program (2.1% -> 0.8% of the decode thread; perf at 1 kHz, so +-20% on those
+  small counts). Wall and CPU unchanged within noise, 6 interleaved reps:
+  composite 4.27 -> 4.16 s wall / 21.7 -> 21.5 s user, RF 7.5 -> 7.7 s wall /
+  40.8 -> 41.4 s user (candidate spread 7.4-8.2 s on a busy box). A ~1% cut
+  on the decode thread, banked for when that thread is the wall.
+
 ## Levers not yet pulled
 
 - **The decode thread** (still the wall on the file renders; on the live paths

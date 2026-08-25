@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <random>
 #include <span>
 #include <vector>
 
@@ -167,6 +168,42 @@ TEST_CASE("fixed slice: picture content cannot move the slice point") {
       ++pulses;
   }
   CHECK(pulses >= 39); // the shallow sync still slices: one pulse per line
+}
+
+TEST_CASE("fixed slice: the 64-sample block scan equals the per-sample hysteresis") {
+  // The block path resolves 64 samples at once; blocks shorter than 64 fall
+  // through to the per-sample form. Feeding one sample at a time is therefore
+  // the scalar reference, and the two must agree bit-for-bit on the hardest
+  // input: every float in the slice band around the thresholds (so samples
+  // land exactly on them), shuffled so runs straddle word boundaries, on a
+  // length that leaves a tail. The band is pinned to slice_depth = 0.08
+  // (enter 0.925, leave 0.915).
+  constexpr double kDepth = 0.08;
+  std::vector<float> env;
+  for (float v = 0.90f; v < 0.95f; v = std::nextafter(v, 1.0f))
+    env.push_back(v);
+  std::mt19937 rng{97};
+  std::ranges::shuffle(env, rng);
+  env.resize((env.size() / 64 - 1) * 64 + 37);
+
+  const auto whole = [&] {
+    video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate, .slice_depth = kDepth}};
+    sep.prepare(env.size());
+    const auto out = sep.process(env);
+    return std::vector<video::SyncSample>{out.begin(), out.end()};
+  }();
+  video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate, .slice_depth = kDepth}};
+  sep.prepare(1);
+  std::size_t mismatches = 0;
+  std::size_t high = 0;
+  for (std::size_t k = 0; k < env.size(); ++k) {
+    const auto one = sep.process(std::span<const float>{env}.subspan(k, 1));
+    mismatches += one[0].sync != whole[k].sync;
+    high += whole[k].sync;
+  }
+  CHECK(mismatches == 0);
+  CHECK(high > env.size() / 4); // the band straddles the thresholds, so both states occur
+  CHECK(high < env.size() * 3 / 4);
 }
 
 TEST_CASE("HorizontalSweep flywheel: locks, rides a phase step slowly, re-acquires") {
