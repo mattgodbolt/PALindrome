@@ -170,15 +170,18 @@ downstream work), so the balance legitimately differs between them.
       RF x10      4: 9.29/35.0   8: 8.04/38.6   12: 7.72/41.1   16: 7.64/42.7   24: 7.97/50.7
 
   Re-run 2026-08-24 on the #94 branch under the shared-box lock (3 reps,
-  round-robin; other agents idle but present, so the walls are noisier):
+  round-robin; the box was quiet but other agents were present, so treat
+  these walls as noisier than the idle-box row):
 
-      composite   8: 4.98/21.0   12: 4.67/22.8   16: 4.35/23.3
-      RF x10      8: 9.42/42.5   12: 8.38/43.5   16: 8.12/44.5
+      composite   8: 4.67/20.2   12: 4.36/21.7   16: 4.09/22.7
+      RF x10      8: 8.44/38.9   12: 7.60/41.0   16: 7.40/43.1
 
-  12 beats 8 on wall both times (composite -14% then -6%, RF -4% then -11%).
-  12 against 16 is a wash: each run puts one ahead on one fixture by less
-  than the rep-to-rep spread. CPU, though, climbs with every lane added and
-  never stops (24 lanes burns 30% more than 12 for no wall at all), which is
+  12 beats 8 on wall both times (composite -14% then -7%, RF -4% then -10%).
+  12 against 16 does not settle: the idle-box run had 12 ahead on composite
+  and level on RF, the re-run has 16 ahead by 6% on composite and 3% on RF,
+  so the two sit within a few percent of each other either way. CPU, though,
+  climbs with every lane added and never stops (24 lanes burns 30% more than
+  12 for no wall at all), which is
   the fanned-out deposit hitting the memory system (see #61 below) rather
   than doing more useful work, and that CPU is the margin a real-time source
   and the MJPEG encoder beside it live on: 15 workers plus the three pipeline
