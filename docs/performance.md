@@ -240,8 +240,8 @@ changes on the full-render A/B, never a microbench delta.
   it - and of the ~20% of cycles the deposit symbol carries, about 27% is
   the gamma LUT. So the pass is line-rate, not serial-forever. What keeps it
   on the CPU is different: WGSL has only f32 for the accumulators the
-  CLAUDE.md rule keeps in double, and a kernel launch plus sync floors at
-  9.8 us (RTX 2070; ~214 us pinned round trip for a line of data), so
+  CLAUDE.md rule keeps in double, and a kernel launch plus sync has a floor
+  of 9.8 us (RTX 2070; ~214 us pinned round trip for a line of data), so
   per-line uploads are fine and per-sample interaction is not. The ceiling
   for taking the whole deposit side (splat, decay, readout) off the CPU is
   ~15% of file-render wall (gutted-deposit proxy 4.19 s vs 4.95 s at 8
