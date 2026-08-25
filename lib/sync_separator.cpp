@@ -78,23 +78,26 @@ std::span<const SyncSample> SyncSeparator::process_adaptive(std::span<const floa
   const double release = 1.0 - kLevelRetain;
 
   for (std::size_t k = 0; k < n; ++k) {
-    const auto env = static_cast<double>(envelope[k]);
+    const auto env = envelope[k];
+    const auto attack = static_cast<double>(env);
 
     // Track peak (sync tip) and floor (white) with fast attack to a new
     // extreme and slow release back toward the other end. Both release terms
     // read the pre-update pair, so there's no within-sample order dependency.
     const double range_pre = peak_ - floor_;
-    peak_ = std::max(env, peak_ - range_pre * release);
-    floor_ = std::min(env, floor_ + range_pre * release);
+    peak_ = std::max(attack, peak_ - range_pre * release);
+    floor_ = std::min(attack, floor_ + range_pre * release);
     const double range = peak_ - floor_;
+    const auto enter_level = static_cast<float>(floor_ + range * enter_frac);
+    const auto leave_level = static_cast<float>(floor_ + range * leave_frac);
 
     // Slice with hysteresis: enter the sync region high, leave it lower, so
     // chroma ripple on a transition can't chatter the bit. The range > 0 guard
     // stops a degenerate flat input (range == 0, where the enter test would be
     // trivially true) from latching permanently into sync.
-    if (!sync_ && range > 0.0 && env >= floor_ + range * enter_frac)
+    if (!sync_ && range > 0.0 && env >= enter_level)
       sync_ = true;
-    else if (sync_ && env < floor_ + range * leave_frac)
+    else if (sync_ && env < leave_level)
       sync_ = false;
 
     dst[k] = SyncSample{.sync = sync_};

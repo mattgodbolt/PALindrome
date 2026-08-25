@@ -201,6 +201,14 @@ memory bound directly) becomes the follow-on. Measurement caveat for all splat-l
 JCC erratum swings identical tight loops up to 35% across code layouts - judge
 changes on the full-render A/B, never a microbench delta.
 
+- **Adaptive slicer compares in float (#102).** Conformance to the
+  float-for-signal rule, not a lever: the sample no longer widens to double
+  for the hysteresis compares; the tracked slice levels snapshot down instead.
+  Standalone adaptive loop 13.4 -> 9.8 cycles/sample (chain-bound either way);
+  adaptive mode is on neither bench fixture, so wall and CPU are unchanged by
+  construction (composite 4.15 -> 4.22 s, RF 7.55 -> 7.29 s, medians of 3,
+  noise).
+
 ## Levers not yet pulled
 
 - **The decode thread** (still the wall on the file renders; on the live paths
