@@ -225,27 +225,14 @@ JCC erratum swings identical tight loops up to 35% across code layouts - judge
 changes on the full-render A/B, never a microbench delta.
 
 - **Latch without the copy (#99).** The single-image render latched the
-  phosphor at every field boundary - a 5 MB float copy on the sink thread per
-  field - and read only the last one. The CPU deposit backend now lands lazily
-  all the way: end_field()'s fade is owed rather than applied (settled by the
-  next land(), before the records committed after it), and latch() names the
-  live buffer as the latched frame; the copy is only made if the live phosphor
-  has to move on beneath a live latch (a live readout), and a new latch drops
-  the old one first, so latch-every-field / read-the-last never copies. The
-  per-pixel op order (fade, then adds) is unchanged, so every output is
-  byte-identical: golden check, --no-threads vs --deposit-threads 1/12,
-  sequence-mode PNGs and the composite live frame dump all match main. The
-  live fixtures never latch (they quantise every 5th field), so they are
-  neutral by construction: composite (m1cap, 12 lanes) wall 4.35 -> 4.46 s,
-  user 21.9 -> 22.0 s; RF (wb3_airspy x10) wall 7.98 -> 7.69 s, user 41.3 ->
-  40.9 s (medians of 3, spreads overlap). wb3 file render: 0.53 -> 0.54 s
-  wall, 1.10 -> 1.08 s user (median of 5) - only ~24 fields, so ~9 ms of
-  sink work removed. On a ~10 s file render (wb3_airspy looped x10 as a
-  sigmf, ~500 fields, default 1 deposit lane, where the sink is the busiest
-  thread at ~37% of samples): wall 11.59 -> 11.30 s, user 26.3 -> 25.8 s
-  (medians of 3), sink-thread samples 11343 -> 11241 (-0.9%), the latch
-  memmove (231 samples, 2% of the sink thread) gone; the other two threads
-  unchanged. Inside the day-to-day variance band, so filed as neutral.
+  phosphor at every field boundary - a 5 MB copy on the sink thread per field
+  - and read only the last one. The CPU backend now lands the field's fade and
+  records lazily, so `latch()` can name the live buffer as the latched frame
+  and only copies if that buffer has to move on beneath a live latch. The
+  per-pixel op order is unchanged, so every output is byte-identical (golden,
+  lane counts, sequence mode, live frame dump). File-render only: the live
+  paths never latch. Wall neutral; on a ~500-field file render the sink
+  thread's latch memmove (2% of that thread) is gone.
 - **VerticalSync duty integrator as one FMA (#104).** `integ += alpha * (x -
   integ)` put a subtract ahead of the FMA on the loop-carried chain; written as
   `fma(integ, 1 - alpha, x ? alpha : 0)` the chain is a single FMA (gcc hoists
