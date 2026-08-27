@@ -144,7 +144,22 @@ downstream work), so the balance legitimately differs between them.
   thread. Wall neutral (median of 6: 7.67s -> 7.75s, noise-bimodal), user CPU
   40.8s -> 40.0s. Renders and composite frame dumps byte-identical; ctest
   green with the `==` block-invariance tests untouched.
-
+- **AGC peak detector as a blocked max-plus scan (#96).** `tip = max(env,
+  r * tip)` per sample is a multiply and a max on one loop-carried chain,
+  ~9 cycles/sample. Rounding is monotone, so `r * max(a, b) == max(r*a, r*b)`
+  bit for bit and the max regroups across the 8 lanes of an AVX-512 block:
+  each lane gathers its candidates by a masked shift-and-decay scan, the
+  incoming tip is decayed by a scalar chain of eight multiplies, and the
+  divide, float snapshot and output multiply are vector ops. The chain cannot
+  be shortened exactly - `fl(fl(x*r)*r) != fl(x*fl(r*r))` - so the powers-of-r
+  scan the issue sketched is not bit-exact (its byte-identical pictures were
+  ~2^-29-per-sample luck). Microbench 9.05 -> 6.55 cycles/sample (1.38x);
+  the exact floor is 4.5, the rest is the dependent tail plus 512-bit ops
+  contending with the scalar chain for p0/p1. Measured worse: store/reload
+  gather (9.7), the scan left rolled (6.75); a 256-bit scan is untried. RF
+  fixture: the AGC loop 0.81G -> 0.52G cycles on the decode thread; wall and
+  CPU neutral on both fixtures. Golden unchanged; a new `==` test pins the
+  vector path to the scalar recurrence across chunk sizes.
 ## Dead ends (measured, do not repeat)
 
 - **Per-block fork-join deposit parallelism.** Fanning each 64k-block's splats
@@ -259,9 +274,11 @@ changes on the full-render A/B, never a microbench delta.
   it now ties with the sink - see above). Post #63 its spend: `Fir::process`
   ~34% (chroma band-pass, U/V low-pass pair, sync low-pass), `decode_into`
   ~28% (now mostly the AGC and the pass-1 NCO mix, each latency-bound on an
-  8-cycle loop-carried double chain that scalar micro-opts cannot touch - the
-  AGC's per-sample divide is fully hidden under its chain, don't chase it),
-  the sweeps ~25% (~12% after #95). Remaining levers: the std::simd FIR
+  8-cycle loop-carried double chain that scalar micro-opts cannot touch; #96
+  took the AGC's chain down to its 4-cycle multiply, with the divide and the
+  rest of the per-sample work in vector lanes beside it - what remains there
+  is the ~2-cycle gap to that floor, see the #96 bullet), the sweeps ~25%
+  (~12% after #95). Remaining levers: the std::simd FIR
   widening below; blocking the pass-1 phasor recurrence (advance by step^8,
   ~-13% of decode_into) - but that ULP-shifts the NCO *inside the APC feedback
   loop*, so it needs its own tolerance-based verification protocol,
