@@ -51,7 +51,11 @@ double process_blocks(const float *env, float *dst, std::size_t n, double releas
 
     // In-block candidates: after d shift-and-decay steps lane m holds
     // r^d env[m-d]; lanes m < d would reach back before the block and are
-    // masked out (the carry supplies those candidates).
+    // masked out (the carry supplies those candidates). Possible improvement:
+    // a precomputed {r, r^2, ..., r^7} vector makes the seven steps (and the
+    // carry below) independent multiplies, ~2.8 cycles/sample when tried,
+    // but the pre-rounded powers put it an ULP off the scalar loop now and
+    // then; take it only if the == test may become a tolerance.
     auto best = e0;
     auto shifted = e0;
 #pragma GCC unroll 8
