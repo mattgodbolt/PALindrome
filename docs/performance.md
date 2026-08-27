@@ -242,6 +242,17 @@ changes on the full-render A/B, never a microbench delta.
   unchanged. Stage in isolation 8.3 -> 5.5 cycles/sample, now issue-bound at
   ~21 instructions/sample; wall and CPU neutral on both fixtures. The next
   lever here is instruction count, not latency.
+- **Chroma: fixed FIRs hoisted out of the gate-close split (#98) - measured
+  neutral.** The band-pass and luma notch ran once per burst-gate segment
+  (per line); they now run once per block and the segments take slices,
+  bit-exact by the Fir tier contract. `ChromaBench` (new): 1.220 -> 1.231 ms
+  per block, instructions -0.7%, cycles flat - the per-segment overhead is
+  ~1% of the stage. The issue's other half, a vectorised gate-close search,
+  also measured neutral (the scalar replay is ~1-2% of the stage, not the
+  ~8% the profile attributed) and stays scalar. One combined build read -5%,
+  but neither half reproduces it and the counters show a DSB/legacy-decoder
+  layout swing (the JCC-erratum caveat above), not a saving. Kept for the
+  structure and the bench.
 ## Levers not yet pulled
 
 - **The decode thread** (still the wall on the file renders; on the live paths
