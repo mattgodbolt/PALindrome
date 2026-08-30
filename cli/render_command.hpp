@@ -101,6 +101,7 @@ private:
   bool no_delay_line_{false}; // deprecated alias for --comb-mode off
   std::string comb_mode_; // "off" | "post" | "delay-line" | "glass"; empty => decoder default (post)
   double ref_tc_{kDefaults.chroma.ref_tc_lines}; // APC reference time constant in lines (EMA rate = 1/ref_tc)
+  double ident_tc_{kDefaults.chroma.ident_tc_lines}; // ident time constant in lines (EMA rate = 1/ident_tc)
   bool no_killer_{false}; // disable the colour killer (no ident-based chroma muting)
   double apc_catch_{kDefaults.chroma.apc_catch_range_hz}; // APC crystal pull catch range Hz (0 = fixed crystal)
   double apc_pull_{kDefaults.chroma.apc_pull}; // APC pull rate (fraction of measured drift per line)

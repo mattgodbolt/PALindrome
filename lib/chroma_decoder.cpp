@@ -16,7 +16,6 @@ namespace palindrome::video {
 
 namespace {
 constexpr double kTwoPi = 2.0 * std::numbers::pi;
-constexpr double kIdent = 0.1; // ident leaky-integrator rate for the PAL-switch bistable
 // The ultrasonic glass delay line's trimmed length, in subcarrier cycles: a
 // half-integer count so the delayed subcarrier returns antiphase-aligned —
 // 283.5 / 4.43361875 MHz = 63.943 us, NOT the 64 us line period.
@@ -46,6 +45,12 @@ const ChromaDecoderConfig &validate(const ChromaDecoderConfig &cfg) {
   if (!(cfg.ref_tc_lines >= 2.0 && cfg.ref_tc_lines <= 100.0))
     throw std::invalid_argument{
         std::format("ChromaDecoder: ref_tc_lines must be in [2, 100], got {}", cfg.ref_tc_lines)};
+  // Both ends are rejected: at 1 the ident is a per-line verdict and a single
+  // noisy burst re-phases the bistable, which the ident exists to prevent; at
+  // infinity the rate is zero and nothing is ever identified.
+  if (!(cfg.ident_tc_lines >= 2.0 && std::isfinite(cfg.ident_tc_lines)))
+    throw std::invalid_argument{
+        std::format("ChromaDecoder: ident_tc_lines must be finite and >= 2 lines, got {}", cfg.ident_tc_lines)};
   if (!(cfg.killer_threshold < 1.0))
     throw std::invalid_argument{std::format(
         "ChromaDecoder: killer_threshold must be < 1 (ident never exceeds 1), got {}", cfg.killer_threshold)};
@@ -92,6 +97,7 @@ ChromaDecoder::ChromaDecoder(const ChromaDecoderConfig &cfg) :
         cfg.subcarrier_hz - cfg.luma_notch_half_hz,
         clamp_high(cfg.subcarrier_hz + cfg.luma_notch_half_hz, cfg.sample_rate_hz))} {
   apc_rate_ = 1.0 / cfg_.ref_tc_lines;
+  ident_rate_ = 1.0 / cfg_.ident_tc_lines;
   // killer_threshold <= 0 disables the killer: the gate is pinned open rather
   // than ramped (update_killer no-ops), the pre-killer behaviour.
   if (cfg_.killer_threshold <= 0.0)
@@ -190,7 +196,7 @@ void ChromaDecoder::finalize_line() {
   // bursts; the ident only re-phases the bistable, never a per-line decision.
   const double predicted = (parity_ == polarity_) ? 1.0 : -1.0;
   const double measured = (swing >= 0.0) ? -1.0 : 1.0; // +V-burst lines (swing<0) take no flip
-  ident_ += kIdent * (predicted * measured - ident_);
+  ident_ += ident_rate_ * (predicted * measured - ident_);
   if (ident_ < -0.5) {
     polarity_ = !polarity_;
     ident_ = 0.0;

@@ -239,6 +239,10 @@ void RenderCommand::add_to(lyra::cli &cli, std::function<int()> &action) {
           .add_argument(lyra::opt(ref_tc_, "lines")["--ref-tc"](std::format(
               "Colour: APC reference time constant in lines (default {}; slower = more period-faithful, [2,100])",
               ref_tc_)))
+          .add_argument(lyra::opt(ident_tc_, "lines")["--ident-tc"](std::format(
+              "Colour: ident time constant in lines (default {}, >= 2; ~1000 makes Firetrack's parity attack kill "
+              "the colour, as on a long-Tc set)",
+              ident_tc_)))
           .add_argument(
               lyra::opt(no_killer_)["--no-killer"]("Colour: disable the colour killer (no ident-based chroma muting)"))
           .add_argument(lyra::opt(apc_catch_, "hz")["--apc-catch"](std::format(
@@ -622,6 +626,7 @@ std::optional<video::DecoderConfig> RenderCommand::decoder_config(double envelop
   dc.chroma.burst_gate_lo = burst_gate_lo_;
   dc.chroma.burst_gate_hi = burst_gate_hi_;
   dc.chroma.ref_tc_lines = ref_tc_;
+  dc.chroma.ident_tc_lines = ident_tc_;
   if (no_killer_)
     dc.chroma.killer_threshold = 0.0;
   dc.chroma.apc_catch_range_hz = apc_catch_;

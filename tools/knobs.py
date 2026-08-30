@@ -196,6 +196,11 @@ KNOBS = [
               "real set's APC was slower. High values stop the reference chasing per-line drift, which is what lets "
               "delay-line's structural sum/difference suppress Hanover bars (a fast loop hides the difference). [2,100]: "
               "below 2 the loop tracks the ±45° swing, above 100 it can't pull in an off-nominal source."),
+    dict(name="ident_tc", flag="--ident-tc", label="Ident Tc (lines)",
+         min=2, max=3000, step=2, default=10,
+         help="How many lines the ident integrates before trusting the burst's swing sense. 10 = a fast, wideband "
+              "ident that re-phases within a frame. ~1000 = a long-Tc set: Firetrack's once-per-frame parity flip "
+              "averages the ident away and the killer closes (the B&W trick working); 200+ kills, 50-100 flickers."),
     dict(name="apc_catch", flag="--apc-catch", label="APC catch range (Hz)",
          min=0, max=2000, step=50, default=500,
          help="How far the burst phase detector may pull the 4.43 MHz colour crystal, as a real APC's catching range "

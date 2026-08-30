@@ -158,6 +158,37 @@ TEST_CASE("colour killer fades a valid burst in slowly, and can be disabled") {
   CHECK(peak_chroma(open.out) > peak_chroma(period.out));
 }
 
+TEST_CASE("Firetrack's per-frame parity flip: a long-Tc ident kills colour, a fast one shrugs it off") {
+  // One stretched line per 313-line frame inverts the burst-swing parity at
+  // 25 Hz (docs/Firetrack_BW_Trick.md, measured on a real Master).
+  // Which way a set goes is decided by its ident time constant alone.
+  constexpr std::size_t kFrameLines = 313;
+  const auto env = synth_colour_composite(kFrameLines * 6, 1028, 0.0, kFrameLines);
+
+  // A fast ident re-phases the bistable a dozen lines into each frame: the
+  // killer sees agreement for the rest of the frame, so the gate chatters
+  // (its landing point is set by the killer ramps, ~0.6 at the defaults) but
+  // stays well clear of the hard-mute switch: colour survives.
+  const auto fast = run_chroma(env, killer_test_config());
+  CHECK(fast.killer_gain > video::ChromaDecoder::kKillerSwitch);
+
+  // A long-Tc ident integrates across frames of alternating sense: it never
+  // reaches the killer threshold (nor the re-phase one), and the gate stays
+  // shut - the picture goes black and white.
+  auto slow_cfg = killer_test_config();
+  slow_cfg.ident_tc_lines = 1000.0;
+  const auto slow = run_chroma(env, slow_cfg);
+  CHECK(slow.killer_gain < 0.05);
+
+  // The same long-Tc set still colours up on an honest PAL signal - just
+  // slowly: the bistable starts mis-phased, so the ident first integrates its
+  // way down to the re-phase point, then back up past the killer threshold,
+  // and the gate only starts opening some three frames in.
+  const auto honest = synth_colour_composite(kFrameLines * 12, 1028);
+  const auto locked = run_chroma(honest, slow_cfg);
+  CHECK(locked.killer_gain > 0.5);
+}
+
 TEST_CASE("APC pulls the crystal onto an in-range subcarrier offset") {
   // A source 200 Hz off the crystal — inside the catching range. The frequency
   // pull should walk the NCO onto the source: the reported crystal frequency

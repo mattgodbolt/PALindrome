@@ -23,8 +23,8 @@ these go deeper on single topics.
   PAL decoder IC, the period chroma chip the colour path models (the datasheet
   PDF sits alongside).
 - [Firetrack_BW_Trick.md](Firetrack_BW_Trick.md) - how Firetrack's BBC Micro
-  loader forced B&W on a PAL set: an ident-parity attack, with the
-  reproduction recipe the planned synthetic test uses (issue #40).
+  loader forced B&W on a PAL set: an ident-parity attack, confirmed on a real
+  Master's composite output and reproduced by the decoder's `--ident-tc`.
 - ETD_Info_Sheet_21W_PAL_Coding_Revision.pdf - BBC engineering training
   reference for PAL coding (the Long-Tc/Short-Tc reference model the chroma
   decoder's APC/ident comments cite).
