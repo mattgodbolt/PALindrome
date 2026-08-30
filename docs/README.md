@@ -26,8 +26,8 @@ these go deeper on single topics.
   loader forced B&W on a PAL set: an ident-parity attack, confirmed on a real
   Master's composite output and reproduced by the decoder's `--ident-tc`.
 - [beeb_colour_calibration.md](beeb_colour_calibration.md) - the composite
-  profile's measured colour baseline (bars vs the CX2388x card), and the
-  Beeb encoder's equal-gain colour axes.
+  profile's measured colour baseline (bars vs the CX2388x card), the Beeb's
+  circuit-predicted hot burst, and a cautionary tale about coordinate systems.
 - ETD_Info_Sheet_21W_PAL_Coding_Revision.pdf - BBC engineering training
   reference for PAL coding (the Long-Tc/Short-Tc reference model the chroma
   decoder's APC/ident comments cite).

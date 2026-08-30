@@ -2,8 +2,9 @@
 
 The `bbc-master-composite` profile's colour knobs were originally tuned by
 eye. This note records a repeatable calibration against the same signal
-decoded by independent hardware, what it settled the knobs to, and a genuine
-discovery about the Beeb's encoder that fell out of the measurements.
+decoded by independent hardware, what it settled the knobs to, and what the
+measurements actually established about the Beeb's encoder - including the
+retraction of this note's own first draft.
 
 ## The idea
 
@@ -39,30 +40,37 @@ BT.470 weights, with the Beeb's blue running slightly bright (0.17 span
 vs 0.114) and yellow slightly dark (0.83 vs 0.886) on all three instruments.
 Hues are correct to a few degrees. Nothing here wants a knob.
 
-Chroma is the surprise. Measured against the standard weighted components
-(U = 0.493(B-Y), V = 0.877(R-Y)), the V-heavy bars come out far weaker than
-the U-heavy ones: red and cyan decode at roughly 0.46 of their nominal
-amplitude, yellow and blue at 0.73, green and magenta in between. All three
-measurements - raw phasors, the CX2388x, and PALindrome - agree, so it is
-the signal, not a decoder. The pattern is exactly what an encoder that
-drives both colour-difference axes with *equal* gain would produce: skipping
-the 0.877/0.493 differential weighting makes V come out at 0.493/0.877 =
-0.56 of its proper relative strength, and 0.56 is within measurement error
-of the observed 0.6. The hues lean a few degrees toward the U axis in the
-bargain, and the card's measured hues match the equal-gain prediction on
-yellow, blue and cyan to about a degree.
+Chroma initially looked like a discovery and turned out to be a lesson. A
+first analysis had the V axis decoding at ~0.6x of its proper weight
+relative to U, apparently confirmed three ways, and blamed the encoder for
+driving both colour-difference axes at equal gain. Every leg of that was an
+analysis error: the capture card's output planes are Cb/Cr (0.564/0.713
+weights), not U/V (0.493/0.877), so comparing them against U/V expectations
+manufactures exactly a 0.6x "V deficit" and U-leaning hues; the raw-phasor
+script's V-switch sign chain partially cancelled V; and the one measurement
+that disagreed - the render, which was right - got explained away. A
+schematic-level check settled it: the Model B encoder (Acorn drawing
+103,000/C; four chroma summing legs of 680R/2K2/470R/3K3) realises the
+standard weights to within component tolerance (gV/gU = 1.84 vs the
+standard 1.78), the Master's CF30060 chroma chip drives the same network
+scaled ~1.5x (gV/gU = 1.87), and re-measurement with the coordinate systems
+straight shows the signal is textbook: burst swing +/-45.0 degrees, hues
+within 1.3 degrees, V/U within a few percent of proper. Richard Russell's
+1976 provenance (stardot t=15045) stands, but as the source of a *correct*
+encoder, compensation resistors and all.
 
-If that is right, every television ever connected to a Beeb showed red and
-cyan at half their intended saturation, because a standard decoder applies
-standard weights - which is also why decoding with standard weights is the
-authentic thing to do, and why no knob here should try to "correct" it. A
-caveat in fairness: the equal-gain story is inferred from the measurement,
-not traced in the schematic. The encoder is section 3.4 of the
-[Service Manual](https://chrisacorns.computinghistory.org.uk/docs/Acorn/Manuals/Acorn_BBCSMOct85_Sec1.pdf),
-and by the account in
-[stardot t=15045](https://stardot.org.uk/forums/viewtopic.php?t=15045) it
-descends from a circuit Richard Russell designed at the BBC Designs
-Department in 1976; tracing the modulator drive components would settle it.
+What is genuinely non-standard, and circuit-predicted, is the burst: the
+dedicated burst gates emit the full-swing carrier through legs sized like a
+100% colour bar instead of the standard 0.21-amplitude vector, so the burst
+runs about 2.2x hot against the luma span (measured 2.21x; the circuit
+predicts 1.39x the blue bar's chroma, 1.34x measured). Any decoder with
+burst-referenced gain control - which is to say every real television, and
+this one - normalises chroma against the burst and therefore shows the Beeb
+at roughly half its nominal saturation. That, not axis weighting, is the
+authentic reason Beeb colour always looked restrained on a TV, and why the
+ACC-normalised decode is the honest one. The composite path also carries
+chroma at a uniform ~0.70x relative to luma (the injection network; it
+affects both axes identically, as any post-modulation network must).
 
 ## The fitted baseline
 
@@ -94,6 +102,14 @@ thresholding lands one bar to the left; anchor the geometry on a white-field
 capture instead. Enforce steady state - a large APL change sags the whole
 AC-coupled waveform for half a second, so capture patterns after they have
 settled, and normalise per line against the local back porch. And write the
-conversion matrices in code from the capture, not from memory; both a
-hand-typed 601 matrix and a hand-copied U column produced convincing
-garbage before the in-script versions collapsed the residuals.
+conversion matrices in code from the capture, not from memory; a hand-typed
+matrix and a hand-copied U column both produced convincing garbage before
+the in-script versions collapsed the residuals.
+
+Above all: know which colour space every instrument speaks before comparing
+them. A V4L2 decoder emits Cb/Cr, weighted 0.564/0.713; PAL U/V are
+weighted 0.493/0.877; confusing the two fabricates a 1.4x differential
+"axis anomaly" that a second, independently buggy analysis can appear to
+corroborate. Three measurements only confirm each other if they would
+also have been able to disagree - the first draft of this note learned
+that in public.
