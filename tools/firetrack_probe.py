@@ -14,6 +14,8 @@ FS = 20_000_000
 FSC = 4.43361875e6
 LINE = 1280            # 64us at 20 MS/s
 
+if len(sys.argv) < 2:
+    sys.exit("usage: firetrack_probe.py capture.u8 [seconds]")
 a = np.fromfile(sys.argv[1], dtype=np.uint8)
 if len(sys.argv) > 2:
     a = a[: int(float(sys.argv[2]) * FS)]
@@ -29,6 +31,8 @@ low = lp < thr
 d = np.diff(low.astype(np.int8))
 starts = np.flatnonzero(d == 1) + 1
 ends = np.flatnonzero(d == -1) + 1
+if len(starts) == 0 or len(ends) == 0:
+    sys.exit("no sync pulses found: is this a raw u8 composite capture?")
 if ends[0] < starts[0]:
     ends = ends[1:]
 n = min(len(starts), len(ends))

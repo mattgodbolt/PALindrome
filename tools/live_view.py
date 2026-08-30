@@ -114,8 +114,13 @@ class CardPump(threading.Thread):
                 return
             with self.lock:
                 if self.sink is not None:
+                    # A blocking pipe write can still return short if a signal
+                    # lands mid-write, and a dropped byte would shear every
+                    # sample after it: write until it is all gone.
+                    view = memoryview(buf)
                     try:
-                        os.write(self.sink, buf)
+                        while view:
+                            view = view[os.write(self.sink, view):]
                     except BrokenPipeError:
                         os.close(self.sink)     # child gone; a restart attaches a new pipe
                         self.sink = None
