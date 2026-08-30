@@ -42,14 +42,19 @@ inline constexpr double kRate = 16.0e6;
 // colour to recover. The burst swings ±45° about its mean axis on alternate
 // lines — the PAL swinging burst, which is what the ident (and so the colour
 // killer) recognises as PAL; without the swing the killer rightly treats the
-// signal as not-PAL and mutes it.
-inline std::vector<float> synth_colour_composite(std::size_t lines, std::size_t line_len, double fsc_offset_hz = 0.0) {
+// signal as not-PAL and mutes it. parity_flip_every > 0 inverts the swing's
+// line parity once per that many lines: Firetrack's ident attack
+// (docs/Firetrack_BW_Trick.md) as the chroma decoder sees it, stripped of the
+// line-stretch that produces it - the timing rail here is synthetic anyway.
+inline std::vector<float> synth_colour_composite(
+    std::size_t lines, std::size_t line_len, double fsc_offset_hz = 0.0, std::size_t parity_flip_every = 0) {
   auto e = synth_composite(lines, line_len);
   const double fsc = 4.43361875e6 + fsc_offset_hz;
   const double w = 2.0 * std::numbers::pi * fsc / kRate;
   for (std::size_t l = 0; l < lines; ++l) {
     const std::size_t base = l * line_len;
-    const double swing = (l % 2 == 0 ? 1.0 : -1.0) * std::numbers::pi / 4.0;
+    const std::size_t flips = parity_flip_every ? l / parity_flip_every : 0;
+    const double swing = ((l + flips) % 2 == 0 ? 1.0 : -1.0) * std::numbers::pi / 4.0;
     for (std::size_t k = 0; k < line_len; ++k) {
       const double phase = w * static_cast<double>(base + k);
       const bool in_burst = k >= line_len / 12 && k < line_len / 12 + 36;

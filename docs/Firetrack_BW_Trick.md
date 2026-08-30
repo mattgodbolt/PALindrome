@@ -8,7 +8,9 @@ out how, from the
 [level7.org.uk disassembly](https://level7.org.uk/miscellany/firetrack-disassembly.txt)
 and the BBC Micro service manual, and what it means for a PAL decoder - ours
 in particular. The claims here have been checked at the byte level against
-the shipped binary; see the verification note at the end.
+the shipped binary, and the signal itself has since been captured from a real
+BBC Master running the game; see the measurements and the verification note at
+the end.
 
 The punchline up front: the trick does not suppress, attenuate, mis-time or
 detune the colour burst. The popular explanation - that Firetrack "interferes
@@ -71,9 +73,10 @@ contains 312 hsyncs, spread over 313 line-times. (The frame is thereby
 20.032 ms rather than the un-tweaked 19.968 ms - 49.92 Hz vs 50.08 - which
 no vertical hold will notice.)
 
-The stretch is applied roughly 50 µs into the first vsync line, counting the
-instruction path from the vsync poll, and it stays inside the vertical sync
-pulse. That's less tight than it sounds, because the CRTC counts its vsync
+Counting the instruction path from the vsync poll, the stretch should land
+roughly 50 µs into the first vsync line, inside the vertical sync pulse. (That
+is the paper derivation for a Model B. A Master 128 measures differently: see
+"Measured on a Master 128" below, where the window opens two lines later.) That's less tight than it sounds, because the CRTC counts its vsync
 width in its own scan lines and one of those lines is the stretched one. The
 game's R3 is `&28`: on the programmable-vsync CRTC variants that's a 2-line
 pulse, which with the stretch inside it spans 64 + 128 = 192 µs of real time,
@@ -84,7 +87,10 @@ Beeb combines hsync and vsync into composite sync with a plain NOR gate and
 no serration pulses, so an hsync edge inside vsync never reaches the
 television at all. What the TV's sync separator receives is a vsync pulse one
 line-slot longer than usual, with line syncs resuming afterwards exactly in
-phase. There is no phase step for the line flywheel to fight.
+phase. There is no phase step for the line flywheel to fight. Either way - and
+the Master's way is different in detail - the line grid the television keeps
+ends up exactly one slot late, which no flywheel can tell from no change at
+all; the parity flip below is the whole effect.
 
 ### What the calibration at &454D actually measures
 
@@ -268,28 +274,76 @@ alternate frames with the wrong V sense, which on a PAL-D delay-line decoder
 is a frame-alternating hue error - a 25 Hz colour shimmer, not
 black-and-white.
 
+## Measured on a Master 128
+
+The signal was captured on 2026-08-29 from a BBC Master 128's composite
+output through a cxadc card at 20 MS/s (the live view's record button;
+`tools/firetrack_probe.py` does the analysis below), with the game running
+and the F5 mode engaged, and again with it off as a control. Engaging it is
+fiddly for a reason the disassembly makes plain: `check_for_key_press` is an
+OSBYTE &81 scan, so F5 has to be physically down at the one instant
+`scroll_into_position_on_stage` samples it, right after the start-of-stage
+chord and the scroll-in; and that routine also runs on every respawn, so a
+key held through a death toggles the mode straight back off. Hold F5 from
+before the chord until the ship is yours, then let go.
+
+With the mode off: 312 hsyncs per frame, a 128 µs vsync, and a burst swing
+whose parity on a continuous line grid never breaks. With it on:
+
+- every frame is 313 line-slots long (312.11 slots between vsyncs by the
+  card's clock, which runs 0.035% fast against the Beeb's; 313.11 with the
+  tweak);
+- the swing parity on that grid inverts every frame, exactly as argued above;
+- the burst is untouched: same amplitude, same 45° swing, same APC pull on
+  every line the decoder measures.
+
+Two details differ from the Model B reasoning. The Master mixes sync as hsync
+XOR vsync, not NOR: inside vsync the hsyncs appear as 4 µs positive-going
+serrations, so a displaced hsync does reach the television. And the window
+does not open inside vsync at all. Against the undisturbed line grid from
+before the vertical interval (slot 0 = the first hsync under vsync), the
+vsync runs from -0.77 to +1.24 slots on both captures, the hsync at +2 is
+normal on both, and then with the tweak on the next sync edge is at +3.875:
+an 8 µs pulse (the 4-character hsync at the halved clock) ending exactly on
++4.0, after which syncs fall at +5, +6, ... - one slot late and otherwise
+unchanged. So the window opens about 12 µs after the +2 hsync, some two lines
+after the vertical sync pulse ends, in the top border. The television sees
+one hsync 56 µs late on its old grid (or 8 µs early on the new one), then a
+grid shifted by one whole slot, which is indistinguishable from no shift. A
+flywheel timebase swallows the single odd pulse; the parity attack is
+unaffected. Why the Master's timing differs from the paper count is not
+settled - the frame routine is entered from a VIA timer whose phase against
+vsync is set elsewhere - and the Model B has not been measured.
+
 ## Reproducing it in PALindrome
 
-No capture is needed to study this; the signal is fully specified. A 312-line
-non-interlaced PAL frame, burst with the ±45° per-line swing; a vertical sync
-pulse one 64 µs slot longer than usual (the stretch lives inside vsync, not
-after it), with line syncs resuming in phase afterwards and the swing
-sequence resuming as if the extra slot did not exist. Net effect: the swing
-parity inverts once per frame.
+Decoder-side the killer is ident-driven, and the ident's time constant is the
+`--ident-tc` knob (in lines; `ChromaDecoderConfig::ident_tc_lines`, and a
+slider in the live view). Rendering the Master capture with the mode engaged:
 
-Decoder-side, PALindrome's colour killer is already ident-driven with a
-configurable threshold and asymmetric ramps. The missing piece is a
-configurable ident time constant: the ident EMA rate is currently a constant,
-and a fast one (about ten lines), so today's decoder is the "fast ident" kind
-of set, on which the trick should fail, colour surviving with a top-of-frame
-hue disturbance. With the ident Tc surfaced as a knob, both populations
-become demonstrable: the long-Tc set that Firetrack turns black-and-white,
-and the fast-ident set that shrugs it off.
+| `--ident-tc` | killer gate | picture |
+|---|---|---|
+| 10 (default) | 0.53, chattering | colour: the ident re-phases the bistable a dozen lines into each frame, and the gate never quite closes or quite settles |
+| 50-100 | 0.1-0.2 | dim, flickering colour |
+| 200 and up | 0.00, colour killed | black and white - the trick working |
+
+The control capture at 1000 lines sits at 1.00, full colour, so the long-Tc
+set is not simply deaf. The ident alone gives up above about 370 lines (its
+swing settles to tanh(313/2Tc), under the 0.4 threshold), but the killer's
+kill ramp is fifteen times faster than its fade-up, so on the real capture
+the gate is already shut by 200. Around 50-100 lines it hovers, 0.1-0.2, and
+the colour flickers frame to frame: the marginal set of the previous
+section. A synthetic version of the same
+signal (the swing parity inverted every 313 lines, no timing games) is the
+unit test in `lib/test/ChromaDecoderTest.cpp`.
 
 ## Verification
 
 Researched 2026-06-09; re-verified 2026-07-18 by three independent checks,
-which also produced the corrections noted above.
+which also produced the corrections noted above; the signal itself measured
+on a Master 128 on 2026-08-29 (previous section), which confirmed the 313-slot
+frame and the per-frame parity inversion and corrected where the stretch
+lands and how the Master mixes sync.
 
 The game-code claims were confirmed at the byte level against the shipped
 binary: two independently-hosted disc images of the 1987 release

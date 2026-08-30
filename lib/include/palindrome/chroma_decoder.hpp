@@ -70,6 +70,18 @@ struct ChromaDecoderConfig {
   // of [2, 100]: below ~2 the loop tracks the ±45° swing itself, not the axis;
   // above ~100 it can't pull in an off-nominal source's per-line phase ramp.
   double ref_tc_lines = 10.0;
+  // Ident time constant, in lines: how many lines of agreement the ident
+  // integrates before it believes the burst's swing sense. This is the knob
+  // that separates real sets on Firetrack's parity attack
+  // (docs/Firetrack_BW_Trick.md): one stretched line per frame inverts the
+  // swing parity at 25 Hz, so a long-Tc ident (well over a frame, ~1000 lines)
+  // averages the 7.8 kHz ident to nothing and the killer closes - the trick
+  // works, black and white. The 10-line default is a fast, wideband ident that
+  // simply re-phases the bistable a dozen lines into each frame, and colour
+  // survives (the gate chatters but never closes) - the trick failing, which
+  // was also authentic. Around 50-100 lines the ident hovers around the
+  // killer threshold and colour flickers; from ~200 the kill ramp wins.
+  double ident_tc_lines = 10.0;
   // Colour killer. The ident circuit's verdict — does the burst's ±45° swing
   // sense agree with the bistable, line after line — gates the chroma, exactly
   // as the TDA3561A's ident/killer mutes the chrominance amplifier when no PAL
@@ -218,6 +230,7 @@ private:
   bool parity_ = false;
   bool polarity_ = false; // which bistable phase is the V-inverted (PAL) line
   double ident_ = 0.0; // leaky agreement: < 0 means the bistable is mis-phased
+  double ident_rate_; // EMA coefficient = 1 / cfg_.ident_tc_lines (set in the ctor)
   double swing_deg_ = 90.0; // this line's burst |swing|; ~45 once locked
 
   // The killer's gate, ramped per line toward 1 (ident above threshold) or 0.

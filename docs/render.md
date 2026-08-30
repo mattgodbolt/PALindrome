@@ -258,9 +258,13 @@ switch-on is deliberately slow, so colour fades up over about a tenth of a
 second after lock, the saturation-control time constant of a real set. A
 burst-free transmission decodes as clean monochrome. `--no-killer` disables
 it (the old paint-anything behaviour), and `render` prints the killer gate
-state with the colour diagnostics. For a game that deliberately defeated this
-circuit - by attacking the ident's parity rather than the burst - see
-[Firetrack_BW_Trick.md](Firetrack_BW_Trick.md).
+state with the colour diagnostics. `--ident-tc` sets how many lines the ident
+integrates before it trusts the swing sense: 10 (the default) is a fast,
+wideband ident; a real set's could be far slower. That one number is what
+decides whether a game that deliberately defeated this circuit - by attacking
+the ident's parity rather than the burst - gets away with it: see
+[Firetrack_BW_Trick.md](Firetrack_BW_Trick.md), where `--ident-tc 1000` turns
+a real capture black and white and the default shrugs it off.
 
 One note for the current sub-second corpus clips: the switch-on ramp spans
 most of the clip, so looped playback shows the saturation swelling, with a
