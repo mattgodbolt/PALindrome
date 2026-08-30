@@ -71,6 +71,66 @@ def cxadc_rate(device):
 
 
 
+class CardPump(threading.Thread):
+    """Owns the cxadc device for the server's lifetime and feeds whichever
+    decoder child is current, teeing to a file while a recording is active.
+
+    Holding the card here (not in the child) is what makes recording possible
+    at all - the device is exclusive-open - and it also means a knob restart
+    never races a fresh open against the old child's close. The cost is one
+    os.read/os.write pair per MB, nowhere near a 20-28 MB/s stream's budget:
+    this is a copy, not a transcode."""
+
+    CHUNK = 1 << 20
+
+    def __init__(self, device):
+        super().__init__(daemon=True)
+        self.fd = os.open(device, os.O_RDONLY)
+        self.lock = threading.Lock()
+        self.sink = None
+        self.rec = None          # (file, bytes remaining) while recording
+        self.done = threading.Event()
+
+    def attach(self, write_fd):
+        """Point the stream at a new child's stdin pipe, dropping the old one."""
+        with self.lock:
+            if self.sink is not None:
+                os.close(self.sink)
+            self.sink = write_fd
+
+    def record(self, path, nbytes):
+        """Tee the next nbytes to path; returns False if a recording is already running."""
+        with self.lock:
+            if self.rec is not None:
+                return False
+            self.rec = (open(path, "wb"), nbytes)
+            self.done.clear()
+        return True
+
+    def run(self):
+        while True:
+            buf = os.read(self.fd, self.CHUNK)
+            if not buf:
+                return
+            with self.lock:
+                if self.sink is not None:
+                    try:
+                        os.write(self.sink, buf)
+                    except BrokenPipeError:
+                        os.close(self.sink)     # child gone; a restart attaches a new pipe
+                        self.sink = None
+                if self.rec is not None:
+                    f, left = self.rec
+                    f.write(buf[:left])
+                    left -= len(buf)
+                    if left <= 0:
+                        f.close()
+                        self.rec = None
+                        self.done.set()
+                    else:
+                        self.rec = (f, left)
+
+
 class Decoder:
     """The decode child, swappable underneath a running server.
 
@@ -91,6 +151,7 @@ class Decoder:
         self.extra = []
         self.tail = []
         self.airspy_cmd = None
+        self.pump = None
         self.proc = None
         self.sdr = None
         self.gen = 0
@@ -103,9 +164,10 @@ class Decoder:
         # makes a new pipe and the descriptor number changes with it.
         cmd = self.base + self.extra + self.tail + ["--frame-fd", str(frame_w)]
         if self.args.source == "cxadc":
-            card = open(self.args.cxadc_device, "rb", buffering=0)
-            self.proc = subprocess.Popen(cmd, stdin=card, pass_fds=(frame_w,))
-            card.close()
+            in_r, in_w = os.pipe()
+            self.proc = subprocess.Popen(cmd, stdin=in_r, pass_fds=(frame_w,))
+            os.close(in_r)
+            self.pump.attach(in_w)
         else:
             self.sdr = subprocess.Popen(self.airspy_cmd, stdout=subprocess.PIPE)
             self.proc = subprocess.Popen(cmd, stdin=self.sdr.stdout, pass_fds=(frame_w,))
@@ -232,7 +294,8 @@ img{max-width:100%;max-height:100vh;image-rendering:auto}
 <div id=wrap><div id=pic><img src="/stream.mjpeg"></div>
 <div id=side><div id=st>ready</div>
 <div id=prof><select id=plist></select> <button id=bload>load</button><br>
-<input id=pname placeholder="save as name"> <button id=bsave>save</button></div>
+<input id=pname placeholder="save as name"> <button id=bsave>save</button><br>
+<input id=rname placeholder="record as name"> <input id=rsecs type=number value=3 min=1 max=30 style="width:40px"> <button id=brec>record</button></div>
 <div id=ks></div></div></div>
 <script>
 const KNOBS=__KNOBS__, VALUES=__VALUES__, vals={}, els={},
@@ -280,10 +343,18 @@ document.getElementById('bsave').addEventListener('click',async()=>{
   fill(await r.json());   // the save response is the refreshed listing
   st.textContent='saved '+pname.value;
 });
+const rname=document.getElementById('rname'), rsecs=document.getElementById('rsecs');
+document.getElementById('brec').addEventListener('click',async()=>{
+  if(!rname.value) return;
+  st.textContent='recording '+rsecs.value+'s…';
+  const r=await fetch('/record?name='+encodeURIComponent(rname.value)+'&seconds='+rsecs.value,{method:'POST'});
+  st.textContent=await r.text();
+});
 </script>"""
 
 
-def make_handler(latest, dec, active_knobs, values, values_lock, profiles_dir, input_mode):
+def make_handler(latest, dec, active_knobs, values, values_lock, profiles_dir, input_mode,
+                 record_dir=None, record_rate=0):
     known = {k["name"] for k in active_knobs}
 
     def profile_names():
@@ -393,6 +464,9 @@ def make_handler(latest, dec, active_knobs, values, values_lock, profiles_dir, i
         def do_POST(self):
             url = urllib.parse.urlparse(self.path)
             q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            if url.path == "/record":
+                self._record(q)
+                return
             if url.path != "/save":
                 self._send(404, "text/plain; charset=utf-8", b"not found")
                 return
@@ -414,6 +488,36 @@ def make_handler(latest, dec, active_knobs, values, values_lock, profiles_dir, i
                 self._send(500, "text/plain; charset=utf-8", msg.encode())
                 return
             self._send(200, "application/json", json.dumps(profile_names()).encode())
+
+        def _record(self, q):
+            # Blocks for the duration: the response IS the completion notice.
+            if dec.pump is None:
+                self._send(400, "text/plain; charset=utf-8", b"recording needs --source cxadc")
+                return
+            name = q.get("name", "")
+            if len(name) > 64 or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+                self._send(400, "text/plain; charset=utf-8", b"record names are [A-Za-z0-9._-] only")
+                return
+            try:
+                seconds = float(q.get("seconds", "3"))
+            except ValueError:
+                seconds = 0.0
+            if not 0 < seconds <= 60:
+                self._send(400, "text/plain; charset=utf-8", b"seconds must be in (0, 60]")
+                return
+            path = os.path.join(record_dir, f"{name}_{record_rate}Hz.u8")
+            try:
+                os.makedirs(record_dir, exist_ok=True)
+                if not dec.pump.record(path, int(seconds * record_rate)):
+                    self._send(409, "text/plain; charset=utf-8", b"a recording is already running")
+                    return
+            except OSError as e:
+                self._send(500, "text/plain; charset=utf-8", str(e).encode())
+                return
+            if not dec.pump.done.wait(seconds + 5):
+                self._send(500, "text/plain; charset=utf-8", b"recording stalled: is the card still streaming?")
+                return
+            self._send(200, "text/plain; charset=utf-8", f"recorded {path}".encode())
 
     return Handler
 
@@ -458,6 +562,8 @@ def main():
                          "repeated or comma-separated; profiles merge in order, later values winning, so a "
                          "source calibration and a TV character can be layered")
     ap.add_argument("--profiles-dir", help="directory of named profiles (default: <repo>/profiles)")
+    ap.add_argument("--record-dir", default="/var/tmp/palindrome/captures",
+                    help="where the page's record button writes raw u8 captures (--source cxadc only)")
     ap.add_argument("--extra", nargs=argparse.REMAINDER, default=[],
                     help="everything after --extra is passed through to `palindrome render`. For flags without a "
                          "slider only: a flag a slider also owns is passed twice and the copies collide")
@@ -492,8 +598,6 @@ def main():
     if args.source == "cxadc":
         # Baseband composite: the card's samples ARE the video, so there is no
         # tuner, no channel preset and no AFC - the whole RF story drops out.
-        # The decoder reads the device directly; no process in between, because
-        # a transcoder in a 28 MB/s realtime path is exactly what not to do.
         rate = cxadc_rate(args.cxadc_device)
         render_cmd += ["--sample-rate", str(rate), "--input", "composite", "--sample-format", "u8"]
         source_desc = f"{args.cxadc_device} @ {rate / 1e6:.6f} MS/s, unsigned 8-bit"
@@ -526,6 +630,9 @@ def main():
         values["colour"] = 0.0
     dec = Decoder(render_cmd, args, latest, channels)
     dec.airspy_cmd = airspy_cmd if args.source != "cxadc" else None
+    if args.source == "cxadc":
+        dec.pump = CardPump(args.cxadc_device)
+        dec.pump.start()
     dec.tail = list(args.extra)
     dec.restart(knobs.flags_for(active_knobs, values), channels=3 if values.get("colour", 1.0) else 1)
 
@@ -534,7 +641,8 @@ def main():
 
     server = http.server.ThreadingHTTPServer(
         ("0.0.0.0", args.port),
-        make_handler(latest, dec, active_knobs, values, threading.Lock(), profiles_dir, input_mode))
+        make_handler(latest, dec, active_knobs, values, threading.Lock(), profiles_dir, input_mode,
+                     record_dir=args.record_dir, record_rate=rate if args.source == "cxadc" else 0))
     # Stop the server if the decoder dies (bad gain, device gone), so we don't
     # keep the last frame up forever.
     threading.Thread(target=lambda: (dec.wait_dead(), server.shutdown()), daemon=True).start()
