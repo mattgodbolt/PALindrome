@@ -1,0 +1,15 @@
+{
+  "description":
+      "BBC Master composite, calibrated 2026-08-30 against the CX2388x decode of Beeb colour bars: contrast = peak white at the ceiling, saturation fitted to the card's colorimetry through the CRT 2.6-on-2.2 transform (max residual 2.5%/channel). Layer taste on top and say so.",
+  "input": "composite",
+  "values": {
+    "cutoff": 5550000,
+    "composite_sync": 0.36,
+    "persistence": 0.9,
+    "beam_sigma": 0.4,
+    "beam_sigma_x": 0.7,
+    "v_shift": 0.024,
+    "saturation": 0.236,
+    "contrast": 1.45
+  }
+}
