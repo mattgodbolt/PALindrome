@@ -45,8 +45,9 @@ const ChromaDecoderConfig &validate(const ChromaDecoderConfig &cfg) {
   if (!(cfg.ref_tc_lines >= 2.0 && cfg.ref_tc_lines <= 100.0))
     throw std::invalid_argument{
         std::format("ChromaDecoder: ref_tc_lines must be in [2, 100], got {}", cfg.ref_tc_lines)};
-  // At 1 the ident is a per-line verdict and a single noisy burst re-phases the
-  // bistable, which the ident exists to prevent; infinity is a rate of zero.
+  // Both ends are rejected: at 1 the ident is a per-line verdict and a single
+  // noisy burst re-phases the bistable, which the ident exists to prevent; at
+  // infinity the rate is zero and nothing is ever identified.
   if (!(cfg.ident_tc_lines >= 2.0 && std::isfinite(cfg.ident_tc_lines)))
     throw std::invalid_argument{
         std::format("ChromaDecoder: ident_tc_lines must be finite and >= 2 lines, got {}", cfg.ident_tc_lines)};
