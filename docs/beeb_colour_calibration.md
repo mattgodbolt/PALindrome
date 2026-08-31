@@ -27,7 +27,7 @@ palette order:
 The same signal is captured two ways off the same cxadc card: raw samples at
 20 MS/s (the live view's record button), and decoded YUV from the card's own
 CX2388x silicon with the `cx8800` V4L2 driver loaded instead
-(`/var/tmp/palindrome/cx8800_ab.sh` does the swap and swap-back; the driver
+(`tools/cx8800_ab.sh` does the swap and swap-back; the driver
 reverts to NTSC on reload, so set the input, then the standard, and check
 576/25 before trusting a grab). The raw capture also yields per-bar
 subcarrier phasors directly, a third measurement beholden to neither decoder.
