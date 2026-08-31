@@ -1,14 +1,15 @@
 {
-  "description": "BBC Master Composite - tuned by eye 2026-08-23 against the measured calibration",
+  "description":
+      "BBC Master composite - Matt's eyeballed tune 2026-08-30: the calibrated baseline (see bbc-master-composite-cal) with hot contrast for punch, clipping peak white on purpose.",
   "input": "composite",
   "values": {
+    "cutoff": 5550000,
     "composite_sync": 0.36,
-    "cutoff": 5.55e6,
-    "contrast": 2.05,
-    "saturation": 0.165,
     "persistence": 0.9,
     "beam_sigma": 0.4,
     "beam_sigma_x": 0.7,
-    "v_shift": 0.024
+    "v_shift": 0.024,
+    "saturation": 0.22,
+    "contrast": 1.9
   }
 }
