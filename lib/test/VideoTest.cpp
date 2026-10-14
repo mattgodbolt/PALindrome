@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <random>
 #include <span>
 #include <vector>
 
@@ -206,6 +207,94 @@ TEST_CASE("fixed slice: picture content cannot move the slice point") {
       ++pulses;
   }
   CHECK(pulses >= 39); // the shallow sync still slices: one pulse per line
+}
+
+TEST_CASE("fixed slice: the 64-sample block scan equals the per-sample hysteresis") {
+  // The block path resolves 64 samples at once; blocks shorter than 64 fall
+  // through to the per-sample form. Feeding one sample at a time is therefore
+  // the scalar reference, and the two must agree bit-for-bit on the hardest
+  // input: every float in the slice band around the thresholds (so samples
+  // land exactly on them), shuffled so runs straddle word boundaries, on a
+  // length that leaves a tail. The band is pinned to slice_depth = 0.08
+  // (enter 0.925, leave 0.915).
+  constexpr double kDepth = 0.08;
+  std::vector<float> env;
+  for (float v = 0.90f; v < 0.95f; v = std::nextafter(v, 1.0f))
+    env.push_back(v);
+  std::mt19937 rng{97};
+  std::ranges::shuffle(env, rng);
+  env.resize((env.size() / 64 - 1) * 64 + 37);
+
+  const auto whole = [&] {
+    video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate, .slice_depth = kDepth}};
+    sep.prepare(env.size());
+    const auto out = sep.process(env);
+    return std::vector<video::SyncSample>{out.begin(), out.end()};
+  }();
+  video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate, .slice_depth = kDepth}};
+  sep.prepare(1);
+  std::size_t mismatches = 0;
+  std::size_t high = 0;
+  for (std::size_t k = 0; k < env.size(); ++k) {
+    const auto one = sep.process(std::span<const float>{env}.subspan(k, 1));
+    mismatches += one[0].sync != whole[k].sync;
+    high += whole[k].sync;
+  }
+  CHECK(mismatches == 0);
+  CHECK(high > env.size() / 4); // the band straddles the thresholds, so both states occur
+  CHECK(high < env.size() * 3 / 4);
+}
+
+TEST_CASE("fixed slice: the block scan equals the original double-threshold hysteresis") {
+  // The block path compares float samples against thresholds rounded up to
+  // float; the original slicer compared each sample, widened to double,
+  // against the double thresholds. This is the reference for that, kept in
+  // double on purpose, fed samples that sit exactly on both thresholds and a
+  // few ulps either side of them (where a wrongly rounded threshold would
+  // show), in chunkings that hit the block path and the per-sample tail.
+  constexpr double kDepth = 0.08;
+  constexpr double kHysteresis = 0.01; // mirrors the separator's kFixedHysteresis
+  constexpr double kEnter = 1.0 - kDepth + kHysteresis * 0.5;
+  constexpr double kLeave = 1.0 - kDepth - kHysteresis * 0.5;
+  const auto reference = [&](std::span<const float> env) {
+    std::vector<bool> out;
+    bool sync = false;
+    for (const auto sample: env) {
+      const auto s = static_cast<double>(sample);
+      if (!sync && s >= kEnter)
+        sync = true;
+      else if (sync && s < kLeave)
+        sync = false;
+      out.push_back(sync);
+    }
+    return out;
+  };
+
+  std::mt19937 rng{102};
+  std::uniform_int_distribution<int> ulps{-4, 4};
+  std::uniform_real_distribution<float> band{0.85f, 1.0f};
+  const auto near = [&](double threshold) {
+    auto v = static_cast<float>(threshold);
+    for (int steps = ulps(rng); steps != 0; steps += steps < 0 ? 1 : -1)
+      v = std::nextafter(v, steps < 0 ? 0.0f : 2.0f);
+    return v;
+  };
+  std::vector<float> env;
+  for (int i = 0; i < 20000; ++i)
+    env.push_back(i % 3 == 0 ? band(rng) : near(i % 3 == 1 ? kEnter : kLeave));
+  const auto expected = reference(env);
+
+  const auto chunk = GENERATE(std::size_t{1}, std::size_t{7}, std::size_t{64}, std::size_t{333}, std::size_t{20000});
+  CAPTURE(chunk);
+  video::SyncSeparator sep{video::SyncSeparatorConfig{.sample_rate_hz = kRate, .slice_depth = kDepth}};
+  sep.prepare(chunk);
+  std::vector<bool> got;
+  for (std::size_t off = 0; off < env.size(); off += chunk) {
+    const auto n = std::min(chunk, env.size() - off);
+    for (const auto s: sep.process(std::span<const float>{env}.subspan(off, n)))
+      got.push_back(s.sync);
+  }
+  CHECK(got == expected);
 }
 
 TEST_CASE("HorizontalSweep flywheel: locks, rides a phase step slowly, re-acquires") {
