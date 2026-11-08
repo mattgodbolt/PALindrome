@@ -161,3 +161,7 @@ Everything third-party (Catch2, nlohmann_json, Lyra, lodepng, and NVIDIA
 stdexec for the threaded pipeline) comes in via CPM, pinned by tag or commit.
 To prefer system-installed copies, configure with
 `-DCPM_USE_LOCAL_PACKAGES=ON` - that's CPM's own switch and we use it as-is.
+
+## License
+
+MIT - see [LICENSE](LICENSE). Third-party dependencies keep their own licenses.
